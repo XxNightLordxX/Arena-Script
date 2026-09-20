@@ -272,6 +272,16 @@ end
 --- the file has finished loading, so no caller can reach a nil here.
 local ArenaDebugPrint
 
+--- HOW OFTEN THE POSITIONAL TEAM INDEX IS RE-ASKED, in milliseconds. See the
+--- arena loop for why it is not every frame: Arena.GetEnabledTeams allocates
+--- and sorts on every call, and the only thing that can move an index is a
+--- change to Config.Teams.list.
+local TEAM_INDEX_RECHECK_MS = 1000
+
+--- When that recheck is next due. Reset with the hold so a fresh round asks
+--- once promptly rather than inheriting the last round's schedule.
+local nextTeamIndexCheck = 0
+
 --- FORWARD-DECLARED for the same reason as ArenaDebugPrint above, and it is
 --- the second time this file has caught the same trap: the loggers live with
 --- the rest of the logging, hundreds of lines below the first code that wants
@@ -447,6 +457,7 @@ local function holdFriendlyFire(ped)
     NetworkSetFriendlyFireOption(false)
     friendlyFireHeld = true
     heldTeam = index
+    nextTeamIndexCheck = GetGameTimer() + TEAM_INDEX_RECHECK_MS
 end
 
 releaseFriendlyFire = function(ped)
@@ -1351,8 +1362,44 @@ local function startArenaThread()
             -- fighter quietly moved off their side stops being outlined with
             -- them. Re-asserted the moment it disagrees.
             local current = PlayerPedId()
-            if friendlyFireHeld and GetPlayerTeam(PlayerId()) ~= heldTeam then
-                holdFriendlyFire(current)
+
+            -- TWO QUESTIONS, ASKED AT DIFFERENT RATES, because they cost very
+            -- different amounts.
+            --
+            -- THE CHEAP ONE, EVERY FRAME: has somebody moved the player off
+            -- the number this file put them on? GetPlayerTeam is a getter and
+            -- the comparison is an integer, so it is free to ask at 60fps.
+            --
+            -- THE EXPENSIVE ONE, ONCE A SECOND: has the NUMBER moved out from
+            -- under the player? Arena.TeamIndex is POSITIONAL -- the index of
+            -- a side in ipairs(Arena.GetEnabledTeams()) -- so it is not a
+            -- stable name for a team, it is a place in a list that any change
+            -- to Config.Teams.list renumbers. The per-frame check cannot see
+            -- that: the player has not moved, so GetPlayerTeam still equals
+            -- heldTeam and nothing looks wrong -- while every fighter who
+            -- respawns after the change is put on the NEW number. One side
+            -- then sits on two engine teams: the ones who respawned cannot
+            -- hurt the enemy who happens to share their new number, and CAN
+            -- hurt the team-mate still on the old one. That is the "two sides
+            -- on one number" outcome the bail exists to prevent, reached
+            -- through the branch that is supposed to be safe.
+            --
+            -- ONCE A SECOND AND NOT PER FRAME, deliberately.
+            -- Arena.GetEnabledTeams allocates a table for the list and one
+            -- more per side and then sorts them, every call. Asking that at
+            -- 60fps to catch something only a config change can cause would
+            -- trade a rare hazard for a constant one. A second is far inside
+            -- any round and costs nothing measurable.
+            if friendlyFireHeld then
+                local want = heldTeam
+                local now = GetGameTimer()
+                if now >= nextTeamIndexCheck then
+                    nextTeamIndexCheck = now + TEAM_INDEX_RECHECK_MS
+                    want = currentMatch and Arena.TeamIndex(currentMatch.teamKey) or nil
+                end
+                if GetPlayerTeam(PlayerId()) ~= want then
+                    holdFriendlyFire(current)
+                end
             end
 
             handleDeath(current)

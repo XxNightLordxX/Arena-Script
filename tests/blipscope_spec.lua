@@ -241,7 +241,9 @@ local function newFixture(mutate)
         RequestCollisionAtCoord = function() end,
         HasCollisionLoadedAroundEntity = function() return true end,
         GetGroundZFor_3dCoord = function() return false, nil end,
-        GetGameTimer = function() return 0 end,
+        -- ADVANCEABLE, so a test can reach the throttled recheck of the
+        -- positional team index without spinning a thousand frames.
+        GetGameTimer = function() return f.clock or 0 end,
         DisableControlAction = function() end,
         DisablePlayerFiring = function() end,
         IsPauseMenuActive = function() return false end,
@@ -1175,6 +1177,46 @@ t.test('a free-for-all tells it nothing, or the whole round is harmless', functi
     f.enterLive({ modeKey = 'ffa', teamKey = nil })
 
     t.isNil(f.team, 'a free-for-all put every fighter on the same side')
+end)
+
+t.test('AND THE INDEX MOVING UNDER A LIVE ROUND IS SEEN, not just the player moving off it', function()
+    -- Arena.TeamIndex is POSITIONAL: the place of a side in
+    -- ipairs(Arena.GetEnabledTeams()), which is sorted by order then key. It
+    -- is not a stable name for a team. Anything that changes
+    -- Config.Teams.list renumbers it.
+    --
+    -- THE PER-FRAME CHECK CANNOT SEE THAT, and that is the whole of this
+    -- test. It compares GetPlayerTeam against the number stored when the hold
+    -- was taken -- so when the NUMBER moves rather than the player, nothing
+    -- looks wrong: the player is still on the value that was stored. Every
+    -- fighter who respawns after the change is put on the new one, and one
+    -- side ends up on two engine teams -- the respawned cannot hurt an enemy
+    -- who now shares their number, and CAN hurt the team-mate still on the
+    -- old one.
+    --
+    -- The recheck is throttled because Arena.GetEnabledTeams allocates and
+    -- sorts per call, so the clock is advanced past it rather than spinning
+    -- sixty frames.
+    local f = newFixture()
+    f.enterLive()
+    local before = f.team
+    t.equals(before, f.env.Arena.TeamIndex('crimson'),
+        'the hold never started, so this proves nothing')
+
+    -- A SIDE APPEARS AHEAD OF CRIMSON IN THE ORDER, renumbering it. The
+    -- player has NOT moved: f.engineTeam is untouched.
+    f.env.Config.Teams.list = f.env.Config.Teams.list or {}
+    f.env.Config.Teams.list.aurum = { label = 'Aurum', order = 0, enabled = true }
+    local after = f.env.Arena.TeamIndex('crimson')
+    t.isTrue(after ~= before,
+        'the fixture did not actually renumber the side, so this test measures nothing')
+
+    f.clock = 5000
+    f.step()
+
+    t.equals(f.team, after,
+        'the index moved out from under a live round and nothing put the player on the new '
+            .. 'one -- one side is now split across two engine teams')
 end)
 
 t.test('and a side the config cannot place takes the hold OFF rather than leaving it half on', function()

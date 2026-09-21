@@ -1275,6 +1275,56 @@ t.test('and says the opposite when the withdrawal half really does run', functio
         'the report said both that it ran and that it did not')
 end)
 
+t.test('AND A PLAYER WHO REALLY IS DOWN IS REPORTED AS HAVING HAD FLAGS UP', function()
+    -- THE READING HAS TO BE TAKEN BEFORE THE THING IT MEASURES.
+    --
+    -- ArenaDispatch.Revive's own body clears the down state, and
+    -- clearDownMetadata reads each key back before writing it and only counts
+    -- one it actually had to change. Counting AFTER Revive therefore always
+    -- found every flag already false on any framework with GetMetaData --
+    -- qbx_core, the documented target -- so a player who was genuinely DOWN
+    -- got the line written for a player who was STANDING, byte for byte.
+    --
+    -- That is the primary use of this tool: an operator wiring up a medical
+    -- script puts a test player on the floor and presses it. They would read
+    -- that no flag was up, conclude the arena's down-state layer never wrote
+    -- anything, and go and re-check Config.Dispatch.downState.keys, which was
+    -- fine.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'were up and have been put back down',
+        'a player who was genuinely DOWN was reported as having had nothing up')
+    t.notContains(text, 'no down-state flag was up to clear',
+        'the report gave a down player the line written for a standing one')
+end)
+
+t.test('and a player who was already STANDING still says so, which is the control', function()
+    -- Without this the test above passes against a report that claims flags
+    -- were up whatever it found -- which is the lie it replaced.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = false, isdead = false })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'no down-state flag was up to clear',
+        'a standing player was reported as having had flags put back down')
+end)
+
+t.test('and an operator who switched the layer off is told THAT, not either of them', function()
+    local config = reviveConfig()
+    config.downState = { keys = {} }      -- config.lua's own way of switching the layer off
+    local f = withDetectedMedical(newFixture(config), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = true })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'switches that layer off',
+        'a server with downState.keys emptied was not told that is why nothing was cleared')
+end)
+
 t.test('AND A FRAMEWORK THAT WILL NOT ANSWER IS NOT REPORTED AS A STALE ID', function()
     -- The guard asked ArenaGetPlayer alone, which answers nil for two
     -- completely different servers: an id nobody holds, and an id somebody IS

@@ -556,6 +556,17 @@ local unpaidLoaded = false
 local unpaidReading = false
 local unpaidWriteRefused = false
 
+--- Whether NOTHING is queued in either write direction. Filled far below,
+--- beside the drop queue, once both counters exist.
+---
+--- DECLARED HERE AND NOT READ HERE. unpaidWrote needs both counters and is
+--- written hundreds of lines above them; naming them directly from inside it
+--- compiles, reads a nil GLOBAL instead of the upvalue, and `nil == 0` is
+--- false, so the all-clear silently never fires and the latch this whole
+--- block exists to un-stick stays stuck. tools/verify_release.sh check 2 is
+--- what caught exactly that. DO NOT inline the counters back into unpaidWrote.
+local unpaidQueueIdle
+
 --- Whether the money slate has been proved to exist in the database.
 ---
 --- SET BY A SUCCESSFUL READ, not by sending the CREATE. The same distinction
@@ -584,7 +595,27 @@ local function unpaidWrote(answer)
     -- Said once in each direction, the same shape server/util.lua uses to
     -- clear its own no-database warning when oxmysql comes back.
     if answer ~= nil then
-        if unpaidWriteRefused then
+        -- AND THE ALL-CLEAR IS PER STATEMENT KIND, not per callback.
+        --
+        -- THE FIRST ATTEMPT AT THIS RE-ARM WAS WORSE THAN THE LATCH. One
+        -- flag is shared by both statements -- this callback answers for the
+        -- INSERT and for the DELETE -- so clearing it on any non-nil answer
+        -- let a landing INSERT wipe a refusal the DELETE had raised. On a
+        -- user with INSERT and no DELETE, which this file elsewhere calls a
+        -- common way to set one up by accident, the two interleave: refused,
+        -- "has been fixed", refused, for every add/drop pair.
+        --
+        -- That is the direction that costs money. A lost DELETE pays a debt
+        -- TWICE, once per restart, out of the owner's pocket -- and the
+        -- money screen would go back to promising durability on exactly that
+        -- setup while it was still broken. A stuck warning is merely
+        -- annoying; a false all-clear is what this whole layer exists to
+        -- prevent.
+        --
+        -- So the all-clear waits until nothing is queued in either
+        -- direction, which is the only cheap statement that is true of BOTH
+        -- kinds at once.
+        if unpaidWriteRefused and unpaidQueueIdle and unpaidQueueIdle() then
             unpaidWriteRefused = false
             ArenaLog('betting: the unpaid ledger is being written to the database again -- '
                 .. 'whatever was refusing those writes has been fixed.')
@@ -868,6 +899,13 @@ end
 local pendingDrops = {}
 local pendingDropCount = 0
 local PENDING_DROP_LIMIT = 500
+
+-- Fills the forward declaration made above unpaidWrote. Both counters are in
+-- scope from here down and from nowhere higher, which is the whole reason the
+-- declaration is up there and the body is down here.
+unpaidQueueIdle = function()
+    return pendingAddCount == 0 and pendingDropCount == 0
+end
 
 --- Sends one drop, and forgets it only when the database has answered.
 --- Fills the forward declaration made above sendAdd.

@@ -955,6 +955,80 @@ t.test('and a REAL name is still accepted on that same build, which is the contr
         'a real component was refused on a build that answers unknown names with false')
 end)
 
+t.test('a build that cannot be asked is SAID SO, not reported as a pass', function()
+    -- The control for the pair below. inventoryKnowsItem waves a name
+    -- through when this ox_inventory tags nothing anywhere -- correctly, on
+    -- the evidence -- and a report that rounds that up to "checked" is the
+    -- false all-clear the whole layer exists to avoid.
+    -- `at_untagged` IS THE WHOLE POINT and a tagged name would prove nothing.
+    -- inventoryKnowsItem answers a tagged item off its own tag and never
+    -- reaches the unverified branch at all; it is an item with NO tag, on a
+    -- build where nothing is tagged, that cannot be told from a component.
+    local f = newKit({ fail = { untaggedList = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = { WEAPON_TEST = { scope = 'at_untagged' } }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'could not be asked',
+        'a build that tags nothing was reported as having checked the names')
+    t.notContains(report, 'every one is an item',
+        'names nobody could check were reported as present')
+end)
+
+t.test('DEFECT: and the caveat survives a report that ALSO found a bad name', function()
+    -- THE CAVEAT USED TO LIVE INSIDE THE `#missing == 0` BRANCH, so the
+    -- moment a single name came back provably wrong it vanished -- and that
+    -- is the reading an operator acts on.
+    --
+    -- They are handed the bad names, they fix those, they run it again, and
+    -- now the list is empty and they are told every one is an item this
+    -- ox_inventory has. The rest were never checked either way, on a build
+    -- that cannot be asked, and nothing on the screen ever said so.
+    --
+    -- It is WORSE on the failing path than on the clean one: the report has
+    -- just proved it can find bad names, which is precisely what makes its
+    -- silence about the others read as a pass.
+    local f = newKit({ fail = { untaggedList = true }, mutate = function(config)
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = {
+                -- Real, and carries no tag on a build that tags nothing, so
+                -- it is let through unchecked. See the note above.
+                scope = 'at_untagged',
+                -- Not an item here at all, so it is provably wrong.
+                grip = 'at_nothing_like_this',
+            },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'at_nothing_like_this',
+        'the bad name was not found at all, so this proves nothing about the caveat beside it')
+    t.contains(report, 'could not be asked',
+        'a report that found one bad name went silent about the names it could not check -- '
+        .. 'the operator fixes the one they were shown and believes the rest were verified')
+end)
+
+t.test('CONTROL: and a build that CAN be asked adds no caveat to its bad names', function()
+    -- A caveat printed unconditionally would be worse than one printed on
+    -- the wrong branch: it would teach the operator to ignore it.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', grip = 'at_nothing_like_this' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'at_nothing_like_this', 'the bad name was not found, so this proves nothing')
+    t.notContains(report, 'could not be asked',
+        'an ox_inventory that answered every question was reported as unaskable')
+end)
+
 t.test('a build that tagged nothing when asked is asked again, not written off', function()
     -- "This list has items and none is tagged" is a statement about the list
     -- AS IT WAS READ. Cached, one early or unlucky read switches the

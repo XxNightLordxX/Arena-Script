@@ -357,9 +357,31 @@ RegisterNetEvent('crimson_arena:client:closePanel', function()
     ArenaUI.Close()
 end)
 
-RegisterNetEvent('crimson_arena:client:matchHud', function(data)
-    ArenaUI.UpdateHud(data)
-end)
+-- THERE IS NO matchHud HANDLER HERE, AND THAT IS THE POINT.
+--
+-- There was one, and it read `ArenaUI.UpdateHud(data)` -- three words that
+-- quietly undid a guard in another file for as long as both existed.
+--
+-- client/match.lua registers its OWN handler for this event and refuses a
+-- board belonging to somebody else's round. FiveM runs every handler
+-- registered for an event, in registration order, and fxmanifest.lua loads
+-- this file BEFORE client/match.lua -- so the handler here ran first, sent
+-- the foreign board straight to the panel with `visible = true` bolted on by
+-- UpdateHud, and then match.lua's guard returned early and sent nothing.
+-- Returning early cannot take back a message already posted. The refusal
+-- looked right in the file, was covered by a passing test, and did nothing:
+-- a fighter in one match saw another match's scoreboard, and the panel was
+-- forced open to show it.
+--
+-- ArenaUI.UpdateHud is still the only way the board reaches the panel.
+-- client/match.lua calls it directly, AFTER the guard and after
+-- refreshTeamMarks, with the visibility it actually worked out rather than
+-- the unconditional `true` this handler supplied.
+--
+-- DO NOT REGISTER A HANDLER FOR crimson_arena:client:matchHud IN THIS FILE.
+-- tests/hudscope_spec.lua loads this file and client/match.lua together --
+-- which is the only way to see the pair of them -- and fails if a second
+-- handler comes back.
 
 RegisterNetEvent('crimson_arena:client:countdown', function(data)
     if type(data) ~= 'table' then return end

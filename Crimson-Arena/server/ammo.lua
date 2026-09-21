@@ -8038,12 +8038,34 @@ function ArenaAmmo.AttachmentReport()
         return lines
     end
 
+    -- AND "CHECKED" HAS TO MEAN CHECKED. inventoryKnowsItem waves a name
+    -- through on two branches that verify nothing -- an item answered as
+    -- something other than a table, and a build that tags no component
+    -- anywhere -- and reporting those as present is the false all-clear this
+    -- report exists to avoid.
+    --
+    -- SAID ON BOTH PATHS, and the first version of this only said it on one.
+    -- It sat inside the `#missing == 0` branch, so the moment a SINGLE name
+    -- came back missing the caveat vanished -- and that is the reading an
+    -- operator acts on. They are handed three bad names out of twenty, fix
+    -- those three, run it again, and are told every one is an item this
+    -- ox_inventory has. The other seventeen were never checked either way,
+    -- on a build that cannot be asked, and there is nothing on the screen
+    -- that says so. Worse on the failing path than on the clean one: the
+    -- report has just proved it can find bad names, which is exactly what
+    -- makes its silence about the rest read as a pass.
+    --
+    -- DO NOT PUT THIS BACK INSIDE A BRANCH.
+    local function sayUnverified()
+        if not attachmentUnverified then return end
+        say('  NOTE: this ox_inventory could not be asked about some of these names -- it does '
+            .. 'not tag its items the way newer builds do. NONE of those were actually checked, '
+            .. 'so this list is the names that are provably wrong and not necessarily all of '
+            .. 'them. A name this build does not know as a component will stop the weapon being '
+            .. 'drawn, and nothing here can tell you which one.')
+    end
+
     if #missing == 0 then
-        -- AND "CHECKED" HAS TO MEAN CHECKED. inventoryKnowsItem waves a name
-        -- through on two branches that verify nothing -- an item answered as
-        -- something other than a table, and a build that tags no component
-        -- anywhere -- and reporting those as present is the false all-clear
-        -- this report exists to avoid.
         if attachmentUnverified then
             say('attachments: %d name(s) configured, and this ox_inventory could not be asked '
                 .. 'about some of them -- it does not tag its items the way newer builds do. '
@@ -8083,6 +8105,10 @@ function ArenaAmmo.AttachmentReport()
     say('  Fix: name the ox_inventory component ITEM -- at_scope_medium, at_grip,')
     say('       at_suppressor_heavy -- not GTA\'s COMPONENT_ name and not an ordinary item.')
     say('       Your own list is in ox_inventory/data/weapons.lua under Components.')
+
+    -- LAST, so it is the line the operator is left holding, and AFTER the
+    -- fix advice so it cannot be read as part of it.
+    sayUnverified()
 
     return lines
 end

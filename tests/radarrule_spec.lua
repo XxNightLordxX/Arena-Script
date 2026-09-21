@@ -309,6 +309,88 @@ t.test('an edit reaches the snapshot, not just the match record', function()
 end)
 
 -- ======================================================================
+-- AND WHETHER THE PANEL IS OFFERED THE TOGGLE AT ALL
+--
+-- A different field from every one above. The card carries what THIS match
+-- decided; `config.match.radar` is the block that decides whether the host
+-- form draws a Radar button in the first place -- app.js hides the row when
+-- it is absent. Getting it wrong does not change a match, it offers a
+-- control that does nothing, which is exactly the shape of "the radar does
+-- not work".
+-- ======================================================================
+
+--- The radar block out of the panel's config snapshot, or nil.
+local function radarBlock(mutate)
+    local server = newServer(mutate)
+    return server.snapshot(1).config.match.radar
+end
+
+t.test('the toggle is offered when the operator allows the choice', function()
+    -- The control. Without it every assertion below passes against a server
+    -- that never offers the toggle to anybody.
+    local block = radarBlock(function(config)
+        config.Match.radar = { allowChoose = true, defaultOn = false, intervalMs = 30000 }
+        config.Teams.showEnemyBlips = false
+    end)
+
+    t.isNotNil(block, 'allowChoose is true and the panel is still drawing no radar row')
+    t.equals(block.intervalSeconds, 30, 'the sweep interval did not reach the panel')
+end)
+
+t.test('DEFECT: and NOT when allowChoose is merely absent', function()
+    -- THE GATE USED TO BE `== false` AND THE RESOLVER IS NOT.
+    -- Arena.ResolveRadar discards the host's request on `allowChoose ~= true`,
+    -- so for any value that is neither exactly true nor exactly false -- the
+    -- line deleted, commented out, a 1, a 'yes' -- the panel SHOWED the
+    -- toggle and the server THREW THE ANSWER AWAY. The host presses Radar
+    -- On, presses Apply, and the button springs back to Off with nothing
+    -- said anywhere.
+    local block = radarBlock(function(config)
+        config.Match.radar = { defaultOn = false, intervalMs = 30000 }
+        config.Teams.showEnemyBlips = false
+    end)
+
+    t.isNil(block,
+        'the panel is offered a radar toggle the resolver will discard -- the host presses it, '
+        .. 'presses Apply, and it springs back with nothing said anywhere')
+end)
+
+t.test('and NOT when allowChoose is junk rather than a boolean', function()
+    local block = radarBlock(function(config)
+        config.Match.radar = { allowChoose = 1, defaultOn = false, intervalMs = 30000 }
+        config.Teams.showEnemyBlips = false
+    end)
+
+    t.isNil(block, 'a 1 in allowChoose offered a toggle the resolver reads as no')
+end)
+
+t.test('and NOT when the server shows enemy blips permanently', function()
+    -- client/match.lua captures Config.Teams.showEnemyBlips once when the
+    -- blip thread starts and, when it is on, takes the permanent branch and
+    -- never evaluates the radar at all. A toggle that changes nothing is the
+    -- same defect in a second costume.
+    local block = radarBlock(function(config)
+        config.Match.radar = { allowChoose = true, defaultOn = false, intervalMs = 30000 }
+        config.Teams.showEnemyBlips = true
+    end)
+
+    t.isNil(block,
+        'a server with permanent enemy blips offered a radar toggle -- the client never even '
+        .. 'reads the radar on that branch, so the button cannot do anything')
+end)
+
+t.test('CONTROL: and NOT when the operator said false outright', function()
+    -- The one case the old `== false` gate did get right. It is here so a
+    -- future rewrite of the condition cannot lose it while fixing the rest.
+    local block = radarBlock(function(config)
+        config.Match.radar = { allowChoose = false, defaultOn = false, intervalMs = 30000 }
+        config.Teams.showEnemyBlips = false
+    end)
+
+    t.isNil(block, 'an operator who switched the choice off was overruled by the panel')
+end)
+
+-- ======================================================================
 -- AND FINALLY INTO THE ARENA, WHICH IS THE ONLY PART THE CLIENT ACTS ON
 -- ======================================================================
 

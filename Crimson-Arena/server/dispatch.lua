@@ -671,6 +671,26 @@ function ArenaDispatch.ReviveReport(target)
     local retractRuns = not (active[target] == nil
         and (left == nil or os.time() - left > RETRACT_GRACE_S))
 
+    -- WHAT THE DOWN-STATE HALF ACTUALLY DID, COUNTED BEFORE THE REVIVE DOES
+    -- IT -- the same way retractRuns is read above, and for the same reason.
+    --
+    -- THIS WAS MEASURED AFTERWARDS AND THEREFORE ALWAYS SAID ZERO.
+    -- ArenaDispatch.Revive's own body calls clearDownMetadata, and
+    -- clearDownMetadata reads each key back before writing it and only counts
+    -- one it actually had to change. On any framework with GetMetaData --
+    -- qbx_core, the documented target -- the second pass found every flag
+    -- already false, so a player who was genuinely DOWN got the line meant
+    -- for a player who was standing: "no down-state flag was up to clear".
+    -- Byte-identical to the healthy case, on the one tool whose entire output
+    -- is a diagnosis, for its primary use.
+    --
+    -- Taking the reading first also means Revive's own clear becomes the
+    -- no-op rather than this one, so nothing is written twice on a build with
+    -- no getter to read back through.
+    local keys = downStateConfig().keys
+    local layerOff = type(keys) ~= 'table' or #keys == 0
+    local cleared = ArenaDispatch.ClearDownState(target)
+
     ArenaDispatch.Revive(target)
 
     local told = 0
@@ -678,19 +698,7 @@ function ArenaDispatch.ReviveReport(target)
         told = #ArenaCompat.ReviveClientEvents()
     end
 
-    -- WHAT THE DOWN-STATE HALF ACTUALLY DID, counted rather than asserted.
-    --
-    -- "N's down metadata was cleared" was printed whether or not anything was
-    -- cleared -- including on a box where the operator has emptied
-    -- Config.Dispatch.downState.keys, which config.lua itself tells them is
-    -- how you switch the whole layer off, and on one whose player object
-    -- cannot take metadata at all. And because a standing player with nothing
-    -- to clear printed the identical sentence, the operator had no way to
-    -- tell "there was nothing up" from "this cannot clear anything here".
-    local keys = downStateConfig().keys
-    local layerOff = type(keys) ~= 'table' or #keys == 0
-    local cleared = ArenaDispatch.ClearDownState(target)
-
+    -- The reading itself is taken above, before Revive clears the flags.
     if layerOff then
         lines[#lines + 1] = 'no down-state flag was touched: Config.Dispatch.downState.keys is '
             .. 'empty, which switches that layer off. Only the revive events below were sent.'

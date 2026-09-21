@@ -1464,6 +1464,74 @@ t.test('and windows that were all thrown away do not read as "no windows written
         'the report did not say that the hours are not actually being enforced')
 end)
 
+t.test('DEFECT: but an ALL-DAY window is not "thrown away" -- config.lua recommends it by name', function()
+    -- Arena.ScheduleLine returns nil on three different facts and only one
+    -- of them is a mistake. `{ from = 0, to = 24 }` parses perfectly, is
+    -- kept, and covers the whole day -- so there is no range worth printing
+    -- and the line comes back nil. The report read that as "every window you
+    -- wrote was rejected" and sent the operator to a startup console that
+    -- names nothing.
+    --
+    -- AND config.lua SAYS TO WRITE IT, on the line directly above `windows`:
+    -- "{ from = 0, to = 24 } for all day". So the operator who followed this
+    -- resource's own documentation was accused of writing a broken schedule,
+    -- on the one screen built to end that kind of hunt.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 24 } }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, 'none usable',
+        'an all-day window -- the one config.lua recommends by name -- was reported as thrown '
+        .. 'away, and the operator was sent to read a console that names nothing')
+    t.contains(said, 'all of them GOOD',
+        'the report did not say the windows are fine, so the operator still cannot tell this '
+        .. 'apart from a schedule that was rejected')
+end)
+
+t.test('DEFECT: and windows left in a schedule that is switched OFF are not "thrown away" either', function()
+    -- The second of the three. With Config.Schedule.enabled false,
+    -- Arena.ScheduleSpans reads nothing at all, so the line is nil and the
+    -- windows sitting in the file are simply not in use -- which the heading
+    -- two lines up already says, in capitals.
+    --
+    -- Telling that operator their four windows were rejected sends them to
+    -- fix windows that are not broken, and away from the one-word setting
+    -- that is actually why the hours are not being kept.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = false
+        config.Schedule.windows = {
+            { from = 0, to = 4 }, { from = 9, to = 12 },
+            { from = 14, to = 18 }, { from = 20, to = 24 },
+        }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, 'none usable',
+        'a schedule that is switched off reported its windows as rejected, so the operator '
+        .. 'goes and fixes four windows that are fine')
+    t.contains(said, 'NOT IN USE',
+        'the report did not name the reason the windows are doing nothing')
+end)
+
+t.test('CONTROL: and a schedule that is ON with windows that work prints the range', function()
+    -- Without this the two above are satisfied by a report that never says
+    -- "none usable" about anything, including the case it was written for.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '05:00-07:00', 'a working schedule did not print its range')
+    t.notContains(said, 'none usable', 'a working schedule was reported as thrown away')
+    t.notContains(said, 'NOT IN USE', 'a schedule that IS in use was reported as switched off')
+end)
+
 t.test('and a server with no windows at all still says so plainly', function()
     -- The control for the test above: without it, that one passes against a
     -- report that cries "none usable" on every server that never wrote one.

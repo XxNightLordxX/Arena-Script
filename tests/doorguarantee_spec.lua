@@ -3674,6 +3674,78 @@ t.test('AND THE TABLET STOPS PROMISING A HOLD THE DOOR HAS ABANDONED', function(
         'the tablet did not warn that a stash from before the restart can be handed out twice')
 end)
 
+t.test('AND A LIST THAT IS NOT THE WHOLE LIST SAYS SO, rather than reading as complete', function()
+    -- THE EMPTY BRANCH SAYS ALL THIS AT LENGTH AND THE NON-EMPTY ONE SAID
+    -- NOTHING. `known` is false whenever the jam list was never read back --
+    -- but the moment ONE hold exists this run, the report printed a tidy
+    -- list of it with no caveat at all.
+    --
+    -- A list of one stash then reads as the complete set of things to
+    -- settle. The holds made BEFORE the restart -- the ones with a player's
+    -- kit parked in them -- are missing from it, are not being held back by
+    -- this run either, and are being walked by the sweep. The admin settles
+    -- the one they can see and stops looking.
+    --
+    -- IT IS WORSE THAN THE EMPTY CASE, not better: an empty report at least
+    -- invites suspicion. A report with a real stash on it has just proved it
+    -- works.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, holdJamRead = true })
+
+    -- THE ORDER HERE IS THE TEST. stow() records how many rows the door
+    -- itself left in the stash, and anything already sitting there when it
+    -- looks is counted INSIDE that ceiling on purpose. So the surplus has to
+    -- appear AFTER the door has shut the stash, which is exactly when it
+    -- really appears -- ox_inventory reloading an idle stash from a row that
+    -- never got its last write.
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    t.contains(server.log(), 'until the jam list has been read back',
+        'the door did not hold at all, so there is no unread list to be incomplete about')
+
+    server.stashItem('crimson_arena_CID1', 'phone', 9)
+
+    -- Past the grace, with the read still never coming: the door gives up,
+    -- looks at the stash, finds more in it than it put there, and jams it.
+    -- That is the only state where the list is non-empty AND unread at once.
+    -- THROUGH Reclaim, NOT SweepReturns. The sweep's hand-back is UNCAPPED
+    -- on purpose -- after a restart nothing knows what went into a stash, and
+    -- a ceiling of zero there would refuse a player their whole kit -- so it
+    -- would hand the surplus straight over and jam nothing. The ceiling lives
+    -- on the exit path, which keeps the record of what the door put in.
+    server.advanceClock(61)
+    server.ammo.Reclaim(1, 'match.ended')
+    server.step(8)
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.contains(report, 'are being held back',
+        'no hold was made this run, so this proves nothing about a non-empty list')
+    t.contains(report, 'ONLY THE HOLDS THIS RUN MADE',
+        'a jam list that is missing every hold from before the restart was printed as though '
+        .. 'it were the complete set of things to settle')
+end)
+
+t.test('CONTROL: and a list read back from a healthy database carries no such caveat', function()
+    -- A caveat on every list would teach the admin to ignore it.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {} })
+
+    server.startResource()
+    server.step(2)
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.contains(report, 'are being held back', 'no hold was made, so this proves nothing')
+    t.notContains(report, 'ONLY THE HOLDS THIS RUN MADE',
+        'a list that WAS read back was reported as incomplete')
+end)
+
 -- ========================================================================
 -- AND THE DIAGNOSTIC MUST NOT BURY THE LOG IT IS PRINTED IN
 -- ========================================================================

@@ -23,19 +23,27 @@ local UNARMED = joaat('WEAPON_UNARMED')
 
 local BLIP_REFRESH_MS = 500
 
---- THE COLOUR FOR A SIDE THAT COULD NOT BE RESOLVED, and it must not be a
---- colour a real side uses.
+--- THE COLOUR FOR A MODE WITH NO SIDES AT ALL -- free-for-all, gun game.
 ---
---- THIS WAS 1, WHICH IS CRIMSON'S OWN. So any side whose blipColor was
+--- ONE FALLBACK USED TO SERVE TWO UNRELATED QUESTIONS and changing it for the
+--- second broke the first. A free-for-all has no teams, so every row lands on
+--- the fallback by design and always has: red is what an FFA dot has always
+--- looked like, and it is not a mistake to be corrected.
+local BLIP_FFA_COLOR = 1
+
+--- THE COLOUR FOR A SIDE THAT COULD NOT BE RESOLVED, which is a different
+--- question and must not be a colour a real side uses.
+---
+--- THAT ONE WAS ALSO 1, WHICH IS CRIMSON'S OWN. So a side whose blipColor was
 --- absent, non-numeric, or simply typed as 1 by an operator adding a team was
 --- drawn in crimson's red -- and a crimson player then saw red dots for their
 --- own side and red dots for the enemy, same sprite, same size. The map stops
 --- distinguishing friend from foe with nothing said anywhere.
 ---
 --- 40 is grey in GTA's blip palette and no shipped side uses it (crimson 1,
---- ash 3, bone 5, ember 17), so an unresolvable side now reads as "unknown"
+--- ash 3, bone 5, ember 17), so an unresolvable side reads as "unknown"
 --- rather than as somebody. Arena.ValidateConfig complains about the cause.
-local BLIP_FALLBACK_COLOR = 40
+local BLIP_UNKNOWN_TEAM_COLOR = 40
 
 local currentMatch
 local matchLive = false
@@ -1507,8 +1515,15 @@ local function blipColorFor(row, includeEnemies)
         return nil
     end
 
-    local team = teamMode and Arena.GetTeamByKey(row.team) or nil
-    return (team and Arena.ToInt(team.blipColor)) or BLIP_FALLBACK_COLOR
+    -- A MODE WITH NO SIDES IS NOT A SIDE THAT COULD NOT BE READ, and telling
+    -- them apart is the whole reason there are two constants. Everything in a
+    -- free-for-all reaches here with teamMode false; giving it the "unknown
+    -- side" colour would have repainted every FFA dot for a defect it does
+    -- not have.
+    if not teamMode then return BLIP_FFA_COLOR end
+
+    local team = Arena.GetTeamByKey(row.team)
+    return (team and Arena.ToInt(team.blipColor)) or BLIP_UNKNOWN_TEAM_COLOR
 end
 
 local function pedForServerId(serverId)

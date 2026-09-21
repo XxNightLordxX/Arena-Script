@@ -606,6 +606,26 @@ local function hoursReport()
     -- every hour, under a heading reading ON, invites them to believe the
     -- hours are being enforced. The honest reading is the diagnosis this
     -- screen exists to give.
+    --
+    -- BUT A NIL LINE IS NOT PROOF OF A THROWN-AWAY WINDOW, and the first
+    -- version of this block treated it as one. Arena.ScheduleLine returns nil
+    -- on THREE different facts and only one of them is a mistake:
+    --
+    --   1. the schedule is switched OFF, so ScheduleSpans reads nothing at
+    --      all and the windows sitting in the file are simply not in use;
+    --   2. the windows parsed perfectly and together cover the whole day --
+    --      `{ from = 0, to = 24 }`, which config.lua recommends by name on
+    --      the line above `windows` -- so there is no range worth printing;
+    --   3. every window really was dropped.
+    --
+    -- Only the third has anything for the operator to fix, and only the third
+    -- has lines waiting in the startup console. An operator who typed the
+    -- all-day window this resource TOLD them to type was accused of writing a
+    -- broken one and sent to read a console that names nothing -- on the one
+    -- screen built to end that kind of hunt.
+    --
+    -- So the count that decides is how many windows SURVIVED, which is what
+    -- ScheduleSpans returns. DO NOT go back to counting Config.Schedule.windows.
     if hours.line then
         say('  windows:           %s', hours.line)
     else
@@ -615,11 +635,20 @@ local function hoursReport()
             for _ in pairs(block) do written = written + 1 end
         end
 
-        if written > 0 then
+        local kept = #Arena.ScheduleSpans()
+
+        if written == 0 then
+            say('  windows:           (none -- open at every hour)')
+        elseif not hours.enabled then
+            say('  windows:           (%d written, and NOT IN USE -- Config.Schedule.enabled is '
+                .. 'false, so the arena is open at every hour. Nothing is wrong with them.)', written)
+        elseif kept > 0 then
+            say('  windows:           (%d written, all of them GOOD, and between them they cover '
+                .. 'the whole day -- so the arena is open at every hour. This is what '
+                .. '{ from = 0, to = 24 } does.)', written)
+        else
             say('  windows:           (none usable -- %d written, all of them thrown away, so '
                 .. 'NOTHING is being refused. The startup console names each one.)', written)
-        else
-            say('  windows:           (none -- open at every hour)')
         end
     end
 

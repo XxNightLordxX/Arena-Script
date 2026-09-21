@@ -91,6 +91,8 @@ local function newFixture(mutate)
         -- [1001 off] then [1002 on] is a hold that was put on one body and
         -- taken off another.
         friendlyCalls = {},
+        -- EVERY ArenaUI.UpdateHud, in order. See the stub below.
+        hudCalls = {},
     }
 
     local env = Sandbox.newArenaEnv({
@@ -290,7 +292,13 @@ local function newFixture(mutate)
         ClearOverrideWeather = function() end,
         NetworkClearClockTimeOverride = function() end,
 
-        ArenaUI = { UpdateHud = function() end },
+        -- RECORDED, NOT SWALLOWED. Whether the handler ACCEPTED a board is
+        -- not visible in the blips -- a board that is dropped and a board
+        -- that is kept but draws nobody look identical on the map -- and the
+        -- spectator test below is about exactly that difference.
+        ArenaUI = {
+            UpdateHud = function(payload) f.hudCalls[#f.hudCalls + 1] = payload end,
+        },
         ArenaDispatch = {
             Enter = function() end,
             Exit = function() end,
@@ -568,6 +576,50 @@ t.test('with the radar on, a sweep lights the enemies and then goes dark', funct
         'going dark took the teammates with it -- your own side is not what the radar reveals')
 end)
 
+t.test('DEFECT: a host radar the SERVER threw away is not honoured here either', function()
+    -- THREE READERS OF ONE FIELD, AND THIS WAS THE ONE THAT DISAGREED.
+    -- Arena.ResolveRadar discards the host's request on `allowChoose ~= true`
+    -- and server/lobby.lua now hides the toggle on the same test -- but
+    -- radarOn() here read `== false`, so on a config where allowChoose is
+    -- anything other than an exact boolean (the line deleted, a 1, a 'yes')
+    -- this client trusted a choice the server had already thrown away.
+    --
+    -- The cost is not cosmetic and it is not symmetric: the operator's
+    -- default here is OFF, so the client lit enemy dots on a server whose
+    -- own resolver had said no radar. Every fighter on it got a wallhack the
+    -- operator switched off, four times a minute, and nothing anywhere said
+    -- so.
+    local f = newFixture(function(config)
+        config.Match.radar = { allowChoose = nil, defaultOn = false, intervalMs = 30000 }
+    end)
+    f.enterLive({ radar = true })
+    f.hud()
+
+    f.step()
+    local lit = f.blipped()
+    t.isTrue(lit[MATE] == true, 'nobody was drawn at all, so this proves nothing about enemies')
+    t.isNil(lit[FOE],
+        'the client lit an enemy on a host radar the server discarded -- the operator turned '
+        .. 'the choice off and got a sweep anyway: ' .. listed(lit))
+end)
+
+t.test('and the operator default is what decides instead, in BOTH directions', function()
+    -- The other half. A client that simply answered "no radar" whenever
+    -- allowChoose was not exactly true would pass the test above and be
+    -- just as wrong -- it would be ignoring an operator who defaulted the
+    -- sweep ON.
+    local f = newFixture(function(config)
+        config.Match.radar = { allowChoose = 1, defaultOn = true, intervalMs = 30000 }
+    end)
+    f.enterLive({ radar = false })
+    f.hud()
+
+    f.step()
+    local lit = f.blipped()
+    t.isTrue(lit[FOE] == true,
+        'the operator defaulted the sweep ON and the client drew no enemy: ' .. listed(lit))
+end)
+
 t.test('AND A LIT ENEMY DOT CARRIES NO NAME -- a sweep says WHERE, not WHO', function()
     -- The sweep's whole argument is that a round should be "a place to be
     -- searched" rather than "a map to be read". It was captioning every dot
@@ -828,6 +880,34 @@ t.test('and a scoreboard for a match this client is not in is not drawn', functi
     t.isNil(drawn[8], 'a fighter from another match was blipped')
 end)
 
+t.test('A FREE-FOR-ALL KEEPS ITS OWN DOT COLOUR, which is not the unknown-side one', function()
+    -- ONE FALLBACK USED TO ANSWER TWO UNRELATED QUESTIONS, and changing it
+    -- for the second silently repainted the first.
+    --
+    -- A free-for-all has no teams, so every row reaches the fallback by
+    -- design and always has -- red is what an FFA dot has always looked
+    -- like. The other fallback is for a side whose colour could not be read,
+    -- which is a defect and must NOT look like anybody. Moving the shared
+    -- constant to grey to fix the second turned every FFA dot grey too, for
+    -- a fault a free-for-all does not have.
+    --
+    -- Nothing in this file asserted the free-for-all colour, which is how
+    -- that went unnoticed: measured, the mutation passed all 56 tests.
+    local f = newFixture()
+    f.enterLive({ modeKey = 'ffa', teamKey = nil, radar = true })
+    f.hud()
+    f.step()
+
+    local drawn = 0
+    for _, blip in pairs(f.blips) do
+        drawn = drawn + 1
+        t.equals(blip.colour, 1,
+            'a free-for-all dot is not its own colour any more -- it has been repainted with the '
+            .. 'colour reserved for a side whose configuration could not be read')
+    end
+    t.isTrue(drawn > 0, 'nothing was drawn at all, so the colour was never checked')
+end)
+
 t.test('A SIDE WITH NO COLOUR IS NOT DRAWN IN ANOTHER SIDE\'S', function()
     -- THE FALLBACK USED TO BE 1, WHICH IS CRIMSON'S OWN NUMBER. So a side
     -- whose blipColor was missing, non-numeric, or simply typed as 1 by an
@@ -932,8 +1012,20 @@ t.test('and a SPECTATOR is still sent a board, because they have no match of the
     -- The guard must be "we are in a round and this board is another one",
     -- not "this board is not ours". A watcher has no currentMatch and is sent
     -- the board of the match they are watching on purpose; rejecting it would
-    -- blank the HUD they opened the camera for. Their roster draws no blips
-    -- regardless, because blipColorFor returns nil without a currentMatch.
+    -- blank the HUD they opened the camera for.
+    --
+    -- ASSERTED ON THE HUD CALL, AND THE FIRST VERSION OF THIS WAS NOT. It
+    -- read `t.equals(#f.blipped(), 0, ...)` and could not fail for two
+    -- separate reasons, either of which was enough on its own: f.blipped
+    -- returns a table keyed by SERVER ID, so `#` on it is 0 whether anybody
+    -- was drawn or not; and the test never called f.step, so the blip loop
+    -- had not run a single pass. Tightening the guard to "this board is not
+    -- ours" -- the exact regression the test names in its own comment --
+    -- left it green.
+    --
+    -- What the claim actually rests on is that the board was ACCEPTED, and
+    -- the only place that is visible is the UpdateHud call the handler makes
+    -- after the guard. A dropped board makes no call at all.
     local f = newFixture()
     f.fire('crimson_arena:client:matchHud', {
         visible = true,
@@ -941,7 +1033,32 @@ t.test('and a SPECTATOR is still sent a board, because they have no match of the
         matchId = 'match-2',
     })
 
-    t.equals(#f.blipped(), 0, 'a watcher with no match of their own drew blips')
+    t.equals(#f.hudCalls, 1,
+        'a watcher with no round of their own was refused the board of the match they are '
+        .. 'watching -- the HUD they opened the camera for is blank')
+
+    local sent = f.hudCalls[1]
+    t.isNotNil(sent.hud, 'the handler posted an empty HUD rather than the board it was sent')
+    t.equals(sent.hud.matchId, 'match-2', 'the wrong board reached the HUD')
+end)
+
+t.test('and drawing nobody on the map, which is the other half of it', function()
+    -- The blip side of the same claim, counted the way the rest of this file
+    -- counts blips. blipColorFor returns nil without a currentMatch, so a
+    -- watcher's roster marks nobody -- and a watcher who DID get blips would
+    -- be carrying a live map of a round they are not in.
+    --
+    -- f.step is called here on purpose: a count taken before the loop has run
+    -- a pass is 0 no matter what the production code does.
+    local f = newFixture()
+    f.fire('crimson_arena:client:matchHud', {
+        visible = true,
+        scoreboard = scoreboard(),
+        matchId = 'match-2',
+    })
+    f.step()
+
+    t.equals(f.blipCount(), 0, 'a watcher with no match of their own drew blips')
 end)
 
 -- ======================================================================

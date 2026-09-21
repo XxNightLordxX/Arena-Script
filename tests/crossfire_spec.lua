@@ -892,6 +892,51 @@ t.test('THE REGRESSION: a spread that catches a teammate still hits the enemy', 
     t.isFalse(f.shoot(1, { 2, 3 }), 'the same spread, refused because of the order it arrived in')
 end)
 
+t.test('AND THE BEND SAYS SO IN THE LOG, because silence reads as a broken guard', function()
+    -- THE OWNER'S WORDS, WATCHING A LIVE ROUND: "It might not be working im
+    -- not sure."
+    --
+    -- Every refusal prints a line. This path -- a team-mate named in a
+    -- packet that is allowed WHOLE because an enemy was named in it too --
+    -- was the only way a team-mate could take a hit with nothing written
+    -- anywhere. So an operator at the console saw refusals for some shots
+    -- and nothing at all for the pellets that landed, with no way to tell
+    -- the documented bend from a guard that had stopped working.
+    --
+    -- The bend itself is unchanged and the test above still pins it. This
+    -- only makes it audible.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+
+    t.isFalse(f.shoot(1, { 3, 2 }), 'the bend itself stopped working, so this proves nothing')
+
+    local written = table.concat(f.debugs, '\n')
+    t.isTrue(written:find('SAME TEAM', 1, true) ~= nil,
+        'a team-mate took a hit and the server wrote nothing at all about it: ' .. written)
+    t.isTrue(written:find('ALLOWED', 1, true) ~= nil,
+        'the line does not say the hit was allowed on purpose, so it reads as a failure')
+end)
+
+t.test('and an ORDINARY shot at an enemy stays silent, so the log is not noise', function()
+    -- THE CONTROL. A line on every clean shot would bury the ones that
+    -- matter, and `refusal` is nil for every packet with no team-mate in it
+    -- -- which is almost all of them.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+
+    t.isFalse(f.shoot(1, { 3 }), 'a clean shot at an enemy was refused')
+
+    local written = table.concat(f.debugs, '\n')
+    t.isTrue(written:find('SAME TEAM', 1, true) == nil,
+        'an ordinary shot at an enemy printed the team-mate line: ' .. written)
+end)
+
 t.test('but a spread with nothing legitimate in it is still refused', function()
     -- Two teammates and no enemy is aiming at your own side, which is the
     -- report. The bend is only for a packet that also had a lawful victim.

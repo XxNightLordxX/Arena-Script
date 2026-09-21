@@ -2524,7 +2524,33 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         ArenaDebug('crossfire: %s may not damage %s -- %s.',
             tostring(attacker), tostring(refusal.victim), refusal.reason or 'refused')
         CancelEvent()
+        return
     end
+
+    -- AND THE ONE CASE THAT GOES THROUGH ANYWAY NOW SAYS SO.
+    --
+    -- Reaching here means a teammate WAS named in this packet and the packet
+    -- is being allowed whole, because an enemy was named in it too. That is
+    -- deliberate -- cancelling it would make hugging a teammate shotgun-proof,
+    -- and crossfire_spec pins it -- but it was SILENT, and silence on this
+    -- one path is what "friendly fire is not working" looks like from the
+    -- outside.
+    --
+    -- THE OPERATOR'S PROBLEM IT SOLVES. Every refusal prints a line; this
+    -- was the only way a team-mate could take a hit with nothing written
+    -- anywhere. So an owner watching the console saw refusals for some shots
+    -- and nothing at all for the pellets that landed, with no way to tell a
+    -- deliberate bend from a broken guard. Now both are on the screen and
+    -- they read differently.
+    --
+    -- ONE LINE, AT ArenaDebug LEVEL, only when a team-mate was actually in
+    -- the packet -- `refusal` is nil for every ordinary shot, so a normal
+    -- round prints nothing new.
+    ArenaDebug('crossfire: %s hit %s -- SAME TEAM, and it is ALLOWED because this packet also '
+        .. 'named %d enemy target(s). A spread that catches a team-mate is let through whole on '
+        .. 'purpose; cancelling it would make standing next to a team-mate shotgun-proof. '
+        .. 'Nothing is broken -- this is the documented bend.',
+        tostring(attacker), tostring(refusal.victim), allowed)
 end)
 
 -- ======================================================================

@@ -154,15 +154,40 @@ local function newFixture(mutate)
         end,
         RemoveBlip = function(handle) f.blips[handle] = nil end,
         DoesBlipExist = function(handle) return f.blips[handle] ~= nil end,
-        SetBlipSprite = function() end,
+        -- EVERY PROPERTY createBlipOn SETS IS RECORDED, not just the colour.
+        --
+        -- These were no-ops, and an audit measured what that cost: a blip
+        -- built with SetBlipDisplay(blip, 0) -- drawn nowhere -- or with
+        -- SetBlipAsShortRange(blip, true) -- invisible until you are already
+        -- on top of the player -- passed all 49 tests in this file and every
+        -- other spec in the repo that stubs AddBlipForEntity. The whole
+        -- feature could have been drawing nothing on a live server with the
+        -- suite green.
+        --
+        -- The NAME mattered most: nothing here could see a caption, so
+        -- nothing could see that the radar was labelling enemy dots with the
+        -- enemy's own name.
+        SetBlipSprite = function(handle, sprite)
+            if f.blips[handle] then f.blips[handle].sprite = sprite end
+        end,
         SetBlipColour = function(handle, colour)
             if f.blips[handle] then f.blips[handle].colour = colour end
         end,
-        SetBlipDisplay = function() end,
-        SetBlipAsShortRange = function() end,
-        BeginTextCommandSetBlipName = function() end,
-        AddTextComponentSubstringPlayerName = function() end,
-        EndTextCommandSetBlipName = function() end,
+        SetBlipDisplay = function(handle, mode)
+            if f.blips[handle] then f.blips[handle].display = mode end
+        end,
+        SetBlipAsShortRange = function(handle, short)
+            if f.blips[handle] then f.blips[handle].shortRange = short end
+        end,
+        -- The caption is three natives: open, push the text, apply to the
+        -- handle. Modelled the way the engine takes it rather than collapsed,
+        -- so a caller that forgets the middle one is visible here too.
+        BeginTextCommandSetBlipName = function() f.pendingBlipName = nil end,
+        AddTextComponentSubstringPlayerName = function(text) f.pendingBlipName = text end,
+        EndTextCommandSetBlipName = function(handle)
+            if f.blips[handle] then f.blips[handle].name = f.pendingBlipName end
+            f.pendingBlipName = nil
+        end,
 
         SetEntityDrawOutlineRenderTechnique = function(group) f.technique = group end,
         ResetEntityDrawOutlineRenderTechnique = function() f.technique = nil end,
@@ -522,6 +547,65 @@ t.test('with the radar on, a sweep lights the enemies and then goes dark', funct
     t.isNil(dark[FOE], 'the sweep never went dark -- this is a permanent enemy blip: ' .. listed(dark))
     t.isTrue(dark[MATE] == true,
         'going dark took the teammates with it -- your own side is not what the radar reveals')
+end)
+
+t.test('AND A LIT ENEMY DOT CARRIES NO NAME -- a sweep says WHERE, not WHO', function()
+    -- The sweep's whole argument is that a round should be "a place to be
+    -- searched" rather than "a map to be read". It was captioning every dot
+    -- it drew with that player's name, enemies included -- so for the 800ms
+    -- it is lit, a player with the map open did not merely learn that an
+    -- enemy was at the north end, they learned WHICH enemy: the one on the
+    -- board with six kills, or the one carrying the sniper.
+    --
+    -- Identity attached to position is strictly more than the sweep is meant
+    -- to give away, and it is permanent knowledge won from a momentary
+    -- reveal.
+    --
+    -- NOTHING IN THIS FILE COULD SEE IT until the three name natives stopped
+    -- being no-op stubs. That is why it survived.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+
+    f.step()
+    local lit = f.blipped()
+    t.isTrue(lit[FOE] == true, 'the sweep did not light the enemy, so this proves nothing')
+
+    local named = {}
+    for handle, blip in pairs(f.blips) do
+        named[blip.ped - 1000] = blip.name
+        t.isTrue(handle ~= nil)
+    end
+
+    t.isNil(named[FOE], 'a radar-lit enemy dot is captioned with that enemy\'s name')
+    t.isNil(named[FOE2], 'a radar-lit enemy dot is captioned with that enemy\'s name')
+    t.equals(named[MATE], 'Mate',
+        'the teammate lost their name too -- your own side is who the map is for')
+end)
+
+t.test('and every dot is drawn where a dot can actually be seen', function()
+    -- MEASURED: a blip built with SetBlipDisplay(blip, 0) -- drawn nowhere --
+    -- or SetBlipAsShortRange(blip, true) -- invisible until you are on top of
+    -- the player -- passed all 49 tests in this file and every other spec in
+    -- the repo. The suite proved a blip OBJECT existed, never that a dot was
+    -- visible, so the whole feature could have been drawing nothing with the
+    -- tests green. Short-range in particular would make the radar useless
+    -- while looking fine: a sweep exists to show DISTANT positions.
+    local f = newFixture()
+    f.enterLive({ radar = true })
+    f.hud()
+    f.step()
+
+    local drawn = 0
+    for _, blip in pairs(f.blips) do
+        drawn = drawn + 1
+        t.equals(blip.display, 4, 'a fighter blip is not drawn on both the map and the minimap')
+        t.isFalse(blip.shortRange,
+            'a fighter blip is short-range, so it vanishes off the edge of the minimap -- '
+            .. 'which is exactly the distance a radar sweep exists to report')
+        t.equals(blip.sprite, 1, 'a fighter blip is not the plain dot sprite')
+    end
+    t.isTrue(drawn > 0, 'no blips were drawn at all, so none of the above was checked')
 end)
 
 t.test('a lit sweep still does not haze the enemy it just lit', function()

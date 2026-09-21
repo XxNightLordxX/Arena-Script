@@ -1792,7 +1792,32 @@ local function refreshBlips(includeEnemies)
         local serverId = type(row) == 'table' and Arena.ToInt(row.id) or nil
         if serverId and serverId ~= selfId then
             local color = blipColorFor(row, includeEnemies)
-            if color then wanted[serverId] = { color = color, name = row.name } end
+            if color then
+                -- THE NAME GOES ON A TEAMMATE AND NOBODY ELSE.
+                --
+                -- A SWEEP IS SUPPOSED TO SAY WHERE, NOT WHO. Every row this
+                -- accepted was captioned with its player's name, and during
+                -- the radar's lit window that set includes ENEMIES -- so for
+                -- those 800ms a player holding the map open did not merely
+                -- learn that somebody was at the north end, they learned
+                -- WHICH somebody. The one on the board with six kills, or the
+                -- one carrying the sniper, named on the map.
+                --
+                -- That is identity attached to position, and it is strictly
+                -- more than the sweep is meant to give away: config.lua's own
+                -- argument for the radar is that a round should be "a place to
+                -- be searched" rather than "a map to be read".
+                --
+                -- createBlipOn already skips the caption when the name is nil,
+                -- so an enemy dot simply arrives unlabelled -- same colour,
+                -- same sprite, same position, no identity.
+                local mine = currentMatch ~= nil
+                    and Arena.ModeUsesTeams(currentMatch.modeKey)
+                    and Arena.IsKey(currentMatch.teamKey)
+                    and row.team == currentMatch.teamKey
+
+                wanted[serverId] = { color = color, name = mine and row.name or nil }
+            end
         end
     end
 
@@ -1874,17 +1899,55 @@ local function startBlipThread()
             if permanent then
                 refreshBlips(true)
                 Wait(BLIP_REFRESH_MS)
+            elseif radarOn() and #roster == 0 then
+                -- DO NOT SPEND A SWEEP ON A BOARD THAT HAS NOT ARRIVED.
+                --
+                -- This loop starts on `matchLive`, and enterArena has just
+                -- emptied `roster` so last round's board cannot seed this
+                -- one. The only thing that refills it is the matchHud event,
+                -- which the server pushes from a once-a-second sweep rather
+                -- than from go-live -- so for at least one server tick after
+                -- the round starts there is nobody to draw.
+                --
+                -- The radar branch's first act was refreshBlips(true)
+                -- followed by Wait(visibleMs), with nothing re-reading the
+                -- roster inside that window. So the FIRST sweep of every
+                -- round lit an empty board, and the first real reveal did not
+                -- come until a full interval later -- thirty seconds into the
+                -- match on the shipped numbers, which is exactly when a
+                -- player is checking whether the feature the host just
+                -- switched on does anything at all.
+                --
+                -- Waiting here anchors the cadence to the first scoreboard
+                -- instead of to go-live. It costs nothing once the board has
+                -- landed, because #roster is only zero in that first tick.
+                Wait(BLIP_REFRESH_MS)
             elseif radarOn() then
+                local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
+
+                -- AND THE LIT HALF IS CAPPED BY THE CYCLE IT SITS IN.
+                --
+                -- The two numbers were clamped independently and only `dark`
+                -- had a floor, so visibleMs >= intervalMs made the
+                -- subtraction negative, collapsed dark to its 500ms floor and
+                -- turned the sweep into a permanent enemy wallhack --
+                -- measured at a 99.2% duty cycle with the two values
+                -- transposed, while showEnemyBlips was still false. Nothing
+                -- said so anywhere. Hoisted as well as clamped, so the Wait
+                -- below and the arithmetic under it use ONE pair of numbers
+                -- rather than reading the config twice.
+                local visible = math.min(
+                    math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800),
+                    math.max(100, interval - 500))
+
                 refreshBlips(true)
-                Wait(math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800))
+                Wait(visible)
 
                 removeAllPlayerBlips()
                 refreshBlips(false)
                 refreshTeamMarks()
                 refreshOutlines()
 
-                local interval = math.max(1000, Arena.ToInt(radarConfig().intervalMs) or 30000)
-                local visible = math.max(100, Arena.ToInt(radarConfig().visibleMs) or 800)
                 local dark = math.max(500, interval - visible)
 
                 local slept = 0

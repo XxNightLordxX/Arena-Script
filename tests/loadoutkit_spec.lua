@@ -632,6 +632,75 @@ t.test('and it reads the hand-written lists and the ammunition components too', 
     t.contains(report, 'COMPONENT_FMJ_CLIP', "an ammunition type's component was not checked")
 end)
 
+t.test('A NAME UNDER A KIND THIS SERVER NEVER FITS IS NOT REPORTED AS BROKEN', function()
+    -- THE FALSE ALARM. The walk took every name in weaponAttachments
+    -- whatever KIND it was filed under -- but a kind absent from
+    -- Config.Loadouts.attachments.fit is dropped before the component ever
+    -- reaches a weapon, so nothing about it can leave a fighter holding an
+    -- undrawable gun.
+    --
+    -- On the shipped config that is both suppressor components, on 39
+    -- weapons between them. An operator whose ox_inventory does not carry
+    -- those at_* items -- common, since suppressors are exactly what a
+    -- server strips -- pressed Tools -> Attachments and was told a component
+    -- was being dropped and weapons would be undrawable. Nothing was wrong.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope' }
+        config.Loadouts.attachments.deliberatelyUnfitted = { 'suppressor' }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'COMPONENT_NOT_AN_ITEM' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.notContains(report, 'COMPONENT_NOT_AN_ITEM',
+        'a bad name under a kind this server never fits was reported as about to break a weapon')
+    t.notContains(report, 'DROPPED', 'a config with nothing wrong with it was reported as broken')
+end)
+
+t.test('and the SAME name under a kind the server DOES fit is still reported', function()
+    -- The control. Without it the test above passes against a report that
+    -- has stopped checking anything at all.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'scope', 'suppressor' }
+        config.Loadouts.attachments.deliberatelyUnfitted = {}
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { scope = 'at_scope_medium', suppressor = 'COMPONENT_NOT_AN_ITEM' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    t.contains(table.concat(f.ammo.AttachmentReport(), '\n'), 'COMPONENT_NOT_AN_ITEM',
+        'a bad name under a kind this server DOES fit stopped being reported')
+end)
+
+t.test('and a bad name is counted across EVERY weapon it is on, not blamed on one', function()
+    -- It kept only the first place it saw and threw the rest away, so a name
+    -- configured on thirty-four weapons was reported against ONE of them --
+    -- and `pairs` order meant which one changed between restarts, so two
+    -- readings of an unchanged config could blame different weapons.
+    --
+    -- The operator sizes the job from what they read: one name, one weapon,
+    -- and they put it behind more urgent work when every weapon in the
+    -- catalogue is going out without its flashlight.
+    local f = newKit({ mutate = function(config)
+        config.Loadouts.attachments.fit = { 'flashlight' }
+        config.Loadouts.weaponAttachments = {
+            WEAPON_ONE   = { flashlight = 'COMPONENT_NOT_AN_ITEM' },
+            WEAPON_TWO   = { flashlight = 'COMPONENT_NOT_AN_ITEM' },
+            WEAPON_THREE = { flashlight = 'COMPONENT_NOT_AN_ITEM' },
+        }
+        config.Loadouts.weapons = {}
+    end })
+
+    local report = table.concat(f.ammo.AttachmentReport(), '\n')
+
+    t.contains(report, 'on 3 place(s)',
+        'the report still blames one weapon for a name configured on three')
+end)
+
 t.test('and says everything is fine when it is', function()
     local f = newKit({ mutate = function(config)
         config.Loadouts.weaponAttachments = {
@@ -969,7 +1038,16 @@ end)
 t.test('and the warning survives ox_inventory being absent, because it is not about ox_inventory', function()
     local f = newKit({ mutate = function(config)
         config.Loadouts.attachments = { enabled = true, allowChoose = true, fit = { 'scope' } }
-        config.Loadouts.weaponAttachments = { WEAPON_TEST = { suppressor = 'at_suppressor_heavy' } }
+        -- A SCOPE AS WELL AS THE DEAD SUPPRESSOR. The report only reaches its
+        -- ox_inventory line when there is something it would actually fit --
+        -- and since names under an unfitted kind stopped being counted (they
+        -- cannot break a weapon, so reporting them was a false alarm), a
+        -- suppressor on its own leaves nothing to check and the report says
+        -- so instead. The dead-kind warning this test is about is unaffected;
+        -- it is said before any of that.
+        config.Loadouts.weaponAttachments = {
+            WEAPON_TEST = { suppressor = 'at_suppressor_heavy', scope = 'at_scope_medium' },
+        }
         config.Loadouts.weapons = {}
     end })
     f.stopInventory()

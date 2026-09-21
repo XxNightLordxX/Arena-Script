@@ -2411,6 +2411,23 @@ local warnedComponents = {}
 --- too. Kept separate from the table above: one is a config mistake, the
 --- other is a build of ox_inventory this check cannot use.
 local registryUnreadable = false
+
+--- WHETHER ANY NAME WAS WAVED THROUGH WITHOUT ACTUALLY BEING CHECKED.
+---
+--- inventoryKnowsItem deliberately lets a name through on two branches that
+--- verify nothing: an item this build answers with something that is not a
+--- table, and a build that tags no item anywhere as a component. Both are the
+--- right call THERE -- stripping every attachment off every weapon because a
+--- registry cannot be read is far worse than the typo being guarded against.
+---
+--- It is the wrong thing for a REPORT to round up to "all present". An
+--- operator on an older or forked ox_inventory has fighters holding weapons
+--- that will not draw, opens Tools -> Attachments, reads a clean all-clear
+--- with a number beside it that looks like real coverage, and rules the
+--- attachment config out -- so they go and rebuild loadouts or blame the
+--- players. The one reading that could have named the bad component told them
+--- there was nothing to name.
+local attachmentUnverified = false
 --- Whether this ox_inventory tags the items it builds from its weapon data.
 --- `nil` until it has been asked and answered.
 ---
@@ -2561,7 +2578,10 @@ local function inventoryKnowsItem(name)
     -- reads below, outside any pcall, and take down whatever was being
     -- issued. nil and false mean "no such item"; anything else means this
     -- registry cannot be interrogated, which is the let-it-through case.
-    if type(item) ~= 'table' then return true end
+    if type(item) ~= 'table' then
+        attachmentUnverified = true
+        return true
+    end
 
     -- AND IS IT ACTUALLY A COMPONENT, not merely a real item.
     --
@@ -2595,6 +2615,7 @@ local function inventoryKnowsItem(name)
     -- depend on what was asked before it or in what order.
     if inventoryTags(ox) == true then return false end
 
+    attachmentUnverified = true
     return true
 end
 
@@ -6281,6 +6302,26 @@ function ArenaAmmo.JamReport()
                     or (rows .. ' item(s) STILL IN IT -- settle those first')))
     end
 
+    -- AND THE LIST IS ONLY AS COMPLETE AS THE READ BEHIND IT.
+    --
+    -- `known` is false when the jam list was never read back from the
+    -- database, and the empty branch above says so at length -- but the
+    -- moment ONE hold exists this run, the list prints without a word of it.
+    -- A tidy list of one stash then reads as the complete set of things to
+    -- settle, while the holds made BEFORE the restart -- the ones with a
+    -- player's kit parked in them -- are missing from it, are not being held
+    -- back by this run either, and are being walked by the sweep.
+    --
+    -- The admin settles the one they can see and stops looking, which is the
+    -- outcome this file's own header says must never happen.
+    if not known then
+        lines[#lines + 1] = '  AND THIS IS ONLY THE HOLDS THIS RUN MADE. The jam list was never '
+            .. 'read back from the database, so any stash held back BEFORE the restart is missing '
+            .. 'from this list entirely -- it is not being held back now either. The database '
+            .. 'user needs SELECT on crimson_arena_jammed_stash; the real error is on oxmysql\'s '
+            .. 'console.'
+    end
+
     return lines
 end
 
@@ -7750,14 +7791,48 @@ end)
 local function everyConfiguredComponent()
     local named = {}
 
+    --- EVERY PLACE A NAME IS CONFIGURED, not the first one seen.
+    ---
+    --- This kept only the first `where` and threw the rest away, so a name
+    --- configured on thirty-four weapons was reported against ONE of them --
+    --- and `pairs` order meant which one changed between restarts, so two
+    --- readings of an unchanged config could blame different weapons. An
+    --- operator sizes the job from what they read: one name, one weapon, and
+    --- they put it behind more urgent work when in fact every weapon in the
+    --- catalogue is going out without its flashlight.
     local function note(name, where)
-        if Arena.IsKey(name) and named[name] == nil then named[name] = where end
+        if not Arena.IsKey(name) then return end
+        local entry = named[name]
+        if entry == nil then
+            named[name] = { where = where, places = { where } }
+        else
+            entry.places[#entry.places + 1] = where
+        end
     end
+
+    -- THE KINDS THIS SERVER WILL ACTUALLY FIT, and nothing else is checked.
+    --
+    -- THE FALSE ALARM THIS REMOVES. The walk below took every name in
+    -- weaponAttachments regardless of the KIND it is filed under, so a name
+    -- under a kind absent from Config.Loadouts.attachments.fit -- which the
+    -- code drops before it ever reaches a weapon -- was still reported as
+    -- "will be DROPPED rather than fitted", with a warning about weapons
+    -- being left undrawable. On the shipped config that is both suppressor
+    -- components, and an operator whose ox_inventory does not carry those
+    -- at_* items (common -- suppressors are exactly what a server strips) was
+    -- told something was wrong when nothing was.
+    --
+    -- Arena.AttachmentKinds answers {} when attachments.enabled is off, which
+    -- is the right reading: a server fitting nothing has nothing to check.
+    local fitted = {}
+    for _, kind in ipairs(Arena.AttachmentKinds()) do fitted[kind] = true end
 
     for weapon, row in pairs(Config.Loadouts.weaponAttachments or {}) do
         if type(row) == 'table' then
             for kind, name in pairs(row) do
-                note(name, ('%s (%s)'):format(weapon, tostring(kind)))
+                if fitted[kind] then
+                    note(name, ('%s (%s)'):format(weapon, tostring(kind)))
+                end
             end
         end
     end
@@ -7937,9 +8012,16 @@ function ArenaAmmo.AttachmentReport()
         return lines
     end
 
+    -- CLEARED BEFORE THE WALK, the same way a good read clears
+    -- registryUnreadable, so this answers about THIS reading rather than
+    -- about anything the door happened to do earlier in the run.
+    attachmentUnverified = false
+
     local missing = {}
-    for name, where in pairs(named) do
-        if not inventoryKnowsItem(name) then missing[#missing + 1] = { name = name, where = where } end
+    for name, entry in pairs(named) do
+        if not inventoryKnowsItem(name) then
+            missing[#missing + 1] = { name = name, places = entry.places }
+        end
     end
     table.sort(missing, function(a, b) return a.name < b.name end)
 
@@ -7957,6 +8039,20 @@ function ArenaAmmo.AttachmentReport()
     end
 
     if #missing == 0 then
+        -- AND "CHECKED" HAS TO MEAN CHECKED. inventoryKnowsItem waves a name
+        -- through on two branches that verify nothing -- an item answered as
+        -- something other than a table, and a build that tags no component
+        -- anywhere -- and reporting those as present is the false all-clear
+        -- this report exists to avoid.
+        if attachmentUnverified then
+            say('attachments: %d name(s) configured, and this ox_inventory could not be asked '
+                .. 'about some of them -- it does not tag its items the way newer builds do. '
+                .. 'NONE of those were actually checked. A name this build does not know as a '
+                .. 'component will stop the weapon being drawn, and nothing here can tell you '
+                .. 'which one.', total)
+            return lines
+        end
+
         say('attachments: %d name(s) checked, every one is an item this ox_inventory has.', total)
         return lines
     end
@@ -7964,7 +8060,15 @@ function ArenaAmmo.AttachmentReport()
     say('attachments: %d of %d configured name(s) are not component items in this ox_inventory '
         .. 'and will be DROPPED rather than fitted:', #missing, total)
     for _, row in ipairs(missing) do
-        say('  %-34s from %s', row.name, row.where)
+        -- THE COUNT FIRST, because that is what sizes the job. A name on
+        -- thirty-four weapons used to be reported against one of them, and
+        -- which one changed between restarts.
+        local places = row.places or {}
+        local shown = {}
+        for index = 1, math.min(3, #places) do shown[index] = places[index] end
+        local more = #places - #shown
+        say('  %-34s on %d place(s): %s%s', row.name, #places, table.concat(shown, ', '),
+            more > 0 and (' (and %d more)'):format(more) or '')
     end
     say('  ox_inventory equips an attachment with Items[name].client.component and does not guard')
     say('  that lookup, so handing it one of these would leave the weapon in the fighter\'s hands')

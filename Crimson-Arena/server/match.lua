@@ -1022,6 +1022,20 @@ local function pushHud(match)
 
     local function hudFor(kills, deaths)
         return {
+            -- WHOSE ROUND THIS BOARD IS, which it never said.
+            --
+            -- The client assigned `roster = data.scoreboard` unconditionally
+            -- and the payload carried nothing to check it against, so the one
+            -- thing standing between a stranger's dots on your map was the
+            -- routing being perfect. blipscope_spec has a test named for
+            -- exactly this risk; an audit found it could not fail, because
+            -- its helper silently dropped the foreign ids it was handed.
+            --
+            -- Nothing leaks today -- pushHud only reaches this match's
+            -- players and spectators -- but the guarantee the test names did
+            -- not exist on the client side at all, and a stale board arriving
+            -- after a new enterArena is the shape that would break it.
+            matchId = match.id,
             remaining = common.remaining,
             total = common.total,
             kills = kills,

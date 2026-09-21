@@ -531,6 +531,35 @@ local function validate(mutate)
     return table.concat(problems or {}, '\n')
 end
 
+t.test('a side with no blip colour is complained about, because the map is where it shows', function()
+    -- The map is the only place a player reads friend-or-foe at a glance,
+    -- and it reads it from one number per side. A side whose blipColor is
+    -- missing or non-numeric falls back to a fixed colour and can no longer
+    -- be told apart from anything else that fell back -- and this loop
+    -- already walked every side to check `order` and looked straight past it.
+    t.contains(validate(function(config) config.Teams.list.ash.blipColor = nil end),
+        'blipColor', 'a side with no blip colour was not mentioned at boot')
+
+    t.contains(validate(function(config) config.Teams.list.ash.blipColor = 'red' end),
+        'blipColor', 'a side whose blip colour is not a number was not mentioned at boot')
+end)
+
+t.test('and two sides sharing one colour, which is friend-or-foe gone entirely', function()
+    t.contains(validate(function(config)
+        config.Teams.list.ash.blipColor = config.Teams.list.crimson.blipColor
+    end), 'both drawn in blip colour',
+        'two sides drawn in one colour was not mentioned at boot')
+end)
+
+t.test('and the shipped config says nothing about blip colours, which is the control', function()
+    -- Without this the two above pass against a checker that complains on
+    -- every server, which is how a boot warning stops being read.
+    t.notContains(validate(), 'blipColor',
+        'the shipped sides are being complained about')
+    t.notContains(validate(), 'both drawn in blip colour',
+        'the shipped sides are being complained about')
+end)
+
 -- ======================================================================
 -- THE CATALOGUE LIVES IN ANOTHER FILE NOW
 --

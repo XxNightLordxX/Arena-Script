@@ -428,6 +428,46 @@ local function wentHome(server, ids, what)
     end
 end
 
+t.test('DYING DOES NOT COST A FIGHTER THEIR SIDE, driven through the REAL death path', function()
+    -- IN THE OWNER'S WORDS: "if you die it still saves the team and friendly
+    -- fire thingy".
+    --
+    -- IT FAILS OPEN, WHICH IS WHY IT NEEDS A TEST AT ALL. Arena.CanDamage
+    -- returns TRUE -- damage allowed -- as soon as either side's team key is
+    -- missing, because an unteamed player in a team mode is nobody's
+    -- team-mate. So anything that cleared a row's `team` while they were down
+    -- would not start refusing shots, it would STOP refusing them, and the
+    -- only sign would be a fighter dying to their own side moments after
+    -- respawning.
+    --
+    -- WHY IT IS HERE AND NOT IN crossfire_spec. That file stubs ArenaLobby.Get
+    -- and hands the guard a roster it built itself, so the real
+    -- ArenaMatch.OnDeath never runs and mutating it changes nothing there.
+    -- Measured: adding `player.team = nil` beside `player.alive = false` in
+    -- the real OnDeath passed all 63 of crossfire_spec. This fixture runs the
+    -- actual server, so the mutation has somewhere to bite.
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
+    local matchId = liveRound(server)
+    local match = server.lobby.Get(matchId)
+
+    -- 1 and 2 are on crimson, 3 is on ash. Kill 2 for real.
+    server.match.OnDeath(2, 3)
+
+    t.equals(match.players[2].team, 'crimson',
+        'the death path cleared the dead fighter\'s side -- Arena.CanDamage fails OPEN on a '
+        .. 'missing key, so their own team can now finish them')
+    t.isTrue(server.shoot(1, { 2 }),
+        'a team-mate on the floor is shootable by their own side')
+    t.isFalse(server.shoot(3, { 2 }),
+        'and the enemy could no longer touch them, so the respawn delay became a shield')
+
+    -- AND THE KILLER KEEPS THEIRS TOO, which is the other half: a shooter
+    -- with no side is not refused either.
+    t.equals(match.players[3].team, 'ash', 'the death path cleared the KILLER\'s side')
+    t.isTrue(server.shoot(2, { 1 }),
+        'the dead fighter can now shoot their own team-mate')
+end)
+
 t.test('when the round ends properly, two former allies can shoot each other again', function()
     local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 })
     local matchId = liveRound(server)

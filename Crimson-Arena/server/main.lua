@@ -581,9 +581,47 @@ local function hoursReport()
     local hours = ArenaHoursState()
     say('arena hours: %s', hours.enabled and 'ON' or 'OFF')
     say('  this machine says: %s', hours.serverClock)
-    say('  offsetHours:       %+d', hours.offsetHours)
+    -- THE OFFSET ACTUALLY APPLIED, not the one in the file.
+    --
+    -- ArenaHoursNow ignores anything outside -14..14 and shifts by 0 instead.
+    -- This line printed the RAW config value, so an operator who typed 500 --
+    -- or -20, or 5.5 -- was told that offset was in force while the arena
+    -- clock printed on the next line showed no shift at all. They then hunt
+    -- the wrong thing, on the one screen built to diagnose exactly this.
+    local applied = (math.abs(hours.offsetHours) <= 14) and hours.offsetHours or 0
+    if applied ~= hours.offsetHours then
+        say('  offsetHours:       %+d  (config says %+d, which is outside -14..14 and is IGNORED)',
+            applied, hours.offsetHours)
+    else
+        say('  offsetHours:       %+d', applied)
+    end
+
     say('  arena is going by: %s', hours.arenaClock)
-    say('  windows:           %s', hours.line or '(none -- open at every hour)')
+
+    -- AND "NO WINDOWS" IS NOT THE SAME ANSWER AS "NONE OF YOURS WORKED".
+    --
+    -- Both printed "(none -- open at every hour)". The first is an operator
+    -- who wrote no schedule; the second is one who wrote four windows and had
+    -- every one of them thrown away -- and telling them the arena is open at
+    -- every hour, under a heading reading ON, invites them to believe the
+    -- hours are being enforced. The honest reading is the diagnosis this
+    -- screen exists to give.
+    if hours.line then
+        say('  windows:           %s', hours.line)
+    else
+        local written = 0
+        local block = type(Config.Schedule) == 'table' and Config.Schedule.windows or nil
+        if type(block) == 'table' then
+            for _ in pairs(block) do written = written + 1 end
+        end
+
+        if written > 0 then
+            say('  windows:           (none usable -- %d written, all of them thrown away, so '
+                .. 'NOTHING is being refused. The startup console names each one.)', written)
+        else
+            say('  windows:           (none -- open at every hour)')
+        end
+    end
 
     if hours.forced then
         say('  OVERRIDDEN:        an admin has the doors %s.',

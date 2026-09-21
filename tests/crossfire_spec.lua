@@ -1129,6 +1129,71 @@ t.test('and somebody merely WAITING TO RESPAWN is still in it', function()
 end)
 
 
+t.test('AND DYING DOES NOT COST YOU YOUR SIDE: a team-mate on the floor is still a team-mate', function()
+    -- IN THE OWNER'S WORDS: "if you die it still saves the team and friendly
+    -- fire thingy".
+    --
+    -- THE WAY THIS COULD FAIL IS SILENT AND IT FAILS OPEN. Arena.CanDamage
+    -- returns TRUE -- damage allowed -- the moment either side's team key is
+    -- missing, because an unteamed player in a team mode is not somebody's
+    -- team-mate. So anything that cleared a row's `team` while they were down
+    -- would not refuse a shot; it would stop refusing one, and the only sign
+    -- would be a team-mate dying to their own side seconds after respawning.
+    --
+    -- Nothing on the death path writes it -- OnDeath touches `alive` and
+    -- nothing else, and the only four writers in the whole server are the
+    -- picker, the auto-assign at Begin, the rollback when a start is refused,
+    -- and the reset when the config's team list changes. This test is what
+    -- keeps that true, because the failure mode is invisible from the board.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    local roster = f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+
+    t.isTrue(f.shoot(1, { 2 }), 'the control: a standing team-mate is already unshootable')
+
+    -- ON THE FLOOR WITH LIVES LEFT -- the ordinary death, back in seconds.
+    roster[2].alive = false
+    roster[2].lives = 2
+    t.isTrue(f.shoot(1, { 2 }),
+        'a team-mate waiting to respawn lost their protection -- their own side can finish them')
+    t.isFalse(f.shoot(1, { 3 }), 'and the enemy stopped being shootable, which is the other failure')
+
+    -- ELIMINATED -- out of the round, and the body is still on the floor.
+    -- crossfire_spec already pins that a body IS shootable so it cannot be
+    -- used as a shield; that must not extend to their own side.
+    roster[2].lives = 0
+    t.isTrue(f.shoot(1, { 2 }),
+        'an ELIMINATED team-mate became shootable by their own side')
+
+    -- AND BACK UP AGAIN.
+    roster[2].alive = true
+    roster[2].lives = 2
+    t.isTrue(f.shoot(1, { 2 }),
+        'a team-mate who respawned came back without their side')
+end)
+
+t.test('and the dead fighter can still be hurt by the OTHER side, so it is not a shield', function()
+    -- THE CONTROL FOR THE TEST ABOVE, and the bug it must not become.
+    -- Refusing everything at a downed player would turn the respawn delay
+    -- into invulnerability -- which is the failure the existing
+    -- waiting-to-respawn test guards, from the enemy's direction. Both
+    -- directions have to hold at once, and only a three-player roster with a
+    -- team-mate AND an enemy can show that.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    local roster = f.teams('m1', 'tdm', { [1] = 'crimson', [2] = 'crimson', [3] = 'ash' })
+
+    roster[2].alive = false
+    roster[2].lives = 2
+
+    t.isFalse(f.shoot(3, { 2 }),
+        'a fighter on the floor was unshootable by the enemy -- the respawn delay is a shield')
+end)
+
 t.test('DEFECT: an arena with no fence had no explosion guard at all', function()
     -- `boundary.enabled = false` is a supported setting -- README calls it an
     -- open arena -- and Arena.BoundaryOf answers nil for one. Both branches of

@@ -476,7 +476,34 @@ local function snapshotConfig()
             end)(),
             radar = (function()
                 local block = Config.Match.radar
-                if type(block) ~= 'table' or block.allowChoose == false then return nil end
+
+                -- `~= true`, THE WAY THE RESOLVER READS IT, and the way
+                -- livesChoice eight lines above already does.
+                --
+                -- THIS GATE USED TO BE `== false` AND THE RESOLVER IS NOT.
+                -- Arena.ResolveRadar discards the host's request on
+                -- `allowChoose ~= true`, so for any value that is neither
+                -- exactly true nor exactly false -- the line deleted or
+                -- commented out (nil), a 1, a 'yes' -- the panel SHOWED the
+                -- toggle and the server THREW THE ANSWER AWAY. The host
+                -- presses Radar On, presses Apply, and the button springs
+                -- back to Off with nothing said anywhere. That is precisely
+                -- the shape of "the radar does not work".
+                --
+                -- AND A SERVER THAT HAS TURNED PERMANENT ENEMY BLIPS ON HAS
+                -- NO SWEEP TO CHOOSE. client/match.lua captures
+                -- Config.Teams.showEnemyBlips once when the blip thread
+                -- starts and, when it is on, takes the permanent branch and
+                -- never evaluates the radar at all. Offering a toggle that
+                -- changes nothing is the same defect in a second costume, so
+                -- the block simply disappears -- the panel already draws
+                -- nothing when this field is absent.
+                if type(block) ~= 'table'
+                    or block.allowChoose ~= true
+                    or Config.Teams.showEnemyBlips == true
+                then
+                    return nil
+                end
                 return {
                     defaultOn = block.defaultOn == true,
                     intervalSeconds = math.max(1, math.floor((Arena.ToInt(block.intervalMs) or 30000) / 1000)),

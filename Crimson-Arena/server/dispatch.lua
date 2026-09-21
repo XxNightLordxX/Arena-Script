@@ -597,13 +597,42 @@ function ArenaDispatch.ReviveReport(target)
     -- This is the ONE tool whose entire output is a diagnosis. A diagnosis
     -- that cannot tell "it worked" from "there was nobody there" is worse than
     -- no tool, because it sends the operator somewhere else.
+    -- IS ANYBODY ON THAT ID, asked of the SERVER rather than of the framework.
+    --
+    -- THE GUARD USED TO STATE A GUESS AS A FACT. It asked ArenaGetPlayer
+    -- alone, which answers nil for two completely different servers: an id
+    -- nobody holds, and an id somebody IS on whose framework will not hand
+    -- over a player record -- qbx_core mid-restart, most obviously, which is
+    -- routine while wiring up a medical script and is therefore exactly when
+    -- this tool gets pressed. Every press then reported a stale id and sent
+    -- the operator back to their player list to re-check an id that was
+    -- correct, with nothing anywhere saying why.
+    --
+    -- GetPlayerName is the server's own answer to "is this id held" and does
+    -- not go through the framework at all, so the two failures can be told
+    -- apart and given two different sentences.
+    local named = nil
+    local ok, answer = pcall(GetPlayerName, target)
+    if ok and Arena.IsKey(answer) then named = answer end
+
     local holder = ArenaGetPlayer and ArenaGetPlayer(target) or nil
-    if holder == nil then
+
+    if named == nil then
         return {
             ('nobody on this server is holding server id %d right now, so there was nothing to '
                 .. 'revive and NOTHING WAS DONE.'):format(target),
             'check the id on your player list and try again -- a player who reconnects gets a new '
                 .. 'one, so an id noted down a few minutes ago is often already stale.',
+        }
+    end
+
+    if holder == nil then
+        return {
+            ('%s IS on server id %d, but the framework would not hand over their player record, '
+                .. 'so NOTHING WAS DONE.'):format(named, target),
+            'that is what a framework restarting looks like -- qbx_core coming back up, most '
+                .. 'often. The id is not the problem. Wait for it to finish loading and press '
+                .. 'again; if it never does, the medical test cannot reach anybody on this box.',
         }
     end
 
@@ -649,14 +678,38 @@ function ArenaDispatch.ReviveReport(target)
         told = #ArenaCompat.ReviveClientEvents()
     end
 
+    -- WHAT THE DOWN-STATE HALF ACTUALLY DID, counted rather than asserted.
+    --
+    -- "N's down metadata was cleared" was printed whether or not anything was
+    -- cleared -- including on a box where the operator has emptied
+    -- Config.Dispatch.downState.keys, which config.lua itself tells them is
+    -- how you switch the whole layer off, and on one whose player object
+    -- cannot take metadata at all. And because a standing player with nothing
+    -- to clear printed the identical sentence, the operator had no way to
+    -- tell "there was nothing up" from "this cannot clear anything here".
+    local keys = downStateConfig().keys
+    local layerOff = type(keys) ~= 'table' or #keys == 0
+    local cleared = ArenaDispatch.ClearDownState(target)
+
+    if layerOff then
+        lines[#lines + 1] = 'no down-state flag was touched: Config.Dispatch.downState.keys is '
+            .. 'empty, which switches that layer off. Only the revive events below were sent.'
+    elseif cleared > 0 then
+        lines[#lines + 1] = ('%d down-state flag(s) were up and have been put back down.')
+            :format(cleared)
+    else
+        lines[#lines + 1] = 'no down-state flag was up to clear -- either they were already '
+            .. 'standing, or this framework does not hand over a player record to write one.'
+    end
+
     if told > 0 then
-        lines[#lines + 1] = ('done. %d\'s down metadata was cleared and %d medical script(s) were asked to revive them.')
-            :format(target, told)
+        lines[#lines + 1] = ('done. %d medical script(s) were asked to revive them.')
+            :format(told)
         lines[#lines + 1] = ('if %d is up but something still treats them as dead, that script is not in the catalogue in shared/compat/dispatch.lua -- add it there with the revive event it listens for.')
             :format(target)
     else
-        lines[#lines + 1] = ('done. %d\'s down metadata was cleared. No medical script was detected on this box, so none was asked to revive them.')
-            :format(target)
+        lines[#lines + 1] = 'done. No medical script was detected on this box, so none was asked '
+            .. 'to revive them.'
     end
 
     -- WHICH HALF OF THE REVIVE ACTUALLY RAN. Said plainly and without alarm:

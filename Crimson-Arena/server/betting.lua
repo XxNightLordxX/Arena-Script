@@ -572,7 +572,27 @@ local unpaidSchemaConfirmed = false
 --- has to be told here or not at all. DO NOT report a read as proof of a
 --- write.
 local function unpaidWrote(answer)
-    if answer ~= nil or unpaidWriteRefused then return end
+    -- A WRITE THAT LANDS CLEARS THE ACCUSATION, which it never did.
+    --
+    -- This latched for the life of the process. So an operator who did
+    -- exactly what the report asked -- GRANT INSERT, UPDATE, DELETE, or
+    -- import sql/install.sql -- pressed Money owed again and was told it was
+    -- still broken. They either restart the server for nothing, or decide the
+    -- money screen lies; and the next time it is right about a real cash debt
+    -- they will not act on it.
+    --
+    -- Said once in each direction, the same shape server/util.lua uses to
+    -- clear its own no-database warning when oxmysql comes back.
+    if answer ~= nil then
+        if unpaidWriteRefused then
+            unpaidWriteRefused = false
+            ArenaLog('betting: the unpaid ledger is being written to the database again -- '
+                .. 'whatever was refusing those writes has been fixed.')
+        end
+        return
+    end
+
+    if unpaidWriteRefused then return end
 
     -- A NIL ANSWER IS ONLY A REFUSAL WHEN THERE WAS SOMETHING TO REFUSE IT.
     -- ArenaDb calls back with nil on every path that does not reach oxmysql
@@ -641,6 +661,16 @@ local mirrorThrew = false
 -- ======================================================================
 local pendingAdds = {}
 local pendingAddCount = 0
+
+--- HOW MANY OWED ROWS ARE STILL ONLY IN MEMORY.
+---
+--- Read by OwedReport so its durability line can stop covering them over.
+--- BELOW the counter on purpose: written above it this reads a nil global
+--- instead of the upvalue, and always answers 0.
+--- @return integer
+function ArenaBetting.PendingUnpaidWrites()
+    return pendingAddCount
+end
 local PENDING_ADD_LIMIT = 500
 
 -- ======================================================================
@@ -3139,6 +3169,22 @@ function ArenaBetting.OwedReport()
 
     if durable then
         say('  This ledger is written to crimson_arena_unpaid, so a restart does not forget it.')
+
+        -- EXCEPT THE ONES STILL IN THE AIR, which that sentence covered over.
+        --
+        -- `durable` says the table is writable; it does not say every debt
+        -- above has landed in it. Rows queued while oxmysql was away are
+        -- counted in pendingAddCount and are in memory only -- so an operator
+        -- reading "a restart does not forget it", which is precisely what
+        -- somebody about to restart a server that owes money reads, was told
+        -- the restart was safe for a debt the code already knew had not
+        -- reached the table.
+        local pending = ArenaBetting.PendingUnpaidWrites and ArenaBetting.PendingUnpaidWrites() or 0
+        if pending > 0 then
+            say('  EXCEPT %d of them, which have not reached the table yet and ARE forgotten by a '
+                .. 'restart. They are queued and will be written as soon as the database keeps up.',
+                pending)
+        end
     elseif Config.Database.enabled ~= true then
         say('  Config.Database.enabled is off, so this is held in memory for this run only and a '
             .. 'restart forgets it.')

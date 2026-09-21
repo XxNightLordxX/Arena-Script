@@ -23,7 +23,19 @@ local UNARMED = joaat('WEAPON_UNARMED')
 
 local BLIP_REFRESH_MS = 500
 
-local BLIP_FALLBACK_COLOR = 1
+--- THE COLOUR FOR A SIDE THAT COULD NOT BE RESOLVED, and it must not be a
+--- colour a real side uses.
+---
+--- THIS WAS 1, WHICH IS CRIMSON'S OWN. So any side whose blipColor was
+--- absent, non-numeric, or simply typed as 1 by an operator adding a team was
+--- drawn in crimson's red -- and a crimson player then saw red dots for their
+--- own side and red dots for the enemy, same sprite, same size. The map stops
+--- distinguishing friend from foe with nothing said anywhere.
+---
+--- 40 is grey in GTA's blip palette and no shipped side uses it (crimson 1,
+--- ash 3, bone 5, ember 17), so an unresolvable side now reads as "unknown"
+--- rather than as somebody. Arena.ValidateConfig complains about the cause.
+local BLIP_FALLBACK_COLOR = 40
 
 local currentMatch
 local matchLive = false
@@ -1525,9 +1537,36 @@ local function createBlipOn(ped, color, name)
     return blip
 end
 
+--- WHETHER THE HANDLE WE STORED IS STILL OUR OWN BLIP, which DoesBlipExist
+--- alone cannot answer.
+---
+--- AddBlipForEntity blips are destroyed by the ENGINE, silently, when the ped
+--- they are attached to goes away -- and that happens routinely mid-round
+--- while the scoreboard still lists the player: a fighter who leaves, is
+--- eliminated and sent home, or disconnects leaves this client's routing
+--- bucket and their ped is deleted here at once, whereas the board is pushed
+--- once a second and this loop runs every 500ms at best.
+---
+--- GTA HANDS BLIP HANDLES OUT OF A POOL AND REUSES THEM. So the number we
+--- kept can come back as somebody else's blip -- another resource's waypoint,
+--- a job marker -- and then two things go wrong at once: DoesBlipExist says
+--- true, so this file never redraws the teammate (who is simply missing from
+--- the map for the rest of the round), and removeAllPlayerBlips deletes a
+--- blip that was never ours.
+---
+--- Comparing the entity the blip is attached to is the only check that can
+--- tell "my blip" from "a blip that happens to have my old number".
+--- @return boolean
+local function blipIsOurs(entry)
+    if type(entry) ~= 'table' or not entry.blip then return false end
+    if not DoesBlipExist(entry.blip) then return false end
+    if type(GetBlipInfoIdEntityIndex) ~= 'function' then return true end
+    return GetBlipInfoIdEntityIndex(entry.blip) == entry.ped
+end
+
 local function removePlayerBlip(serverId)
-    local blip = playerBlips[serverId]
-    if blip and DoesBlipExist(blip) then RemoveBlip(blip) end
+    local entry = playerBlips[serverId]
+    if blipIsOurs(entry) then RemoveBlip(entry.blip) end
     playerBlips[serverId] = nil
 end
 
@@ -1826,14 +1865,20 @@ local function refreshBlips(includeEnemies)
     end
 
     for serverId, want in pairs(wanted) do
-        if playerBlips[serverId] and not DoesBlipExist(playerBlips[serverId]) then
+        -- A HANDLE THAT IS NO LONGER OUR BLIP IS DROPPED, not trusted. See
+        -- blipIsOurs: DoesBlipExist on its own answers true for a recycled
+        -- handle, which left the teammate undrawn for the rest of the round.
+        if playerBlips[serverId] and not blipIsOurs(playerBlips[serverId]) then
             playerBlips[serverId] = nil
         end
 
         if not playerBlips[serverId] then
             local ped = pedForServerId(serverId)
             if ped then
-                playerBlips[serverId] = createBlipOn(ped, want.color, want.name)
+                playerBlips[serverId] = {
+                    blip = createBlipOn(ped, want.color, want.name),
+                    ped = ped,
+                }
             end
         end
     end
@@ -1870,7 +1915,12 @@ end
 local radarForMatch = nil
 
 local function radarOn()
-    if radarConfig().allowChoose == false then return radarConfig().defaultOn == true end
+    -- `~= true`, THE WAY Arena.ResolveRadar READS IT. This was `== false`,
+    -- and the resolver that actually decides the value is not -- so on a
+    -- config where allowChoose is anything but an exact boolean (the line
+    -- deleted, a 1, a 'yes') this client trusted a host choice the server had
+    -- already thrown away. Three readers of one field, now reading it alike.
+    if radarConfig().allowChoose ~= true then return radarConfig().defaultOn == true end
     return radarForMatch == true
 end
 
@@ -2777,6 +2827,24 @@ RegisterNetEvent('crimson_arena:client:exitArena', function(data)
 end)
 
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
+    -- A BOARD FROM SOMEBODY ELSE'S ROUND IS NOT DRAWN, which used to rest
+    -- entirely on the server routing it correctly.
+    --
+    -- This assigned data.scoreboard with no check of any kind, and the
+    -- payload carried no match id to check. It is the same identity question
+    -- enterArena and the respawn path already ask with matchToken.
+    --
+    -- ONLY WHEN WE ARE IN A ROUND AND THE BOARD NAMES A DIFFERENT ONE. A
+    -- SPECTATOR has no currentMatch and is sent the board of the match they
+    -- are watching on purpose -- rejecting it would blank the HUD they opened
+    -- the camera for -- and their roster draws no blips anyway, because
+    -- blipColorFor returns nil without a currentMatch.
+    if currentMatch and type(data) == 'table'
+        and data.matchId ~= nil and data.matchId ~= currentMatch.id
+    then
+        return
+    end
+
     roster = (type(data) == 'table' and type(data.scoreboard) == 'table') and data.scoreboard or {}
 
     -- THE MOMENT THE ANSWER CHANGES, rather than up to a second after it.

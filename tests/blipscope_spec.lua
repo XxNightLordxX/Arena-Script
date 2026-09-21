@@ -154,6 +154,14 @@ local function newFixture(mutate)
         end,
         RemoveBlip = function(handle) f.blips[handle] = nil end,
         DoesBlipExist = function(handle) return f.blips[handle] ~= nil end,
+        -- WHICH ENTITY A BLIP IS ACTUALLY ON. The engine frees an entity blip
+        -- silently when its ped goes, and hands the NUMBER out again -- so
+        -- DoesBlipExist alone answers true for somebody else's blip. Without
+        -- this stub the resource's own guard falls through to its "native not
+        -- present" fallback and nothing here exercises it.
+        GetBlipInfoIdEntityIndex = function(handle)
+            return f.blips[handle] and f.blips[handle].ped or 0
+        end,
         -- EVERY PROPERTY createBlipOn SETS IS RECORDED, not just the colour.
         --
         -- These were no-ops, and an audit measured what that cost: a blip
@@ -312,8 +320,18 @@ local function newFixture(mutate)
     end
 
     --- The scoreboard, delivered the way the server delivers it.
-    function f.hud(rows)
-        f.fire('crimson_arena:client:matchHud', { visible = true, scoreboard = rows or scoreboard() })
+    --- @param rows table? -- the board; defaults to this client's own
+    --- @param matchId string? -- whose round it is; defaults to this one's
+    function f.hud(rows, matchId)
+        f.fire('crimson_arena:client:matchHud', {
+            visible = true,
+            scoreboard = rows or scoreboard(),
+            -- THIS CLIENT'S OWN ROUND BY DEFAULT. The handler now drops a
+            -- board that names a DIFFERENT match, so a fixture that always
+            -- said 'match-1' would silently blank the map for any test that
+            -- entered another one.
+            matchId = matchId or f.matchId or 'match-1',
+        })
     end
 
     --- Into the arena as a fighter, then live, which is what starts the loop.
@@ -329,8 +347,9 @@ local function newFixture(mutate)
             loadout = { weapons = {}, health = 200, armor = 0 },
         }
         for key, value in pairs(overrides or {}) do payload[key] = value end
+        f.matchId = payload.matchId
         f.fire('crimson_arena:client:enterArena', payload)
-        f.fire('crimson_arena:client:matchLive', { matchId = 'match-1' })
+        f.fire('crimson_arena:client:matchLive', { matchId = payload.matchId })
     end
 
     --- Which server ids currently carry a blip.
@@ -777,19 +796,152 @@ t.test('and a scoreboard for a match this client is not in is not drawn', functi
     -- is handed would put the other arena's fighters on the map the moment
     -- one message went to the wrong bucket. Nobody would report it -- they
     -- would just start winning.
+    --
+    -- THIS TEST COULD NOT FAIL FOR TWO SEPARATE REASONS, and an audit found
+    -- both. It passed the foreign ids through `scoreboard({ [7] = ... })`,
+    -- whose helper only applies an override to a row it ALREADY builds --
+    -- ids 1,2,3,4 -- so 7 and 8 were silently dropped and the client was
+    -- handed its own board. And even delivered properly they were not in
+    -- `f.streamed`, so pedForServerId answered nil before the team test was
+    -- ever reached. Both are fixed here: a literal board, and both ids
+    -- streamed, so the assertion has to be carried by a real check.
+    --
+    -- There was no real check. The client assigned `roster = data.scoreboard`
+    -- unconditionally and the payload carried no match id to test it against.
+    -- Both sides are fixed now -- hudFor names its match and the handler
+    -- drops a board from a different one -- and this is what holds it.
     local f = newFixture()
     f.enterLive()
+    f.streamed[7] = true
+    f.streamed[8] = true
 
-    -- Deliver a roster of ids this client shares no match with.
-    f.hud(scoreboard({
-        [7] = { team = 'crimson', alive = true },
-        [8] = { team = 'ash', alive = true },
-    }))
+    f.hud({
+        { id = 7, name = 'Stranger',   alive = true, team = 'crimson' },
+        { id = 8, name = 'Stranger 2', alive = true, team = 'ash' },
+    }, 'match-2')
     f.step()
 
     local drawn = f.blipped()
-    t.isNil(drawn[7], 'a fighter from another roster was blipped')
-    t.isNil(drawn[8], 'a fighter from another roster was blipped')
+    t.isNil(drawn[7],
+        'a fighter from ANOTHER match was blipped -- and 7 is on this client\'s own team key, '
+        .. 'so it is the teammate branch that drew them')
+    t.isNil(drawn[8], 'a fighter from another match was blipped')
+end)
+
+t.test('A SIDE WITH NO COLOUR IS NOT DRAWN IN ANOTHER SIDE\'S', function()
+    -- THE FALLBACK USED TO BE 1, WHICH IS CRIMSON'S OWN NUMBER. So a side
+    -- whose blipColor was missing, non-numeric, or simply typed as 1 by an
+    -- operator adding a team was drawn in crimson's red -- and a crimson
+    -- player then saw red dots for their own side and red dots for the enemy,
+    -- same sprite, same size. The map stops saying friend or foe at all, and
+    -- nothing anywhere mentions it.
+    --
+    -- 40 is grey and no shipped side uses it (crimson 1, ash 3, bone 5,
+    -- ember 17), so an unresolvable side now reads as "unknown".
+    local f = newFixture(function(config)
+        config.Teams.list.ash.blipColor = nil
+    end)
+    f.enterLive({ radar = true })
+    f.hud()
+    f.step()
+
+    local byPlayer = {}
+    for _, blip in pairs(f.blips) do byPlayer[blip.ped - 1000] = blip.colour end
+
+    t.equals(byPlayer[MATE], 1, 'the teammate lost their own side\'s colour')
+    t.isTrue(byPlayer[FOE] ~= nil, 'the enemy was not lit, so this proves nothing')
+    t.isTrue(byPlayer[FOE] ~= byPlayer[MATE],
+        'a side with no colour is drawn in the SAME colour as this player\'s own side -- '
+        .. 'friend and foe are the same dot')
+end)
+
+t.test('A RECYCLED BLIP HANDLE DOES NOT COST A TEAM-MATE THEIR DOT', function()
+    -- AddBlipForEntity blips are destroyed by the ENGINE when their ped goes,
+    -- and that happens mid-round while the board still lists the player: a
+    -- fighter who leaves or is eliminated drops out of this client's routing
+    -- bucket and their ped is deleted here at once, while the board is pushed
+    -- once a second and this loop runs every 500ms at best.
+    --
+    -- GTA HANDS BLIP NUMBERS OUT OF A POOL AND REUSES THEM. The stored handle
+    -- can therefore come back as somebody else's blip -- another resource's
+    -- waypoint, a job marker. DoesBlipExist says true, so the old code never
+    -- redrew the team-mate: they were simply missing from the map for the
+    -- rest of the round, with nothing logged and nothing to notice.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    local before = nil
+    for handle, blip in pairs(f.blips) do
+        if blip.ped == 1000 + MATE then before = handle end
+    end
+    t.isNotNil(before, 'the teammate was never blipped, so this proves nothing')
+
+    -- THE ENGINE FREES OUR BLIP AND HANDS THE NUMBER TO SOMETHING ELSE.
+    -- The handle still exists; it is just not ours any more.
+    f.blips[before].ped = 999999
+
+    f.step()
+
+    local redrawn = false
+    for handle, blip in pairs(f.blips) do
+        if blip.ped == 1000 + MATE and handle ~= before then redrawn = true end
+    end
+    t.isTrue(redrawn,
+        'the teammate was not redrawn -- the resource still believes a recycled handle is its '
+        .. 'own blip, so that player is off the map for the rest of the round')
+end)
+
+t.test('and leaving the round does not delete a blip that is no longer ours', function()
+    -- THE OTHER HALF. removeAllPlayerBlips walked the stored handles and
+    -- deleted them on the way out; a recycled number means deleting another
+    -- resource's blip, which is the same bug pointing outward.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    local stolen = nil
+    for handle, blip in pairs(f.blips) do
+        if blip.ped == 1000 + MATE then stolen = handle end
+    end
+    t.isNotNil(stolen, 'the teammate was never blipped, so this proves nothing')
+
+    f.blips[stolen].ped = 999999      -- somebody else owns this number now
+
+    f.fire('crimson_arena:client:exitArena', { returnCoords = { x = 0.0, y = 0.0, z = 0.0, w = 0.0 } })
+
+    t.isNotNil(f.blips[stolen],
+        'leaving the arena deleted a blip belonging to another resource')
+end)
+
+t.test('and the board for THIS match still is, which is the control', function()
+    -- Without this the test above passes against a handler that rejects
+    -- every board it is ever sent, which would blank the map for everybody.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    f.step()
+
+    t.isTrue(f.blipped()[MATE] == true,
+        'the client rejected its OWN board -- nobody is on the map at all')
+end)
+
+t.test('and a SPECTATOR is still sent a board, because they have no match of their own', function()
+    -- The guard must be "we are in a round and this board is another one",
+    -- not "this board is not ours". A watcher has no currentMatch and is sent
+    -- the board of the match they are watching on purpose; rejecting it would
+    -- blank the HUD they opened the camera for. Their roster draws no blips
+    -- regardless, because blipColorFor returns nil without a currentMatch.
+    local f = newFixture()
+    f.fire('crimson_arena:client:matchHud', {
+        visible = true,
+        scoreboard = scoreboard(),
+        matchId = 'match-2',
+    })
+
+    t.equals(#f.blipped(), 0, 'a watcher with no match of their own drew blips')
 end)
 
 -- ======================================================================

@@ -41,6 +41,7 @@ local function newFixture(dispatchConfig)
     local metadata = {}            -- [src] = { key = value }, as the framework holds it
     local metaWrites = {}          -- every SetMetaData, in order
     local playerObjects = {}       -- [src] = a framework player, or absent
+    local connectedNames = {}      -- [src] = the name the SERVER has, or absent
     local gameClock = 0            -- ms, advanced only by Wait()
 
     local env = Sandbox.newEnv({
@@ -122,6 +123,18 @@ local function newFixture(dispatchConfig)
         -- record the arena can reach -- so the fixture has to be able to hold
         -- one and report what was written to it.
         ArenaGetPlayer = function(src) return playerObjects[src] end,
+
+        -- AND WHETHER THE SERVER ITSELF SAYS SOMEBODY IS ON THAT ID, which
+        -- is a different question from whether the FRAMEWORK will hand over
+        -- their record -- and the fixture could not tell them apart because
+        -- it only modelled the second.
+        --
+        -- ReviveReport needs both: an id nobody holds and an id whose
+        -- framework is mid-restart both make ArenaGetPlayer answer nil, and
+        -- reporting the second as the first sends an operator to re-check an
+        -- id that was correct. givePlayer sets both; givePlayerName sets only
+        -- this one, which is exactly the restarting-framework case.
+        GetPlayerName = function(src) return connectedNames[src] end,
     })
 
     Sandbox.loadInto('../Crimson-Arena/config.lua', env)
@@ -167,6 +180,10 @@ local function newFixture(dispatchConfig)
     --- @param values table
     --- @param withGetter boolean? -- false models a build with no GetMetaData
     local function givePlayer(src, values, withGetter)
+        -- A REAL PLAYER IS BOTH: the server has a name for them AND the
+        -- framework has a record. Setting only the second is the
+        -- framework-restarting case, which givePlayerName below models.
+        connectedNames[src] = ('Fighter %d'):format(src)
         metadata[src] = values
         playerObjects[src] = {
             Functions = {
@@ -181,10 +198,18 @@ local function newFixture(dispatchConfig)
         }
     end
 
+    --- SOMEBODY IS ON THAT ID, BUT THE FRAMEWORK WILL NOT ANSWER -- which is
+    --- what qbx_core mid-restart looks like, and is routine precisely while
+    --- an operator is wiring up a medical script.
+    local function givePlayerName(src)
+        connectedNames[src] = ('Fighter %d'):format(src)
+    end
+
     return {
         env = env,
         D = env.ArenaDispatch,
         givePlayer = givePlayer,
+        givePlayerName = givePlayerName,
         --- Something OTHER than the arena writing to the framework object --
         --- a medical script putting a player back down, which is exactly
         --- what the hold exists to answer. Deliberately not routed through
@@ -1248,6 +1273,43 @@ t.test('and says the opposite when the withdrawal half really does run', functio
         'a player who IS in a round was told the withdrawal half did not run')
     t.notContains(text, 'NOT exercised by this press',
         'the report said both that it ran and that it did not')
+end)
+
+t.test('AND A FRAMEWORK THAT WILL NOT ANSWER IS NOT REPORTED AS A STALE ID', function()
+    -- The guard asked ArenaGetPlayer alone, which answers nil for two
+    -- completely different servers: an id nobody holds, and an id somebody IS
+    -- on whose framework will not hand over a record -- qbx_core mid-restart,
+    -- most obviously, which is routine while wiring up a medical script and
+    -- is therefore exactly when this tool gets pressed.
+    --
+    -- Every press then reported a stale id and sent the operator back to
+    -- their player list to re-check an id that was correct, with nothing
+    -- anywhere saying why. That is the opposite direction to the bug the
+    -- guard was added for: it turns a working id into a false alarm.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayerName(7)          -- on the server, but no framework record
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'would not hand over',
+        'a framework that is merely restarting was reported as nobody being on that id')
+    t.notContains(text, 'check the id on your player list',
+        'the operator was sent to re-check an id that is correct')
+    t.equals(#firedFor(f, 'mymedical:revive'), 0,
+        'a revive was fired although nothing could be read about the target')
+end)
+
+t.test('and an id NOBODY is on still reads as a stale id, which is the control', function()
+    -- Without this the test above passes against a guard that never reports
+    -- a stale id at all -- and the stale id is the case it was written for.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'nobody on this server is holding server id 7',
+        'a genuinely stale id stopped being reported as one')
+    t.notContains(text, 'would not hand over',
+        'an empty slot was blamed on the framework')
 end)
 
 t.test('and a target that is not a server id is refused rather than revived', function()

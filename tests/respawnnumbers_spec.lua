@@ -315,6 +315,27 @@ end
 -- THE SCOREBOARD HEADER
 -- ======================================================================
 
+t.test('THE BOARD NAMES THE ROUND IT IS FOR, so a client can refuse a stranger\'s', function()
+    -- The client assigned `roster = data.scoreboard` with no check of any
+    -- kind, and this payload carried nothing to check it against -- so the
+    -- only thing standing between another arena's fighters appearing on your
+    -- map was the routing being perfect. blipscope_spec has a test named for
+    -- exactly that risk and an audit found it could not fail.
+    --
+    -- The client-side half is held in blipscope_spec. THIS is the other half,
+    -- and it needs to live here: that file's fixture fires matchHud itself
+    -- and supplies its own id, so deleting `matchId = match.id` from the real
+    -- payload passed all 53 of its tests. Measured, not assumed.
+    local s, matchId = liveRound()
+    s.step()
+
+    local hud = s.lastPayload('matchHud', 1)
+    t.isNotNil(hud, 'no scoreboard was pushed at all')
+    t.equals(hud.matchId, matchId,
+        'the scoreboard does not say which round it belongs to, so a client cannot tell a '
+        .. 'stranger\'s board from its own')
+end)
+
 t.test('a player waiting to respawn is still COUNTED in the header', function()
     local s, matchId = liveRound()
     knockDown(s, matchId, 2, 1)

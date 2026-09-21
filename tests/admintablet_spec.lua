@@ -1419,6 +1419,65 @@ t.test('OPENING HOURS: an override names no schedule time, because none of them 
         'a schedule opening time was quoted while an admin override holds the doors shut')
 end)
 
+t.test('and an offset the code IGNORES is not reported as in force', function()
+    -- ArenaHoursNow shifts by 0 for anything outside -14..14. This line
+    -- printed the RAW config value, so an operator who typed 500 was told
+    -- that offset was in force while the arena clock on the very next line
+    -- showed no shift -- on the one screen built to diagnose a timezone.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.offsetHours = 500
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'IGNORED',
+        'an out-of-range offset was reported as though the doors were going by it')
+    t.contains(said, '+0', 'the report does not say what offset is actually applied')
+end)
+
+t.test('and an in-range offset is reported plainly, which is the control', function()
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.offsetHours = -5
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '-5', 'a usable offset was not reported')
+    t.notContains(said, 'IGNORED', 'a usable offset was reported as ignored')
+end)
+
+t.test('and windows that were all thrown away do not read as "no windows written"', function()
+    -- Both printed "(none -- open at every hour)". One is an operator who
+    -- wrote no schedule; the other wrote windows and had every one rejected
+    -- -- and being told the arena is open at every hour, under a heading
+    -- reading ON, invites them to believe the hours are being enforced.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { open = 'nonsense', close = 'also nonsense' } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'none usable',
+        'a schedule whose every window was thrown away reads as a server with no schedule')
+    t.contains(said, 'NOTHING is being refused',
+        'the report did not say that the hours are not actually being enforced')
+end)
+
+t.test('and a server with no windows at all still says so plainly', function()
+    -- The control for the test above: without it, that one passes against a
+    -- report that cries "none usable" on every server that never wrote one.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.windows = {}
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'open at every hour', 'a server with no schedule lost its plain answer')
+    t.notContains(said, 'none usable',
+        'a server that wrote no windows was told its windows were thrown away')
+end)
+
 t.test('and with NO override the schedule time is still named, which is the control', function()
     -- Without this the test above passes against a report that never names a
     -- time at all -- and naming the next change is the whole reason an

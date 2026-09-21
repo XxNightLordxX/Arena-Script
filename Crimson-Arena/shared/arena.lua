@@ -3369,12 +3369,35 @@ function Arena.ValidateConfig()
         end
     end
 
+    -- AND THE COLOUR EACH SIDE IS DRAWN IN, which nothing checked at all.
+    --
+    -- The map is the only place a player reads "friend" or "foe" at a glance,
+    -- and it reads it from one number. A side whose blipColor is missing or
+    -- non-numeric falls back to a fixed colour; two sides sharing one number
+    -- are the same colour as each other. Either way a team round is played on
+    -- a map that has stopped distinguishing anybody, and the operator is told
+    -- nothing -- this loop already walked every side to check `order` and
+    -- looked straight past it.
+    local seenColour = {}
     for key, team in pairs(Config.Teams.list or {}) do
         if type(team) == 'table' and team.enabled ~= false
             and team.order ~= nil and Arena.ToInt(team.order) == nil
         then
             complain(('Config.Teams.list["%s"].order is a %s, not a number -- that team has fallen back to the end of the list.')
                 :format(tostring(key), type(team.order)))
+        end
+
+        if type(team) == 'table' and team.enabled ~= false then
+            local colour = Arena.ToInt(team.blipColor)
+            if colour == nil then
+                complain(('Config.Teams.list["%s"].blipColor is %s, not a number -- that side is drawn in the fallback colour, so it cannot be told apart from any other side that is.')
+                    :format(tostring(key), team.blipColor == nil and 'missing' or ('a ' .. type(team.blipColor))))
+            elseif seenColour[colour] then
+                complain(('Config.Teams.list["%s"] and ["%s"] are both drawn in blip colour %d -- on the map a team round between them has no friend-or-foe at all.')
+                    :format(tostring(seenColour[colour]), tostring(key), colour))
+            else
+                seenColour[colour] = key
+            end
         end
     end
 

@@ -612,6 +612,36 @@ function ArenaDispatch.ReviveReport(target)
             :format(target),
     }
 
+    -- WHETHER THE SECOND HALF OF THE REVIVE IS ABOUT TO DO ANYTHING, read
+    -- BEFORE Revive runs, because Revive's own last act is what clears it.
+    --
+    -- THE FIRST LINE ABOVE PROMISES "everything a real match would do", and
+    -- for this tool's PRIMARY use it has never been true. Revive does two
+    -- things: it clears the down state, and it calls RetractCallsFor to
+    -- withdraw any dispatch call already filed. RetractCallsFor opens with a
+    -- gate -- not in a match, and did not just leave one, and it withdraws
+    -- nothing. This tool exists precisely to reach somebody who is NOT in a
+    -- match (main.lua says so where the button is declared), which is exactly
+    -- the condition that gate refuses.
+    --
+    -- So for the case it was built for, half of what it claims to be testing
+    -- never ran, and none of the three lines it prints said so. The only
+    -- trace is an ArenaDebug line that needs Config.Debug on -- the
+    -- operator's own log shows it: "retract: 3 is not in a match and did not
+    -- just leave one -- withdrew nothing."
+    --
+    -- THE GATE IS RIGHT AND IS NOT TOUCHED. A blind sweep would cancel a real
+    -- ambulance call for a civilian. This only says which half ran, so an
+    -- operator wiring up dispatch -- "it's not even recalling the alert for a
+    -- person down" is the report this layer was written for -- does not read
+    -- a clean result and stop looking at the half that was never exercised.
+    -- THE SAME TWO READS RetractCallsFor'S OWN GATE MAKES, spelled the same
+    -- way so the answer printed here and the decision taken there cannot
+    -- drift apart. See that gate for why recently-left counts.
+    local left = leftAt[target]
+    local retractRuns = not (active[target] == nil
+        and (left == nil or os.time() - left > RETRACT_GRACE_S))
+
     ArenaDispatch.Revive(target)
 
     local told = 0
@@ -627,6 +657,21 @@ function ArenaDispatch.ReviveReport(target)
     else
         lines[#lines + 1] = ('done. %d\'s down metadata was cleared. No medical script was detected on this box, so none was asked to revive them.')
             :format(target)
+    end
+
+    -- WHICH HALF OF THE REVIVE ACTUALLY RAN. Said plainly and without alarm:
+    -- the gate below is correct, and a line in capitals here would be a false
+    -- alarm about working code. It is a statement of what was and was not
+    -- exercised, so the operator knows what this press did and did not prove.
+    if retractRuns then
+        lines[#lines + 1] = ('the call-withdrawal half ran too: %d was in a round, or had just '
+            .. 'left one, so any dispatch call already filed for them was withdrawn.'):format(target)
+    else
+        lines[#lines + 1] = ('NOT exercised by this press: the call-withdrawal half. %d is not in '
+            .. 'a round and did not just leave one, so there was no call of theirs to withdraw '
+            .. 'and that code did not run. The revive above is real; this says only that the '
+            .. 'withdrawal is still untested. To exercise it, run this against somebody inside a '
+            .. 'live match.'):format(target)
     end
 
     return lines
@@ -1360,7 +1405,35 @@ function ArenaDispatch.IsolationReport()
         return lines
     end
 
-    local occupied, stranded, counted = {}, 0, 0
+    -- WHERE THE ARENA'S OWN NUMBERS START, read the same way GetBucket reads
+    -- them so the report and the allocator cannot drift apart.
+    --
+    -- THIS REPORT USED TO CALL EVERY NON-ZERO BUCKET ITS OWN. The test was
+    -- `bucket ~= 0 and not held[player]`, which treats bucket 0 as the only
+    -- innocent value on the server -- so a player a HOUSING, apartment,
+    -- interior, heist, job or admin script had routed was printed as
+    -- "STRANDED: the arena has NO RECORD of putting them there", under a
+    -- closing line calling it "a defect in this resource and worth
+    -- reporting", with a remedy telling the operator to make them reconnect.
+    --
+    -- ON A QBOX SERVER THAT IS AN ORDINARY TUESDAY. One player indoors is
+    -- enough. The operator either files a bug against a resource that did
+    -- nothing, or follows the printed remedy and drops somebody out of the
+    -- apartment or heist another resource deliberately put them in. A report
+    -- that damages the server it is diagnosing is worse than no report.
+    --
+    -- EnterBucket ALREADY MAKES THIS DISTINCTION two hundred lines up --
+    -- bucketInUse(previous) asks whether the bucket a player was found in is
+    -- one of OURS, precisely because it may not be. The roll-call was the one
+    -- place that assumed it always was.
+    --
+    -- THE RESIDUAL IS NAMED RATHER THAN HIDDEN: a housing script that happens
+    -- to allocate at or above firstBucket still reads as the arena's. That is
+    -- why the lines below print the range instead of asserting a defect --
+    -- an operator who can see the number can move firstBucket out of the way.
+    local arenaFirst = math.max(1, Arena.ToInt(isolationConfig().firstBucket) or DEFAULT_FIRST_BUCKET)
+
+    local occupied, stranded, elsewhere, counted = {}, 0, 0, 0
 
     for _, id in ipairs(list) do
         local player = Arena.ToInt(id)
@@ -1373,9 +1446,17 @@ function ArenaDispatch.IsolationReport()
                 and ArenaPlayerName(player) or tostring(player)
             local note = ''
             if bucket ~= 0 and not held[player] then
-                stranded = stranded + 1
-                note = '  <-- STRANDED: the arena has NO RECORD of putting them there, so nothing '
-                    .. 'here will ever take them out. They can be freed by reconnecting.'
+                if bucket >= arenaFirst then
+                    stranded = stranded + 1
+                    note = ('  <-- STRANDED: that is inside the arena\'s own range (%d and up) and '
+                        .. 'the arena has NO RECORD of putting them there, so nothing here will '
+                        .. 'ever take them out. They can be freed by reconnecting.'):format(arenaFirst)
+                else
+                    elsewhere = elsewhere + 1
+                    note = ('  <-- not the arena\'s: it allocates from %d up, so another resource '
+                        .. 'put them there and it is that resource that takes them out.')
+                        :format(arenaFirst)
+                end
             end
 
             say('  %s (%s) is in bucket %d%s', tostring(player), name, bucket, note)
@@ -1399,9 +1480,21 @@ function ArenaDispatch.IsolationReport()
     end
 
     if stranded > 0 then
-        say('%d player(s) are STRANDED in an arena bucket with no record. '
-            .. 'That is a defect in this resource and worth reporting -- the usual cause is the '
-            .. 'resource being restarted while they were in a round.', stranded)
+        say('%d player(s) are STRANDED in a bucket in the arena\'s own range (%d and up) with no '
+            .. 'record. That is a defect in this resource and worth reporting -- the usual cause '
+            .. 'is the resource being restarted while they were in a round.', stranded, arenaFirst)
+    end
+
+    -- COUNTED AND NAMED, BUT NOT BLAMED. These are ordinary on a server that
+    -- runs housing, interiors or per-job worlds, and saying nothing at all
+    -- about them would leave an operator chasing "everyone else is invisible"
+    -- with no idea a bucket split even existed.
+    if elsewhere > 0 then
+        say('%d player(s) are in a bucket BELOW the arena\'s range, which is somebody else\'s '
+            .. 'instancing -- housing, an interior, a heist or an admin tool. Nothing is wrong '
+            .. 'with the arena and reconnecting them would only take them out of whatever put '
+            .. 'them there. If one of those really is the arena\'s, its numbers overlap '
+            .. 'Config.Dispatch.isolation.firstBucket and that is the setting to move.', elsewhere)
     end
 
     return lines

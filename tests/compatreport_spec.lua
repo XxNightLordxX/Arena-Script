@@ -181,6 +181,52 @@ t.test('and an integration that is OFF, or that could not be read, is NOT credit
         'a resource nothing could be established about was reported as handled')
 end)
 
+t.test('and the isolation line does not say NOTHING is wired while a row says otherwise', function()
+    -- THE SECOND HALF OF THE SAME SELF-CONTRADICTION, which survived the
+    -- first fix. `wired` is an ALL, not an ANY -- somethingWired returns
+    -- false the moment ONE detected resource is unaccounted for -- so on the
+    -- operator's real box the report printed, in this order:
+    --
+    --   sc-dispatch  police+EMS  muted by its own integration -- ...
+    --   Isolation is on ... and nothing here is confirmed wired
+    --   Hooks configured: ... retract via exports.sc-dispatch:ClearNotification
+    --   sc-dispatch is running with Integrations.CrimsonArena = true ...
+    --
+    -- An operator cannot act on that. The safe reading sends them back to
+    -- re-check an integration that is already working and already credited
+    -- four lines away.
+    local f = newReport({
+        running = { ['sc-dispatch'] = true, ['sc-ambulance'] = true },
+        integrations = {
+            ['sc-dispatch'] = { muted = true, note = 'muted by its own integration' },
+        },
+    })
+    local said = f.text()
+
+    t.contains(said, 'muted by its own integration', 'the confirmed row is missing, so this proves nothing')
+    t.notContains(said, 'nothing here is confirmed wired',
+        'the isolation line denied a mute the table confirms three lines above it')
+    t.contains(said, 'not everything here is confirmed wired',
+        'the line did not say which of the two it actually means')
+    -- AND THE PASTE BLOCK STAYS, because sc-ambulance really does need it.
+    t.contains(said, 'Paste at the top of whatever sends the alert',
+        'an unguarded ambulance script stopped being given the line it needs')
+end)
+
+t.test('and it still says NOTHING where nothing really is confirmed', function()
+    -- THE CONTROL, and the direction that must never drift. Softening
+    -- "nothing" to "not everything" on a box with no confirmed row would be
+    -- weaker than the truth -- an operator told part of it works stops
+    -- looking at the part that does not.
+    local f = newReport({ running = { ['sc-dispatch'] = true, ['sc-ambulance'] = true } })
+    local said = f.text()
+
+    t.contains(said, 'nothing here is confirmed wired',
+        'a box with no confirmed row was told part of it was wired')
+    t.notContains(said, 'not everything here is confirmed wired',
+        'a box with no confirmed row was told part of it was wired')
+end)
+
 t.test('and a confirmed mute for ONE resource says nothing about the others', function()
     -- sc-dispatch's switch is sc-dispatch's. sc-police and sc-ambulance raise
     -- their own alerts through their own handlers, and this report's own

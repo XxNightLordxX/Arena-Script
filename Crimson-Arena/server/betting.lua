@@ -3089,7 +3089,38 @@ function ArenaBetting.OwedReport()
     for _, row in pairs(unpaid) do rows[#rows + 1] = row end
     table.sort(rows, function(a, b) return (a.total or 0) > (b.total or 0) end)
 
-    if #rows == 0 then
+    -- HAS THE LEDGER FROM THE LAST RUN ACTUALLY BEEN READ BACK YET?
+    --
+    -- AN EMPTY IN-MEMORY TABLE IS NOT AN EMPTY LEDGER. This report was built
+    -- from `unpaid` alone and never looked at unpaidLoaded. On a server where
+    -- oxmysql starts after this resource -- the README says the order does
+    -- not matter -- loadUnpaid returns as soon as it has ISSUED the SELECT
+    -- and the retry thread then waits UNPAID_RETRY_MS before trying again. So
+    -- there is a window, after oxmysql is up, in which every debt from the
+    -- previous run is sitting in crimson_arena_unpaid and none of it is in
+    -- memory.
+    --
+    -- AND THAT IS EXACTLY WHEN THIS SCREEN GETS OPENED: just after a restart,
+    -- to check the arena did not forget what it owed somebody. It said
+    -- "owes nobody anything" and, in the same breath, accused the operator's
+    -- database of being unwritable -- because unpaidSchemaConfirmed is only
+    -- set by a read that landed. They tell the player there is no debt and go
+    -- and re-grant a database that was fine.
+    --
+    -- ONLY WHERE A READ IS ACTUALLY EXPECTED. With Config.Database.enabled
+    -- off -- the shipped default -- loadUnpaid never runs and unpaidLoaded is
+    -- false for the life of the process, so gating on that flag alone would
+    -- put a permanent "not read back yet" on the majority of installs: a new
+    -- false alarm in place of a correct answer. The durability line below
+    -- already says the right thing there.
+    local awaitingRead = Config.Database.enabled == true and not unpaidLoaded
+
+    if #rows == 0 and awaitingRead then
+        say('owed: nothing is owed IN THIS RUN, but the ledger from before the restart has NOT '
+            .. 'been read back from crimson_arena_unpaid yet -- anything owed from before is not '
+            .. 'in this list. Give it a moment and press again; if it never lands, the database '
+            .. 'user needs SELECT on that table and the real error is on oxmysql\'s console.')
+    elseif #rows == 0 then
         say('owed: the arena owes nobody anything right now.')
     else
         local total = 0
@@ -3114,6 +3145,17 @@ function ArenaBetting.OwedReport()
     elseif not ArenaDbReady(UNPAID_SUBJECT) then
         say('  Config.Database.enabled is on but oxmysql is NOT started, so this is held in memory '
             .. 'for this run only and a restart forgets it.')
+    elseif awaitingRead then
+        -- AND NOT AN ACCUSATION WHILE THE READ IS STILL OUT. The branch below
+        -- tells the operator their table is missing or their grants are
+        -- wrong, and it reaches that verdict through unpaidSchemaConfirmed,
+        -- which only a read that LANDED can set. Before the first successful
+        -- read those two states are indistinguishable from here -- so saying
+        -- the harsher one sends an operator to re-import sql/install.sql over
+        -- a database that was never at fault.
+        say('  Config.Database.enabled is on, but the ledger has not been read back yet, so '
+            .. 'whether it is being saved cannot be told apart from a database that will not '
+            .. 'answer. Press again in a moment.')
     else
         -- THE FOURTH CASE, WHICH HAD NO LINE AND IS THE ONE THAT BITES. The
         -- switch is on, oxmysql is up, and the ledger STILL is not saved:

@@ -503,7 +503,9 @@ local function somethingWired(running, unhandled)
     return hasLiveDisableExport() or hasLiveRetract()
 end
 
-local function isolationLine(wired)
+--- @param wired boolean -- EVERY detected resource is accounted for
+--- @param anyConfirmed boolean -- at least one of them is, but not all
+local function isolationLine(wired, anyConfirmed)
     local isolation = dispatchConfig().isolation
     if type(isolation) ~= 'table' then return nil end
 
@@ -521,6 +523,28 @@ local function isolationLine(wired)
         end
     end
     if not wired then
+        -- "NOTHING" AND "NOT EVERYTHING" ARE DIFFERENT SENTENCES, and saying
+        -- the first where the second is true contradicts the table above.
+        --
+        -- `wired` is an ALL, not an ANY: somethingWired returns false as soon
+        -- as one detected resource is unaccounted for. On a box running
+        -- sc-dispatch, sc-police and sc-ambulance where only sc-dispatch is
+        -- confirmed muted, the report printed -- in this order -- a row
+        -- reading "sc-dispatch ... muted by its own integration", then this
+        -- line saying nothing was confirmed, then a hooks line naming a live
+        -- retract, then a paragraph confirming the integration again.
+        --
+        -- An operator cannot act on that. The safe reading -- believe the
+        -- pessimistic line -- sends them back to re-check an integration that
+        -- is already working and already credited four lines away, which is
+        -- the exact wasted trip this was last fixed to stop.
+        --
+        -- THE PASTE BLOCK BELOW IS STILL RIGHT and is deliberately left
+        -- gated on `wired`: sc-police and sc-ambulance genuinely do need it.
+        -- Only the word "nothing" was wrong.
+        if anyConfirmed then
+            return 'Isolation is on: no OTHER player\'s client can see the fight. An arena player\'s own client still can, and not everything here is confirmed wired -- the rows above say which, and that is what the line below is for.'
+        end
         return 'Isolation is on: no OTHER player\'s client can see the fight. An arena player\'s own client still can, and nothing here is confirmed wired -- that is what the line below is for.'
     end
     return 'Isolation is on: no OTHER player\'s client can see the fight.'
@@ -614,7 +638,17 @@ function ArenaCompat.Report(integrations)
 
     local wired = somethingWired(running, unhandled)
 
-    local isolation = isolationLine(wired)
+    -- AT LEAST ONE ROW ACCOUNTED FOR, which is a different question from
+    -- `wired` and is why it is counted separately rather than derived.
+    --
+    -- DELIBERATELY NOT hasLiveRetract()/hasLiveDisableExport(): a box where
+    -- no row is confirmed but a retract export is configured has nothing
+    -- confirmed reaching a dispatch script, and softening "nothing" to "not
+    -- everything" there would be weaker than the truth -- the one direction
+    -- this whole line must never drift.
+    local confirmedRows = #running - unhandled
+
+    local isolation = isolationLine(wired, confirmedRows > 0)
     if isolation then lines[#lines + 1] = isolation end
 
     if not wired then

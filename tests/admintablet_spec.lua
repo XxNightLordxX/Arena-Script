@@ -1371,6 +1371,67 @@ end)
 --- set out of the file means the next tool is covered the moment it exists,
 --- and a renamed one fails here rather than silently dropping its coverage.
 --- @return string[]
+--- The 'hours' tool's lines, as one block of text.
+local function hoursText(s)
+    s.fire('adminTool', 1, { tool = 'hours' })
+    return table.concat(((s.lastNamed('adminTool') or {}).payload or {}).lines or {}, '\n')
+end
+
+t.test('OPENING HOURS: an override names no schedule time, because none of them govern', function()
+    -- THE and/or FALLTHROUGH, AND WHAT IT TOLD AN ADMIN.
+    --
+    -- The line was `hours.open and hours.snapshot.closesAt or
+    -- hours.snapshot.opensAt`. closesAt is set only while the SCHEDULE says
+    -- open, opensAt only while it says shut -- so with the doors HELD OPEN
+    -- past a schedule that says shut, closesAt is nil and the idiom falls
+    -- through to opensAt. The next OPENING time was printed behind the word
+    -- "until", two lines under "OVERRIDDEN: an admin has the doors HELD OPEN".
+    --
+    -- An admin who held the doors for an event reads that the arena shuts at
+    -- that time. It does not: nothing shuts it until somebody releases the
+    -- override or the server restarts. The other two override cases quoted a
+    -- real time that had equally stopped governing anything.
+    --
+    -- Nothing in the suite asserted a single line of this report before this
+    -- test, which is how it survived.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+    end)
+
+    s.fire('adminHours', 1, { forced = 'open' })
+    local held = hoursText(s)
+
+    t.contains(held, 'OVERRIDDEN', 'the override was not reported at all, so this proves nothing')
+    t.contains(held, 'OPEN', 'an override holding the doors open did not report them open')
+    t.notContains(held, ', until 0',
+        'a schedule time was quoted as the closing time while an admin override governs the doors')
+    t.notContains(held, 'opens at',
+        'a schedule opening time was quoted while an admin override governs the doors')
+    t.contains(held, 'hands the doors back to the schedule',
+        'the report named no time and did not say why, which is worse than the wrong time')
+
+    -- AND THE MIRROR, so this cannot be satisfied by never naming a time.
+    s.fire('adminHours', 1, { forced = 'shut' })
+    local shut = hoursText(s)
+    t.contains(shut, 'SHUT', 'an override closing the doors did not report them shut')
+    t.notContains(shut, 'opens at',
+        'a schedule opening time was quoted while an admin override holds the doors shut')
+end)
+
+t.test('and with NO override the schedule time is still named, which is the control', function()
+    -- Without this the test above passes against a report that never names a
+    -- time at all -- and naming the next change is the whole reason an
+    -- operator opens this screen.
+    local s = newArena({ [1] = true })
+    local said = hoursText(s)
+
+    t.notContains(said, 'OVERRIDDEN', 'the control is not actually unoverridden')
+    t.notContains(said, 'hands the doors back to the schedule',
+        'the override wording leaked onto a server with no override')
+    t.contains(said, 'right now', 'the report lost its verdict line entirely')
+end)
+
 local function adminToolNames()
     local handle = assert(io.open('../Crimson-Arena/server/main.lua', 'r'),
         'server/main.lua is missing')

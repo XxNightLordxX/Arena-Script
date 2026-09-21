@@ -6228,9 +6228,39 @@ function ArenaAmmo.JamReport()
         -- "none" here told the operator there was nothing to settle while
         -- the door was refusing every hand-back waiting for the same read.
         if not known then
+            -- AND WHAT THE DOOR IS ACTUALLY DOING ABOUT IT, read off the door
+            -- rather than asserted.
+            --
+            -- THIS SENTENCE USED TO SAY "the door is holding hand-backs until
+            -- it lands" AND NEVER STOPPED. That is true only for the grace
+            -- handBack allows: past it, handBack sets jamWaitGaveUp, logs
+            -- that it is "going ahead without it", and resumes handing
+            -- belongings back with NO list at all. On a database whose SELECT
+            -- is refused, `known` stays false for the whole uptime -- so the
+            -- tablet went on promising a hold that had been abandoned
+            -- minutes earlier.
+            --
+            -- THE COST OF BELIEVING IT: the admin reads that nobody's
+            -- belongings are moving and nothing can be handed out twice, and
+            -- lets the database wait until morning. Measured in the
+            -- doorguarantee harness -- past the grace, a stash held back
+            -- before the restart is handed out again and the player ends up
+            -- carrying two phones.
+            if jamWaitGaveUp then
+                lines[1] = 'the jam list has NOT been read back from the database, and the door '
+                    .. 'has STOPPED WAITING for it. Hand-backs are running again with no list, so '
+                    .. 'any stash held back before the restart is unknown to this run and its '
+                    .. 'contents CAN BE HANDED OUT A SECOND TIME. This is not something to leave '
+                    .. 'until morning. The database user needs SELECT on '
+                    .. 'crimson_arena_jammed_stash -- the real error is on oxmysql\'s console.'
+                return lines
+            end
+
             lines[1] = 'the jam list has NOT been read back from the database yet, so this cannot '
-                .. 'say whether any stash is held back. The door is holding hand-backs until it '
-                .. 'lands. If this persists, the database user needs SELECT on '
+                .. ('say whether any stash is held back. The door is holding hand-backs for up to '
+                    .. '%d seconds from the first one it is asked for, and then goes ahead WITHOUT '
+                    .. 'the list. '):format(JAM_READ_GRACE_SECONDS)
+                .. 'If this persists, the database user needs SELECT on '
                 .. 'crimson_arena_jammed_stash -- the real error is on oxmysql\'s console.'
             return lines
         end
@@ -7274,7 +7304,32 @@ function ArenaAmmo.AllStashes(cb, scanned)
                 end
             end
 
-            if #items > 0 then
+            -- A HELD-BACK STASH IS LISTED EVEN WHEN IT READS EMPTY, and that
+            -- is not a cosmetic preference -- without it the hold can never
+            -- be cleared at all.
+            --
+            -- THE DEAD END IT REMOVES. JamReport tells the operator to open
+            -- each held-back stash on the Stashes tab and press Clear the
+            -- hold, and says clearing "is a button and only a button"
+            -- (/arenaunjam was deleted on purpose -- see JamReport's header).
+            -- It then prints "empty, safe to clear" for a stash the operator
+            -- has just finished emptying BY HAND, which is exactly what the
+            -- door's own log tells them to do. With `#items > 0` alone that
+            -- stash has no row here, so no row on the tab, so no detail
+            -- screen, so no button -- and no command to fall back on. The
+            -- hold is permanent, it is written to crimson_arena_jammed_stash,
+            -- and it comes back after every restart telling them stashes are
+            -- still held back "from before the restart".
+            --
+            -- THE PANEL IS ALREADY READY FOR A ZERO-ITEM ROW: the detail
+            -- draws "The stash reads EMPTY -- nothing to hand over", the
+            -- hand-back button disables itself at zero items and while held,
+            -- and Clear the hold needs no second press with nothing in it.
+            --
+            -- STILL NOT LISTED WHEN IT IS MERELY EMPTY. An empty stash
+            -- nobody is holding back is not a job and does not belong on the
+            -- tab -- stashscan_spec pins that and it stays true.
+            if #items > 0 or jammedStash[row.stash] == true then
                 rows[#rows + 1] = {
                     citizenid = row.citizenid,
                     stash = row.stash,

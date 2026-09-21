@@ -3631,6 +3631,49 @@ function()
         'THE DOOR STAYED SHUT FOR EVER -- the player cannot get their own belongings back')
 end)
 
+t.test('AND THE TABLET STOPS PROMISING A HOLD THE DOOR HAS ABANDONED', function()
+    -- THE REPORT WAS STILL SAYING "the door is holding hand-backs until it
+    -- lands" LONG AFTER IT HAD STOPPED.
+    --
+    -- That sentence is true only for the grace above. Past it the door sets
+    -- jamWaitGaveUp, logs "going ahead without it", and resumes handing
+    -- belongings back with NO list at all -- and on a database whose SELECT
+    -- is refused, `known` stays false for the entire uptime, so the sentence
+    -- never changed.
+    --
+    -- WHAT AN ADMIN DOES WITH IT. They read that nobody's belongings are
+    -- moving and nothing can be handed out twice, and let the database wait
+    -- until morning. The test above proves that by then the stash HAS been
+    -- handed out -- so the tablet is telling them the opposite of what the
+    -- door is doing, on the one screen they would use to decide.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, holdJamRead = true })
+
+    -- WHILE IT REALLY IS HOLDING, which is the control: without it this
+    -- passes against a report that never mentions holding at all.
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    local waiting = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(waiting, 'NOT been read back',
+        'the report did not say the list was unread while it was unread')
+    t.notContains(waiting, 'STOPPED WAITING',
+        'the report said the door had given up while it was still holding')
+    t.notContains(waiting, 'A SECOND TIME',
+        'the report warned about double hand-backs while the door was still holding')
+
+    -- Past the grace, with the read still never coming.
+    server.advanceClock(61)
+    for _ = 1, 6 do server.ammo.SweepReturns() end
+    server.step(8)
+
+    local gaveUp = table.concat(server.ammo.JamReport(), '\n')
+    t.contains(gaveUp, 'STOPPED WAITING',
+        'the tablet still promised a hold the door had abandoned minutes earlier')
+    t.contains(gaveUp, 'A SECOND TIME',
+        'the tablet did not warn that a stash from before the restart can be handed out twice')
+end)
+
 -- ========================================================================
 -- AND THE DIAGNOSTIC MUST NOT BURY THE LOG IT IS PRINTED IN
 -- ========================================================================

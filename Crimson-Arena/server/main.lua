@@ -588,16 +588,49 @@ local function hoursReport()
                 or 'CLOSED inside the schedule')
     end
 
-    -- NAMED ONLY WHEN THERE IS ONE. `closesAt` is set only while the
-    -- SCHEDULE says open and `opensAt` only while it says shut, so an
-    -- override that disagrees with the clock leaves the matching one absent
-    -- -- and this line used to print the word `nil` at an operator trying to
-    -- work out what was wrong.
-    local when = hours.open and hours.snapshot.closesAt or hours.snapshot.opensAt
-    say('  right now:         %s%s',
-        hours.open and 'OPEN' or 'SHUT',
-        type(when) == 'string' and (hours.open and (', until ' .. when)
-            or (', opens at ' .. when)) or '')
+    -- NAMED ONLY WHEN THE SCHEDULE IS WHAT DECIDES, and written as a branch
+    -- rather than as `a and b or c` because that idiom is what broke it.
+    --
+    -- `closesAt` is set only while the SCHEDULE says open and `opensAt` only
+    -- while it says shut, so an override that disagrees with the clock leaves
+    -- the matching one absent. The comment here used to say that meant no
+    -- time printed. It did not: `hours.open and closesAt or opensAt` falls
+    -- through whenever the middle term is nil, so with the doors HELD OPEN
+    -- past a schedule that says shut, `when` picked up opensAt -- the next
+    -- OPENING -- and the line printed it behind the word "until".
+    --
+    -- Measured against the shipped files (window 01:00-02:00, override open,
+    -- clock 23:55): `right now: OPEN, until 01:00`, two lines under
+    -- `OVERRIDDEN: an admin has the doors HELD OPEN past the schedule.` An
+    -- admin who held the doors for an event reads that the arena shuts at
+    -- 01:00. It does not. Nothing shuts it until somebody releases the
+    -- override or the server restarts.
+    --
+    -- AND THE OTHER TWO OVERRIDE CASES WERE WRONG FOR THE SAME REASON even
+    -- where a time existed: while an override is in force the schedule's
+    -- boundaries do not govern the doors at all, so quoting one is quoting a
+    -- number that means nothing. Only "shut inside a window" came out clean,
+    -- and that was luck.
+    --
+    -- SO UNDER AN OVERRIDE NO TIME IS NAMED, because there is no next change
+    -- to name: the doors stay as they are until a person moves them.
+    local when
+    if hours.forced then
+        when = nil
+    elseif hours.open then
+        when = hours.snapshot.closesAt
+    else
+        when = hours.snapshot.opensAt
+    end
+
+    local tail = ''
+    if hours.forced then
+        tail = ', until an admin hands the doors back to the schedule'
+    elseif type(when) == 'string' then
+        tail = hours.open and (', until ' .. when) or (', opens at ' .. when)
+    end
+
+    say('  right now:         %s%s', hours.open and 'OPEN' or 'SHUT', tail)
 
     if hours.line then
         say('  if "this machine says" is not your local time, put the difference in '

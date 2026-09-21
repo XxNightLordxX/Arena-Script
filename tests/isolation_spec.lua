@@ -98,6 +98,19 @@ local function newFixture(dispatchConfig, world, oneSyncMode, opts)
             if not opts.inert then buckets[src] = bucket end
             calls[#calls + 1] = { kind = 'move', src = src, bucket = bucket }
         end,
+        -- THE ROLL-CALL'S OWN NATIVE. Nothing else in this file needed it,
+        -- which is exactly why IsolationReport's body had never been run by
+        -- any spec in the suite -- it returns early without one.
+        GetPlayers = function()
+            local out = {}
+            for src in pairs(buckets) do out[#out + 1] = tostring(src) end
+            for src in pairs(opts.alsoConnected or {}) do
+                if buckets[src] == nil then out[#out + 1] = tostring(src) end
+            end
+            table.sort(out, function(a, b) return tonumber(a) < tonumber(b) end)
+            return out
+        end,
+
         SetRoutingBucketPopulationEnabled = function(bucket, enabled)
             calls[#calls + 1] = { kind = 'population', bucket = bucket, enabled = enabled }
         end,
@@ -1543,6 +1556,89 @@ t.test('stopping the resource mid-round returns every fighter to the world they 
 
     t.equals(f.bucketOf(1), 91)
     t.equals(f.bucketOf(2), 0)
+end)
+
+-- ======================================================================
+-- THE INSTANCING REPORT, WHICH NO SPEC IN THIS SUITE HAD EVER RUN
+--
+-- Measured, not supposed: every test above drives the bucket MACHINERY.
+-- Nothing drove ArenaDispatch.IsolationReport's body -- it returns early
+-- without GetPlayers, and no fixture in the suite stubbed one. So every
+-- line the Instancing tool prints on an operator's tablet was unexercised,
+-- and that is how the defect below survived.
+-- ======================================================================
+
+--- The report as one block of text, which is how an admin reads it.
+local function reportText(f)
+    return table.concat(f.env.ArenaDispatch.IsolationReport(), '\n')
+end
+
+t.test('a player another resource instanced is NOT called a defect in this one', function()
+    -- REPORTED BY AUDIT, AND IT DAMAGES THE SERVER IT IS DIAGNOSING.
+    --
+    -- The strand test was `bucket ~= 0 and not held[player]`: bucket 0 was
+    -- the only innocent value on the whole box. On a QBox server that means
+    -- ONE PLAYER INDOORS is enough -- housing, an apartment, an interior, a
+    -- heist, a job world, an admin tool -- to be printed as
+    -- "STRANDED: the arena has NO RECORD of putting them there", under a
+    -- closing line calling it "a defect in this resource and worth
+    -- reporting", with a remedy telling the operator to make them reconnect.
+    --
+    -- Following that remedy drops the player out of the instance the other
+    -- resource deliberately put them in. A report that breaks the thing it
+    -- is inspecting is worse than no report.
+    local f = newFixture(nil, { [1] = 77 })
+
+    local said = reportText(f)
+
+    t.notContains(said, 'STRANDED',
+        'a housing bucket was reported as the arena stranding somebody')
+    t.notContains(said, 'defect in this resource',
+        'the arena took the blame for another resource\'s instancing')
+    t.notContains(said, 'freed by reconnecting',
+        'the operator was told to reconnect a player who is in somebody else\'s instance')
+    t.contains(said, 'not the arena\'s',
+        'a bucket below the arena\'s range was not explained at all -- an operator '
+        .. 'chasing "everyone else is invisible" needs to know the split exists')
+end)
+
+t.test('and one inside the arena\'s OWN range still is, because that one really is ours', function()
+    -- THE CONTROL, and the reason the fix is a range test rather than a
+    -- deletion. A player sitting in 4210 with no record is the real defect
+    -- the report was written for -- a restart mid-round -- and it must still
+    -- be called out by name.
+    local f = newFixture(nil, { [1] = 4210 })
+
+    local said = reportText(f)
+
+    t.contains(said, 'STRANDED', 'a genuinely stranded fighter was no longer reported')
+    t.contains(said, 'defect in this resource',
+        'the arena stopped taking the blame for something that IS its fault')
+    t.contains(said, '4210', 'the report did not name the range it judges by')
+end)
+
+t.test('and the range it judges by follows firstBucket, so the two cannot drift', function()
+    -- GetBucket allocates from math.max(1, firstBucket); the report must read
+    -- the same number the same way. An operator who moves firstBucket to get
+    -- out of another resource's way has to see the report move with it.
+    local f = newFixture({ isolation = { enabled = true, firstBucket = 50 } }, { [1] = 77 })
+
+    local said = reportText(f)
+
+    t.contains(said, 'STRANDED',
+        'with firstBucket moved down to 50, bucket 77 IS the arena\'s range and was not reported')
+    t.contains(said, '50', 'the report did not name the moved firstBucket')
+end)
+
+t.test('and a player the arena really is holding is never called stranded', function()
+    -- The plain healthy case: in a bucket, on the record. Without this the
+    -- three above pass against a report that never says STRANDED at all.
+    local f = newFixture(nil, {})
+    f.D.EnterBucket(1, 'm1')
+
+    local said = reportText(f)
+
+    t.notContains(said, 'STRANDED', 'a fighter the arena put in a bucket was called stranded')
 end)
 
 os.exit(t.summary())

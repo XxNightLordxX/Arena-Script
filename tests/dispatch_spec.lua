@@ -1207,6 +1207,49 @@ t.test('and the CONTROL: a real player still gets the full reading', function()
     t.equals(#firedFor(f, 'mymedical:revive'), 1, 'the real handoff stopped running')
 end)
 
+t.test('AND IT SAYS WHICH HALF OF THE REVIVE ACTUALLY RAN', function()
+    -- THE FIRST LINE PROMISES "everything a real match would do", AND FOR
+    -- THIS TOOL'S PRIMARY USE IT WAS NOT TRUE.
+    --
+    -- Revive does two things: it clears the down state, and it calls
+    -- RetractCallsFor to withdraw a dispatch call already filed. That second
+    -- half opens with a gate -- not in a match, did not just leave one,
+    -- withdraw nothing -- and this tool exists precisely to reach somebody
+    -- who is NOT in a match. So for the case it was built for, half of what
+    -- it claims to be testing never ran, and none of its lines said so.
+    --
+    -- The operator wiring up dispatch -- "it's not even recalling the alert
+    -- for a person down" is the complaint this layer answers -- read a clean
+    -- "done." and concluded the withdrawal path worked. It was never
+    -- exercised. The only trace was an ArenaDebug line needing Config.Debug.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'NOT exercised by this press',
+        'the report still claims to have run the whole end-of-match path against somebody '
+        .. 'who is in no match, when the withdrawal half refuses exactly that case')
+    t.contains(text, 'done', 'the revive half stopped being reported')
+end)
+
+t.test('and says the opposite when the withdrawal half really does run', function()
+    -- THE CONTROL. Without it the line above passes against a report that
+    -- says "NOT exercised" whatever happened, which would be a new lie
+    -- pointing the other way -- and would tell an operator testing on a live
+    -- fighter that the half they just exercised was skipped.
+    local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
+    f.givePlayer(7, { inlaststand = true, isdead = false })
+    f.D.Set(7, 'm1', true)
+
+    local text = table.concat(f.D.ReviveReport(7), '\n')
+
+    t.contains(text, 'call-withdrawal half ran too',
+        'a player who IS in a round was told the withdrawal half did not run')
+    t.notContains(text, 'NOT exercised by this press',
+        'the report said both that it ran and that it did not')
+end)
+
 t.test('and a target that is not a server id is refused rather than revived', function()
     local f = withDetectedMedical(newFixture(reviveConfig()), 'mymedical:revive')
 

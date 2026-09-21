@@ -347,6 +347,51 @@ t.test('and says plainly when it owes nobody anything', function()
     t.contains(report, 'owes nobody', 'an empty ledger read as a broken screen')
 end)
 
+t.test('AND IT DOES NOT SAY "owes nobody" BEFORE THE LEDGER HAS BEEN READ BACK', function()
+    -- THE MOMENT THIS SCREEN IS MOST LIKELY TO BE OPENED is just after a
+    -- restart, to check the arena did not forget what it owed somebody --
+    -- and that is the one window in which it was wrong.
+    --
+    -- OwedReport built its list from the in-memory `unpaid` table alone and
+    -- never looked at unpaidLoaded. On a server where oxmysql starts after
+    -- this resource -- the README says the order does not matter -- the
+    -- start-up read is a retry thread that waits between attempts, so every
+    -- debt from the previous run can be sitting in crimson_arena_unpaid with
+    -- none of it in memory. The screen said "owes nobody anything" and, in
+    -- the same breath, accused the operator's database of being unwritable,
+    -- because the durability verdict needs a read that landed.
+    --
+    -- They tell the player there is no debt, and go and re-grant a database
+    -- that was fine.
+    local s = staked({ mutate = function(config) config.Database.enabled = true end })
+    local report = table.concat(s.betting.OwedReport(), '\n')
+
+    t.notContains(report, 'owes nobody',
+        'an unread ledger was reported as an empty one, on the screen an operator reads '
+        .. 'before telling a player there is no debt')
+    t.contains(report, 'been read back',
+        'the report did not say why its list may be incomplete')
+    t.notContains(report, 'cannot write to it',
+        'the operator was accused of a broken database while the read was still out')
+end)
+
+t.test('and the shipped default -- database off -- is NOT dragged into that warning', function()
+    -- THE REGRESSION THE OBVIOUS FIX WOULD HAVE CAUSED, pinned so it cannot
+    -- come back. With Config.Database.enabled off -- which is what ships --
+    -- the start-up read never runs at all, so the "loaded" flag is false for
+    -- the life of the process. Gating on that flag alone would put a
+    -- permanent "not read back yet" on the majority of installs: a new false
+    -- alarm in place of a correct answer.
+    local s = staked()
+    local report = table.concat(s.betting.OwedReport(), '\n')
+
+    t.contains(report, 'owes nobody',
+        'a memory-only server was told its ledger might be incomplete, which it cannot be')
+    t.notContains(report, 'been read back',
+        'the unread-ledger warning leaked onto a server that never reads one')
+    t.contains(report, 'restart forgets it', 'the durability line went missing')
+end)
+
 t.test('and says on the same line whether a restart would forget it', function()
     -- The question an operator looking at a debt actually has, and the
     -- answer depends on a config flag they may not have set themselves.

@@ -103,7 +103,7 @@ Config.Lobby = {
         --
         -- This is only where players come to JOIN. The fighting happens
         -- wherever Config.Arenas puts it.
-        coords = vector4(-274.5401, -2045.4486, 29.9460, 132.0204),
+        coords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
         -- An idle animation so the NPC is not a statue. Set to nil for none.
         scenario = 'WORLD_HUMAN_GUARD_STAND',
         freeze = true,
@@ -119,7 +119,7 @@ Config.Lobby = {
         type = 27,
         -- The same spot as the NPC, so 'both' does not send players to two
         -- different places.
-        coords = vector3(-274.5401, -2045.4486, 29.9460),
+        coords = vector3(-282.0125, -2030.4575, 30.1457),
         size = vector3(1.6, 1.6, 0.6),
         color = { r = 200, g = 16, b = 32, a = 140 },
         bobUpAndDown = false,
@@ -142,7 +142,7 @@ Config.Lobby = {
     -- Where a player is put back when they leave, die out, or the match
     -- ends -- and where they land if the resource restarts mid-match. It
     -- must be somewhere safe to stand.
-    returnCoords = vector4(-274.5401, -2045.4486, 29.9460, 132.0204),
+    returnCoords = vector4(-282.0125, -2030.4575, 30.1457, 276.6953),
 }
 
 -- ======================================================================

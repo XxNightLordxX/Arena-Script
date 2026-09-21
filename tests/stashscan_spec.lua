@@ -213,6 +213,40 @@ t.test('and an empty one is not listed, because nothing is being held', function
     t.equals(#f.scan(), 0, 'an emptied stash was listed as something being held')
 end)
 
+t.test('BUT A HELD-BACK ONE IS, EVEN EMPTY -- otherwise the hold can never be cleared', function()
+    -- THE DEAD END THIS REMOVES, and it is a dead end with a player's
+    -- belongings on the far side of it.
+    --
+    -- JamReport tells the operator to open each held-back stash on the
+    -- Stashes tab and press Clear the hold, and says so in as many words:
+    -- clearing "is a button and only a button" -- /arenaunjam was deleted on
+    -- purpose. It then prints "empty, safe to clear" for a stash the operator
+    -- has just finished emptying BY HAND, which is precisely what the door's
+    -- own log told them to do.
+    --
+    -- With the old `#items > 0` test that stash had no row here, so no row on
+    -- the tab, so no detail screen, so no button -- and no command left to
+    -- fall back on. The hold was permanent, it is written to
+    -- crimson_arena_jammed_stash, and it came back after every restart
+    -- telling them stashes were still held back "from before the restart".
+    local f = newAmmo({
+        dbReady = true,
+        jamRows = { { stash = 'crimson_arena_CID777' } },
+        rows = { row('crimson_arena_CID777', 'CID777') },
+        contents = { crimson_arena_CID777 = {} },
+    })
+
+    t.isTrue(f.loadJams(), 'the hold list was not read back at all')
+
+    local rows = f.scan()
+    t.equals(#rows, 1,
+        'an emptied stash that is still HELD BACK was dropped, so there is no row to press '
+        .. 'Clear the hold on and the hold can never be lifted')
+    t.equals(rows[1].stash, 'crimson_arena_CID777')
+    t.isTrue(rows[1].jammed, 'the row is there but is not marked as held back')
+    t.equals(#rows[1].items, 0, 'the row invented contents it does not have')
+end)
+
 t.test('THE BUG: a stash past the read limit was dropped from the answer entirely', function()
     -- The names are all fetched and the contents of the newest handful are
     -- read -- that part is deliberate, and the counters say so. But the row

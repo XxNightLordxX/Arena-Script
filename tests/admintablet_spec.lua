@@ -1432,6 +1432,82 @@ t.test('and with NO override the schedule time is still named, which is the cont
     t.contains(said, 'right now', 'the report lost its verdict line entirely')
 end)
 
+t.test('A PRESS THE RATE LIMIT DROPS IS STILL ANSWERED, or the tablet spins for ever', function()
+    -- THE PAGE COMMITS TO A REPLY BEFORE IT POSTS. Pressing a Tools button
+    -- sets toolWaiting = true and draws "Taking that reading..." at once.
+    -- adminTool had no throttled callback, so a press the 500ms admin limit
+    -- dropped returned in silence, nothing arrived to clear the spinner, and
+    -- the panel sat on it over a blank report until the tablet was closed.
+    -- The operator reads that as a hung server.
+    --
+    -- 500ms IS NOT WIDE. The picker is a row of seven buttons side by side; a
+    -- live server's log shows six of the seven run in one sitting.
+    --
+    -- WHY NO TEST SAW IT: this fixture's GetGameTimer adds 60 SECONDS on
+    -- every call, deliberately, so no rate bucket ever bites. Freezing it is
+    -- the only way to reach the path at all.
+    local s = newArena({ [1] = true })
+    local frozen = 5000000
+    s.env.GetGameTimer = function() return frozen end
+
+    s.fire('adminTool', 1, { tool = 'isolation' })
+    local first = s.lastNamed('adminTool')
+    t.isNotNil(first, 'the first press was not answered, so the limit is not what dropped the second')
+
+    s.fire('adminTool', 1, { tool = 'hours' })
+    local second = s.lastNamed('adminTool')
+
+    t.isNotNil(second, 'a dropped press was answered with nothing at all -- the tablet spins for ever')
+    t.equals(second.payload.tool, 'hours',
+        'the refusal did not name the tool that was pressed, so the page discards it as somebody '
+        .. 'else\'s answer and the spinner stays up')
+    t.contains(table.concat(second.payload.lines, '\n'), 'too quickly',
+        'the reply did not say why it is not the report they asked for')
+end)
+
+t.test('and a NON-admin spamming that event is still told nothing', function()
+    -- THE HOLE THE FIX COULD HAVE OPENED. The throttled callback runs INSTEAD
+    -- of the handler, so it runs before the handler's own ArenaIsAdmin gate.
+    -- Without its own check, any client could spam the event and be told
+    -- which tool names exist -- and answering a flood is exactly the
+    -- amplifier onClient's comment warns about.
+    local s = newArena({ [1] = true })
+    local frozen = 5000000
+    s.env.GetGameTimer = function() return frozen end
+
+    s.fire('adminTool', 2, { tool = 'isolation' })
+    s.fire('adminTool', 2, { tool = 'hours' })
+
+    t.isNil(s.lastNamed('adminTool'),
+        'a player who is not an admin was answered by the throttled path')
+end)
+
+t.test('THE MEDICAL AUDIT LINE NAMES WHO WAS ACTUALLY REVIVED, not what was typed', function()
+    -- It logged the RAW payload, so the empty box -- the common case -- wrote
+    -- "against server id (none given)" while a real revive fired against the
+    -- admin themselves. Seen on a live server, beside a report naming the
+    -- player it had just stood up. adminRevive logs ArenaPlayerName(target);
+    -- this was the one admin action in the file that did not record what it
+    -- touched, so an operator could not tell a self-test from a no-op.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical' })
+    local blank = s.log()
+    t.notContains(blank, '(none given)',
+        'the log still records the empty box instead of the player who was revived')
+    t.contains(blank, 'no id given, so themselves',
+        'the log does not distinguish a deliberate self-test from a typed id')
+    t.contains(blank, '(1)', 'the log does not name the id that was actually revived')
+
+    -- AND A TYPED ID IS STILL RECORDED AS ITSELF, which is the control.
+    local typed = newArena({ [1] = true })
+    typed.fire('adminTool', 1, { tool = 'medical', target = 3 })
+    local said = typed.log()
+    t.contains(said, '(3)', 'a typed id was not recorded')
+    t.notContains(said, 'no id given',
+        'a typed id was recorded as though the box had been left empty')
+end)
+
 local function adminToolNames()
     local handle = assert(io.open('../Crimson-Arena/server/main.lua', 'r'),
         'server/main.lua is missing')

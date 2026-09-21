@@ -5328,7 +5328,19 @@
                            bringing. Stop waiting; just do not overwrite what
                            the operator is reading. */
                         admin.toolWaiting = false;
-                        render();
+                        /* renderAdmin, NOT render. `render()` is the PLAYER
+                           panel's renderer: it returns immediately while
+                           `state.open` is false, which it always is with the
+                           tablet up (openAdmin closes the player panel
+                           first), and it never touches #admin-tool-waiting
+                           even if both were somehow open. So this branch set
+                           the flag and then repainted a screen nobody was
+                           looking at -- the spinner it exists to clear stayed
+                           on the tablet, and because the code and the comment
+                           above both read correctly, anyone investigating the
+                           complaint looked elsewhere. It is the same call the
+                           successful branch four lines below already makes. */
+                        renderAdmin();
                         break;
                     }
                     admin.toolTitle = typeof data.title === 'string' ? data.title : null;

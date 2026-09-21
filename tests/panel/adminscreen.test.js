@@ -993,6 +993,36 @@ test('THE RACE: a slow report does not land on top of the one being read', () =>
         'a report the operator had moved on from overwrote the one they were reading: ' + out);
 });
 
+test('AND THE SPINNER GOES, which is the half the race guard could not do', () => {
+    /* THE GUARD SET THE FLAG AND REPAINTED THE WRONG SCREEN. The stale-reply
+       branch clears admin.toolWaiting and then called render() -- the PLAYER
+       panel's renderer, which returns immediately while state.open is false,
+       and it always is while the tablet is up because openAdmin closes the
+       player panel first. It never touches #admin-tool-waiting.
+
+       So the branch whose own comment says it exists to stop the screen
+       reading "Taking that reading..." for ever did exactly nothing to the
+       screen. And because the code and the comment both read correctly,
+       anyone investigating the complaint looked elsewhere.
+
+       THE RACE test above could not see it: it asserts only on the output
+       text, never on the spinner. This is the assertion it was missing. */
+    const panel = opened();
+    panel.fire('admin-tab-tools', 'click');
+    panel.fire('admin-tool-isolation', 'click');
+    panel.fire('admin-tool-hours', 'click');
+
+    /* Only the STALE one ever lands -- which is the real case, because the
+       press that replaced it is exactly the one the 500ms admin rate limit
+       drops in silence. */
+    panel.send('adminTool', { tool: 'isolation', title: 'Instancing', lines: ['bucket roll-call'] });
+
+    assert.ok(hidden(panel, 'admin-tool-waiting'),
+        'the tablet is still saying "Taking that reading..." over a report nobody is bringing');
+    assert.ok(!/bucket roll-call/.test(panel.text('admin-tool-out')),
+        'the stale report was drawn after all, over the one the operator asked for');
+});
+
 test('a player name in a report is text, never markup', () => {
     /* These lines carry player names, and a name is whatever the player
        typed. Built as innerHTML, a name could close the tag and write its

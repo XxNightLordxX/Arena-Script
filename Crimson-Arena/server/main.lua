@@ -209,7 +209,10 @@ local function onClient(event, intervalMs, fn, throttled)
             -- noise over the one thing a fighter must not miss.
             --
             -- So a handler that wants its refusals audible asks for it.
-            if throttled then throttled(src) end
+            -- `data` IS PASSED TOO, for a handler whose refusal has to name
+            -- what was refused. setTeam's -- the only other user -- takes
+            -- `function(src)` and simply ignores the second argument.
+            if throttled then throttled(src, data) end
             return
         end
         fn(src, data)
@@ -1026,11 +1029,63 @@ onClient('crimson_arena:server:adminTool', RATE.admin, function(src, data)
     -- somebody, without saying to whom. Every other admin action in this file
     -- records what it touched.
     if name == 'medical' then
-        ArenaLog('%s ran the medical test against server id %s from the admin tablet',
-            ArenaPlayerName(src), tostring(intArg(payload.target) or '(none given)'))
+        -- THE ID THAT WAS ACTUALLY REVIVED, not the one that was typed.
+        --
+        -- This logged the RAW payload, so the empty box -- which this file
+        -- elsewhere calls the common case by far -- recorded "against server
+        -- id (none given)" while a real revive fired against the admin
+        -- themselves. Seen on a live server: "ran the medical test against
+        -- server id (none given)" beside a report saying it told
+        -- hospital:client:Revive for 3. A typed 0 or a negative number logged
+        -- that bogus id for the same reason, the box being type=number min=1
+        -- rather than anything that stops -5 being entered.
+        --
+        -- adminRevive twenty lines down logs ArenaPlayerName(target). This
+        -- was the one admin action in the file that did not record what it
+        -- touched, and an operator going back through the log to answer "who
+        -- stood that player up" could not tell a self-test from a no-op.
+        local typed = intArg(payload.target)
+        ArenaLog('%s ran the medical test against %s (%s) from the admin tablet%s',
+            ArenaPlayerName(src), ArenaPlayerName(target), tostring(target),
+            (not typed or typed <= 0) and ' -- no id given, so themselves' or '')
     else
         ArenaLog('%s ran the %s report from the admin tablet', ArenaPlayerName(src), name)
     end
+end, function(src, data)
+    -- A PRESS THE RATE LIMIT DROPPED IS ANSWERED, because the page has
+    -- already committed to a reply before it posts.
+    --
+    -- THE SCREEN IT LEAVES BEHIND. Pressing a Tools button sets
+    -- toolWaiting = true and draws "Taking that reading..." immediately. With
+    -- no throttled callback the server returned in silence, nothing ever
+    -- arrived to clear it, and the panel sat on that spinner over a blank
+    -- report for as long as the tablet stayed open. The operator reads it as
+    -- a hung server and stops trusting the reports.
+    --
+    -- AND 500ms IS NOT AS WIDE AS IT SOUNDS: the picker is a row of seven
+    -- buttons side by side, and an operator scanning the reports clicks
+    -- through them faster than twice a second. A live server's log shows six
+    -- of the seven run in a single sitting.
+    --
+    -- THE ADMIN GATE IS RE-CHECKED HERE. This callback runs INSTEAD of the
+    -- handler, so it runs before that handler's ArenaIsAdmin check -- without
+    -- this line any client could spam the event and be told which tool names
+    -- exist. Answering a non-admin at all is also exactly the amplifier
+    -- onClient's own comment warns about.
+    if not ArenaIsAdmin(src) then return end
+
+    local payload = tableArg(data)
+    local name = payload and keyArg(payload.tool)
+    local tool = name and ADMIN_TOOLS[name]
+    if not tool then return end
+
+    -- NAMED, so the page's own stale-reply check draws this in place of the
+    -- spinner rather than discarding it as somebody else's answer.
+    TriggerClientEvent('crimson_arena:client:adminTool', src, {
+        tool = name,
+        title = tool.title,
+        lines = { 'that reading was asked for again too quickly -- press it once more.' },
+    })
 end)
 
 onClient('crimson_arena:server:adminState', RATE.admin, function(src, data)

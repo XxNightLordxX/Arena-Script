@@ -1584,6 +1584,12 @@ end)
 t.test('CONTROL: and a schedule that is ON with windows that work prints the range', function()
     -- Without this the two above are satisfied by a report that never says
     -- "none usable" about anything, including the case it was written for.
+    --
+    -- THIS ONE DOES NOT REACH THE BRANCH THE OTHERS ARE ABOUT, and saying so
+    -- matters: with a printable range, hoursReport takes the `if hours.line`
+    -- arm and never enters the else block at all. So it is a control for the
+    -- REPORT, not for the branch -- it proves the happy path still prints a
+    -- range. The next test is the control for the branch itself.
     local s = newArena({ [1] = true }, function(config)
         config.Schedule = config.Schedule or {}
         config.Schedule.enabled = true
@@ -1594,6 +1600,49 @@ t.test('CONTROL: and a schedule that is ON with windows that work prints the ran
     t.contains(said, '05:00-07:00', 'a working schedule did not print its range')
     t.notContains(said, 'none usable', 'a working schedule was reported as thrown away')
     t.notContains(said, 'NOT IN USE', 'a schedule that IS in use was reported as switched off')
+end)
+
+t.test('CONTROL FOR THE BRANCH: a schedule whose every window IS bad still says so', function()
+    -- The one the test above cannot be: it has no printable line, so it goes
+    -- through the else block every other test here is about, and it is the
+    -- case that must keep reading "none usable" while the branches around it
+    -- were being softened.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 99, to = 100 }, { from = 5, to = 5 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'none usable', 'a schedule with nothing usable in it was not reported as such')
+    t.contains(said, '2 written', 'the report did not say how many the operator had written')
+    t.notContains(said, 'good', 'a schedule with no good window in it was partly vouched for')
+end)
+
+t.test('DEFECT: and a window given a NAME is not counted as one the code can see', function()
+    -- THE TWO SCREENS CONTRADICTED EACH OTHER OUTRIGHT. This report counted
+    -- the windows with `pairs`; everything that acts on them -- ScheduleSpans
+    -- and ValidateConfig alike -- walks with `ipairs`. A window written with
+    -- a string key is in one count and not the other:
+    --
+    --   /arenahours  "none usable -- 1 written, all of them thrown away.
+    --                 The startup console names each one."
+    --   the console  "Config.Schedule is enabled with no windows at all."
+    --
+    -- One written or none written, take your pick -- and the console it sent
+    -- the operator to named no window, because it could not see it either.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { morning = { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, '1 written',
+        'a window nothing in this resource reads was counted as one the code can see, which '
+        .. 'contradicts the startup console outright')
+    t.contains(said, 'rather than sitting in the list',
+        'the one mistake that is invisible to every other check went unnamed here too')
 end)
 
 t.test('and a server with no windows at all still says so plainly', function()

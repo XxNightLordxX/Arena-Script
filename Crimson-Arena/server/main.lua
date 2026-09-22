@@ -629,11 +629,32 @@ local function hoursReport()
     if hours.line then
         say('  windows:           %s', hours.line)
     else
-        local written = 0
+        -- COUNTED WITH ipairs, BECAUSE THAT IS HOW THE WINDOWS ARE READ.
+        --
+        -- This counted with `pairs`, and everything that acts on the windows
+        -- -- Arena.ScheduleSpans and Arena.ValidateConfig alike -- walks them
+        -- with `ipairs`. A window given a STRING key is in one count and not
+        -- the other, so the two screens contradicted each other outright:
+        --
+        --   windows = { morning = { from = 5, to = 7 } }
+        --     /arenahours   "none usable -- 1 written, all of them thrown
+        --                    away. The startup console names each one."
+        --     the console   "Config.Schedule is enabled with no windows at
+        --                    all, so the arena never shuts."
+        --
+        -- One written or none written, take your pick, and the console it
+        -- sent them to named no window. So `written` is now what the resource
+        -- really reads, and an entry that is in the table but not in the LIST
+        -- gets a line of its own -- because at that point nothing else in the
+        -- resource can see it either.
         local block = type(Config.Schedule) == 'table' and Config.Schedule.windows or nil
+        local written, present = 0, 0
         if type(block) == 'table' then
-            for _ in pairs(block) do written = written + 1 end
+            for _ in ipairs(block) do written = written + 1 end
+            for _ in pairs(block) do present = present + 1 end
         end
+
+        local unlisted = present - written
 
         -- THE SECOND RETURN, NOT #spans. See the note on Arena.ScheduleSpans:
         -- spans are merged, so #spans is not a count of anything an operator
@@ -672,8 +693,17 @@ local function hoursReport()
                     .. 'The startup console names each one.', written - kept)
             end
         else
+            -- `written > 0` is guaranteed here: the first branch took zero.
             say('  windows:           (none usable -- %d written, all of them thrown away, so '
                 .. 'NOTHING is being refused. The startup console names each one.)', written)
+        end
+
+        if unlisted > 0 then
+            say('                     AND %d entr%s in Config.Schedule.windows %s a NAME rather '
+                .. 'than sitting in the list, so nothing in this resource reads %s at all. '
+                .. 'Write them as { from = 5, to = 7 }, with no `name =` in front.',
+                unlisted, unlisted == 1 and 'y' or 'ies',
+                unlisted == 1 and 'has' or 'have', unlisted == 1 and 'it' or 'them')
         end
     end
 

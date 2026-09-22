@@ -546,8 +546,27 @@ local function filedCall(src, id)
     }
 end
 
+--- The filed-call route, switched ON.
+---
+--- IT SHIPS OFF, and the SECURITY test at the bottom of this section says
+--- why: sc-dispatch takes alert payloads straight from clients, and this
+--- route cannot tell a payload that lies from one that does not. So every
+--- test that is ABOUT the route names the event itself -- the way an operator
+--- whose dispatch script refuses client payloads would -- rather than leaning
+--- on a default. A test that leans on a default is a test that changes
+--- meaning when the default does.
+--- @param opts table?
+local function routeFixture(opts)
+    opts = opts or {}
+    opts.retract = opts.retract or {}
+    if opts.retract.filedEvent == nil then
+        opts.retract.filedEvent = 'sc-dispatch:server:witnessForward'
+    end
+    return newFixture(opts)
+end
+
 t.test('a call filed about a fighter is withdrawn, with the id it was handed', function()
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
 
     t.isTrue(f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000')),
@@ -581,7 +600,7 @@ t.test('AND IT ASKS MORE THAN ONCE, because knowing the id says nothing about wh
     -- schedule; the filed path asked once, on the one number that comment
     -- says is not enough. Asking again costs nothing: a clear for a call
     -- that is already gone matches no row either.
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
 
     f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
@@ -602,7 +621,7 @@ t.test('and the same call announced twice is one schedule, not two', function()
     --
     -- It is also just right: the same call announced twice is one call, and
     -- the second schedule would be asking for an id the first has cleared.
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
 
     f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
@@ -621,7 +640,7 @@ t.test('and the SAME call re-filed later is withdrawn again', function()
     -- id this resource has ever seen. Left latched, a dispatch script that
     -- re-files under an id it has used before -- a restart, a reused clock
     -- second -- would have that call left standing forever.
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
 
     f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
@@ -640,7 +659,7 @@ end)
 t.test('and a DIFFERENT call about the same fighter is still withdrawn', function()
     -- The gate is on the call id, not on the player: a fighter can have more
     -- than one call filed about them, and each is its own withdrawal.
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
 
     f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7, 'playerdown_7_1700000000'))
@@ -715,7 +734,7 @@ end)
 t.test('a fighter who just left is still covered, because the call lands after they do', function()
     -- The post-match sweep runs seconds after the flag comes down, and the
     -- alert that is still in flight is exactly the one worth withdrawing.
-    local f = newFixture()
+    local f = routeFixture()
     f.enter(7)
     f.leave(7)
 
@@ -803,6 +822,60 @@ t.test('no announcement event configured means no listener', function()
     local f = newFixture({ retract = { filedEvent = '' } })
     t.isFalse(f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7)),
         'it listened for an event the operator did not name')
+end)
+
+t.test('SECURITY: and the SHIPPED config does not name one, because sc-dispatch takes client payloads', function()
+    -- THE DEFAULT CONTRADICTED ITS OWN ADVICE, AND THE ADVICE WAS RIGHT.
+    --
+    -- config.lua, and WithdrawFiledCall's own comment, both say: leave
+    -- `filedEvent` empty if your dispatch script takes alert payloads
+    -- straight from clients, because the id and the subject are two fields of
+    -- the SAME payload and nothing ties them together. It shipped naming
+    -- sc-dispatch's announcement event anyway.
+    --
+    -- sc-dispatch is exactly such a script on its own shipped config.
+    -- Config.Security.ServerOnlyDispatches is false, so
+    -- `sc-dispatch:server:AddNotification` is a RegisterNetEvent any client
+    -- can raise; ValidateDispatchData trims `message`, `title` and `coords`
+    -- and passes `unique_id` and `caller_source` through untouched; and
+    -- AddNotification announces the whole payload on the event this listens
+    -- to. MEASURED against the operator's own copy of sc-dispatch.
+    --
+    -- So: a client sends `caller_source` = any fighter and `unique_id` = a
+    -- stranger's live call, and a PvP arena withdraws a real police or EMS
+    -- call. The ids are guessable -- sc-dispatch files person-down calls as
+    -- `emsdown_<serverId>_<os.time()>`.
+    --
+    -- The hardening tests above are about payloads that are MALFORMED. This
+    -- one is about a payload that is perfectly well formed and lying, which
+    -- no amount of shape-checking can catch. The only gate is not listening.
+    local Sandbox = dofile('fixtures/sandbox.lua')
+    local shipped = Sandbox.newEnv()
+    Sandbox.loadInto('../Crimson-Arena/config.lua', shipped)
+
+    local retract = (((shipped.Config or {}).Dispatch or {}).custom or {}).retract or {}
+    -- THE SHIPPED CONFIG REALLY LOADED, or every assertion below is made
+    -- against an empty table and passes for the wrong reason.
+    t.isTrue(type(shipped.Config) == 'table' and type(shipped.Config.Dispatch) == 'table',
+        'config.lua did not load, so nothing below checks anything')
+    t.isTrue(type(retract) == 'table' and retract.resource ~= nil,
+        'the retract block is gone or empty, so this checks nothing')
+
+    local named = retract.filedEvent
+    t.isTrue(named == nil or named == '',
+        'the shipped config names an announcement event, so a stock install listens for alert '
+        .. 'payloads it cannot verify -- a client can withdraw a stranger\'s emergency call')
+
+    -- AND THE FEATURE IS NOT DEAD: an operator whose dispatch script refuses
+    -- client payloads fills it in and the route works. Without this the test
+    -- above is satisfied by deleting the feature.
+    local f = newFixture({ retract = { filedEvent = 'sc-dispatch:server:witnessForward' } })
+    f.enter(7)
+    t.isTrue(f.fireEvent('sc-dispatch:server:witnessForward', filedCall(7)),
+        'an operator who names the event got no listener, so the route is dead rather than off')
+    f.step()
+    t.isTrue(#f.exportCalls > 0,
+        'the named route registered a listener but withdrew nothing, so filling it in does nothing')
 end)
 
 -- ======================================================================

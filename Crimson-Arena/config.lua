@@ -2917,7 +2917,38 @@ Config.Dispatch = {
             --
             -- The three field names below are where that payload keeps the
             -- id, the player and the job list.
-            filedEvent = 'sc-dispatch:server:witnessForward',
+            --
+            -- SHIPPED EMPTY, AND IT USED TO SHIP POINTING AT sc-dispatch.
+            --
+            -- The paragraph above says to leave this empty if your dispatch
+            -- script takes alert payloads straight from clients. sc-dispatch
+            -- IS such a script on its own shipped config: its
+            -- Config.Security.ServerOnlyDispatches is false, so
+            -- `sc-dispatch:server:AddNotification` accepts a payload from any
+            -- client, and its ValidateDispatchData trims `message`, `title`
+            -- and `coords` and passes `unique_id` and `caller_source`
+            -- through untouched. Both land here.
+            --
+            -- So the default contradicted its own advice, and the cost is not
+            -- theoretical: a client sends a payload naming any fighter as
+            -- `caller_source` and a STRANGER'S call id as `unique_id`, and
+            -- this withdraws a real police or EMS call off the responders'
+            -- screens. sc-dispatch builds its person-down ids as
+            -- `emsdown_<serverId>_<os.time()>`, which is guessable, so the
+            -- stranger does not even have to be unlucky.
+            --
+            -- NOTHING IS LOST BY DEFAULT. This only ever ADDED a route: the
+            -- template sweep still runs from every cancelled event and on the
+            -- revive, and it cannot reach anybody else's call by
+            -- construction -- the server id in the middle of every id it
+            -- builds is the arena player's own. What this adds back, once you
+            -- fill it in, is withdrawal of a call filed under a shape
+            -- `idTemplates` does not list.
+            --
+            -- FILL IT IN IF, AND ONLY IF, your dispatch script refuses alert
+            -- payloads from clients -- on sc-dispatch that is
+            -- Config.Security.ServerOnlyDispatches = true.
+            filedEvent = '',
             filedIdField = 'unique_id',
             filedSubjectField = 'caller_source',
             filedJobsField = 'job_table',

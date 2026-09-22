@@ -3866,7 +3866,6 @@ function Arena.ValidateConfig()
         -- Guessing between those two moves a player's money on a guess.
         local oddsRaw = (Config.Betting.spectatorBets or {}).oddsMultiplier
         local odds = tonumber(oddsRaw)
-        local payoutBlock = type(Config.Betting.betPayout) == 'table' and Config.Betting.betPayout or {}
         -- WHETHER ODDS IS ACTUALLY RUNNING, not merely written down.
         -- `allowServerFundedPayouts` ships false and Arena.BetPayoutMode
         -- refuses odds without it, so a config that says 'odds' is paying a

@@ -430,7 +430,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 104 functions
+#### `shared/arena.lua` — 105 functions
 
 | Function | What it does |
 |---|---|
@@ -531,6 +531,7 @@ listed; the source documents them where they are.
 | `Arena.ComputeSpectatorPayout(stake)` | What one winning spectator side-bet pays back, stake included. |
 | `Arena.CanStartMatch(match)` | Whether a lobby may start. |
 | `Arena.HasRoom(currentCount)` | Whether one more player will fit. |
+| `Arena.HoursOffset(value)` | The hours `Config.Schedule.offsetHours` really shifts the server clock by -- 0 for anything unusable or past 14 either way. Returns a SECOND value: whether the configured one is that number, which is what `ValidateConfig` complains about and what `/arenahours` and the boot log print as IGNORED. The one reader of the -14..14 rule. |
 | `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. Returns a SECOND value: how many configured windows survived the validity test. Not `#spans` — spans are merged, so two touching windows are two windows and one span, and a wrap-around is one window and two spans. `/arenahours` reports the count. |
 | `Arena.ScheduleStatus(hour, minute)` | Whether the arena is open at that time, and when it next opens or shuts. |
 | `Arena.ClockText(minutes)` | Minutes since midnight as `HH:MM` -- the one place that formatting lives. |

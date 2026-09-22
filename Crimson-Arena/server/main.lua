@@ -219,6 +219,49 @@ local function onClient(event, intervalMs, fn, throttled)
     end)
 end
 
+--- The opening-hours offset, as the two screens that print it must say it.
+---
+--- ONE READER, BECAUSE THERE WERE TWO AND ONLY ONE WAS FIXED. hoursReport was
+--- taught to print the offset actually APPLIED plus an IGNORED note, on the
+--- grounds that printing the raw config value tells an operator the offset is
+--- in force while the arena clock beside it shows no shift at all. The BOOT
+--- LOG twenty lines up kept printing it raw, so the identical defect stayed
+--- live on the console -- and that line prints the claimed offset and the
+--- unshifted clock in the same breath, so it contradicts itself.
+---
+--- AND THE CONFIGURED VALUE IS RENDERED, NOT FORMATTED WITH %d. Arena.ToInt
+--- uses math.floor, which leaves a finite float too large to be an integer AS
+--- A FLOAT -- and string.format('%+d', 1e20) raises "number has no integer
+--- representation". Both printers swallow that: ArenaLog's compose and
+--- hoursReport's `say` each pcall string.format and fall back to the raw
+--- template, so an offsetHours of 1e20 printed the line LITERALLY, '%+dh' and
+--- all. MEASURED at 1e20, 1e300 and -1e300. An operator with a typo in that
+--- one field got a screen that told them nothing whatever about it.
+---
+--- `applied` IS ALWAYS A TRUE INTEGER, which is what makes '%+d' safe on it:
+--- it comes from Arena.HoursOffset, the one function ArenaHoursNow itself
+--- calls, so anything unusable -- and anything past 14 hours either way --
+--- arrives here as the integer 0 for the same reason the clock does not move.
+--- `configured` is the one that may be a float, a table or nonsense, and it
+--- is the one that goes through tostring.
+--- @param raw any -- Config.Schedule.offsetHours as ArenaHoursState read it
+--- @return integer applied -- what ArenaHoursNow really shifts by
+--- @return string configured -- the value in the file, safe to print
+--- @return boolean ignored -- whether the two differ
+local function hoursOffset(raw)
+    -- ArenaHoursNow's own decision, asked of ArenaHoursNow's own helper
+    -- rather than re-made here: nil, NaN, both infinities and everything
+    -- outside -14..14 come back as the integer 0 from the one function the
+    -- gate itself calls.
+    local applied = Arena.HoursOffset(raw)
+
+    local number = tonumber(raw)
+    local whole = number and math.tointeger(number)
+    local configured = whole and ('%+d'):format(whole) or tostring(raw)
+
+    return applied, configured, applied ~= number
+end
+
 local function detach(src, reasonKey, dropped)
     local handled, refusal = ArenaMatch.RemovePlayer(src, reasonKey, dropped)
     if handled then return refusal == nil, refusal end
@@ -521,8 +564,14 @@ AddEventHandler('onResourceStart', function(resourceName)
 
     local hours = ArenaHoursState()
     if hours.line then
-        ArenaLog('hours: %s (server clock %s, offset %+dh -> %s) -- %s',
-            hours.line, hours.serverClock, hours.offsetHours, hours.arenaClock,
+        -- THE OFFSET ACTUALLY APPLIED, the same as the admin screen. See
+        -- hoursOffset: this printed the raw config value beside an arena
+        -- clock that had not been shifted by it.
+        local applied, configured, ignored = hoursOffset(hours.offsetHours)
+        ArenaLog('hours: %s (server clock %s, offset %+dh%s -> %s) -- %s',
+            hours.line, hours.serverClock, applied,
+            ignored and (' [config says ' .. configured .. ', outside -14..14, IGNORED]') or '',
+            hours.arenaClock,
             hours.open and 'OPEN now' or ('SHUT now, opens at ' .. tostring(hours.snapshot.opensAt)))
     else
         ArenaLog('hours: not enforced -- the arena is open at every hour.')
@@ -588,10 +637,10 @@ local function hoursReport()
     -- or -20, or 5.5 -- was told that offset was in force while the arena
     -- clock printed on the next line showed no shift at all. They then hunt
     -- the wrong thing, on the one screen built to diagnose exactly this.
-    local applied = (math.abs(hours.offsetHours) <= 14) and hours.offsetHours or 0
-    if applied ~= hours.offsetHours then
-        say('  offsetHours:       %+d  (config says %+d, which is outside -14..14 and is IGNORED)',
-            applied, hours.offsetHours)
+    local applied, configured, ignored = hoursOffset(hours.offsetHours)
+    if ignored then
+        say('  offsetHours:       %+d  (config says %s, which is outside -14..14 and is IGNORED)',
+            applied, configured)
     else
         say('  offsetHours:       %+d', applied)
     end

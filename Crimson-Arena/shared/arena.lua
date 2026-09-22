@@ -2910,6 +2910,31 @@ function Arena.HasRoom(currentCount)
     return (Arena.ToInt(currentCount) or 0) < maximum
 end
 
+--- The timezone shift the clock is actually moved by.
+---
+--- ONE READER OF THE -14..14 RULE, because there were three and they could
+--- not all be right. ArenaHoursNow decided it, Arena.ValidateConfig decided
+--- it again to know whether to complain, and /arenahours decided it a third
+--- time to print it. Three copies of a range is three chances for the gate to
+--- shift by one number while the screen names another -- which is the exact
+--- complaint this field already generated.
+---
+--- AND `math.abs(x) <= 14` WAS NOT THAT RULE. Integer abs OVERFLOWS: in Lua
+--- 5.4 math.abs(math.mininteger) is math.mininteger, still negative, so the
+--- guard passed and an offset of -9223372036854775808 was ACCEPTED by all
+--- three. The config validator then printed no complaint, `offset * 60`
+--- wrapped round to exactly 0 so the clock did not move at all, and both
+--- screens announced a shift of -9223372036854775808 hours beside it. Two
+--- plain comparisons cannot do that, so that is what this is.
+--- @param value any -- Config.Schedule.offsetHours, in whatever shape it is
+--- @return integer applied -- hours to add to the server clock; 0 if unusable
+--- @return boolean usable -- whether `value` is the number being applied
+function Arena.HoursOffset(value)
+    local wanted = Arena.ToInt(value)
+    if wanted and wanted >= -14 and wanted <= 14 then return wanted, true end
+    return 0, false
+end
+
 local MINUTES_PER_DAY = 1440
 
 --- @return table spans -- merged, sorted { start, stop } in minutes
@@ -3994,7 +4019,11 @@ function Arena.ValidateConfig()
         end
 
         local offset = schedule.offsetHours
-        if offset ~= nil and (Arena.ToInt(offset) == nil or math.abs(Arena.ToInt(offset)) > 14) then
+        -- NOT `usable`: that name is already taken, three lines up, by the
+        -- count of windows that survived. Shadowing it here breaks nothing
+        -- today only because nothing below reads it.
+        local _, offsetUsable = Arena.HoursOffset(offset)
+        if offset ~= nil and not offsetUsable then
             complain(('Config.Schedule.offsetHours is %s -- it must be a whole number of hours '
                 .. 'between -14 and 14. Treating it as 0.'):format(tostring(offset)))
         end

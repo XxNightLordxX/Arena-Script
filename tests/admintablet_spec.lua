@@ -115,6 +115,13 @@ local function newArena(admins, mutate)
             OnLoan = function() return 0 end,
             OwedKit = function() return owedBox.kit or {} end,
             OwedKitIsSaved = function() return owedBox.kitSaved == true end,
+
+            -- THE TWO START-UP READS, so server.boot() reaches the lines
+            -- after them. They answer nothing on purpose: what the ledgers
+            -- hold is doorguarantee_spec's subject, and a stub here that
+            -- invented rows would make this file assert them badly.
+            LoadOwedKit = function() end,
+            LoadJams = function() end,
             HeldFor = function(src) return held[src] end,
             AllStashes = function(cb, scanned)
                 -- NEVER ANSWERING IS A REAL OUTCOME, and it is the one this
@@ -238,6 +245,18 @@ local function newArena(admins, mutate)
     end
 
     function server.step() threads.step(); threads.step() end
+
+    --- The resource STARTING, which is where the boot log is written.
+    ---
+    --- The hours line printed there is the SAME claim the /arenahours report
+    --- makes, on a screen an operator reads first and often instead, so it
+    --- gets asserted too. It went unasserted for its whole life and was
+    --- printing the raw config offset beside an unshifted clock.
+    function server.boot()
+        local handler = netEvents['on:onResourceStart']
+        if not handler then error('nothing handles onResourceStart', 2) end
+        handler('crimson_arena')
+    end
 
     --- Drops one player the way FiveM does, through the real handler.
     function server.dropPlayer(src)
@@ -1444,6 +1463,113 @@ t.test('and an in-range offset is reported plainly, which is the control', funct
 
     t.contains(said, '-5', 'a usable offset was not reported')
     t.notContains(said, 'IGNORED', 'a usable offset was reported as ignored')
+end)
+
+--- The one REPORT line about the offset, and only the number it says is in
+--- force -- never the one it says the file contains.
+---
+--- Both are on that line on purpose, which is exactly why an assertion made
+--- against the whole of it proves nothing: `contains '+500'` passes on a line
+--- reading "+0 (config says +500 ... IGNORED)" and on one reading "+500".
+--- @return string
+local function reportedOffset(s)
+    for line in (hoursText(s) .. '\n'):gmatch('(.-)\n') do
+        local applied = line:match('offsetHours:%s+(%S+)')
+        if applied then return applied end
+    end
+    return ''
+end
+
+--- The same number off the BOOT LOG's hours line, and off that line alone.
+---
+--- Arena.ReportConfigProblems prints its own complaint about this very field
+--- a line or two above, naming the configured value: an assertion made
+--- against the whole console is satisfied by the complaint whatever the
+--- hours line says.
+--- @return string offset -- as printed, e.g. '+0h'
+--- @return string line -- the whole hours line, for the rest of it
+local function bootOffset(s)
+    s.boot()
+    local found = ''
+    for line in (s.log() .. '\n'):gmatch('(.-)\n') do
+        if line:find('] hours: ', 1, true) then found = line end
+    end
+    return (found:match('offset (%S+)')) or '', found
+end
+
+t.test('THE BOOT LOG makes the same claim as the report, and it was making another', function()
+    -- The console line prints the offset and the shifted arena clock in one
+    -- breath, so a raw config value there contradicts the number beside it --
+    -- and it is the screen an operator reads FIRST, often instead of
+    -- /arenahours. The report was taught to name the applied offset and this
+    -- line was not, because nothing in this suite had ever read it.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 500 }
+    end)
+
+    local offset, line = bootOffset(s)
+    t.equals(offset, '+0h', 'the boot log named an offset the clock was never shifted by')
+    t.contains(line, 'IGNORED', 'it named 500 as though the doors were going by it')
+    t.contains(line, '+500', 'and it did not say what the file actually contains')
+end)
+
+t.test('and the control: an offset in range is printed there plainly', function()
+    -- Without this the test above is satisfied by a line hard-wired to +0h.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = -5 }
+    end)
+
+    local offset, line = bootOffset(s)
+    t.equals(offset, '-5h', 'a usable offset did not reach the boot log')
+    t.notContains(line, 'IGNORED', 'a usable offset was reported as thrown away')
+end)
+
+t.test('and an offset no %d can print does not put the format string on the screen', function()
+    -- string.format('%+d', 1e20) RAISES -- "number has no integer
+    -- representation" -- because Arena.ToInt floors with math.floor, which
+    -- leaves a float that large as a FLOAT. Both printers swallow it:
+    -- ArenaLog's compose and the report's `say` each pcall string.format and
+    -- fall back to the raw template, so the line reached the operator with
+    -- '%+d' in it and no number anywhere. The one field they mistyped was the
+    -- one thing the screen would not tell them about.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 1e20 }
+    end)
+
+    local said = hoursText(s)
+    t.notContains(said, '%+d', 'the report printed its own format string instead of a number')
+    t.equals(reportedOffset(s), '+0', 'the report did not name the offset actually applied')
+    t.contains(said, '1e+20', 'the report never named the value the operator typed')
+
+    local offset, line = bootOffset(s)
+    t.notContains(line, '%+d', 'the boot log printed its own format string instead of a number')
+    t.equals(offset, '+0h', 'the boot log did not name the offset actually applied')
+end)
+
+t.test('and math.abs was not the range test, because integer abs OVERFLOWS', function()
+    -- math.abs(math.mininteger) is math.mininteger -- still negative -- so
+    -- `math.abs(x) <= 14` ACCEPTED it, in all three places that asked. The
+    -- config validator printed no complaint; the shift multiplied out to
+    -- exactly 0 so the clock did not move at all; and both screens announced
+    -- an offset of -9223372036854775808 hours standing beside it.
+    --
+    -- Every other out-of-range value in this file is refused. This one was
+    -- not, and it is the only integer that could do it.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = {
+            enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = math.mininteger,
+        }
+    end)
+
+    t.equals(reportedOffset(s), '+0', 'the report named a shift the clock never made')
+    t.contains(hoursText(s), 'IGNORED', 'an offset no clock can apply was reported as in force')
+
+    local offset = bootOffset(s)
+    t.equals(offset, '+0h', 'the boot log named a shift the clock never made')
+
+    -- AND THE OPERATOR IS TOLD, which is the half that was silent.
+    t.contains(s.log(), 'Config.Schedule.offsetHours is -9223372036854775808',
+        'the validator waved through the one value it should have named loudest')
 end)
 
 t.test('and windows that were all thrown away do not read as "no windows written"', function()

@@ -1035,6 +1035,74 @@ t.test('ValidateConfig reports rather than throws, and finds every fault at once
     -- config.lua must not take the resource down at start.
     t.equals(#problems, 3, table.concat(problems, ' | '))
 end)
+
+-- ======================================================================
+-- HoursOffset -- the ONE reader of the -14..14 rule
+--
+-- ArenaHoursNow shifts the clock by it, ValidateConfig complains about it,
+-- and /arenahours and the boot log both print it. Four screens, one rule:
+-- when it lived in three places they could and did name different numbers.
+-- ======================================================================
+
+t.test('HoursOffset takes what is usable and answers 0 for what is not', function()
+    local cases = {
+        { 0, 0, true }, { 5, 5, true }, { -5, -5, true }, { 14, 14, true }, { -14, -14, true },
+        { 15, 0, false }, { -15, 0, false }, { 500, 0, false },
+        -- FLOORED, NOT REFUSED: Arena.ToInt is math.floor, and that is the
+        -- number the clock is really shifted by.
+        { 5.5, 5, true }, { -5.5, -6, true },
+        -- Nothing Arena.ToInt can make a number of.
+        { nil, 0, false }, { 'nonsense', 0, false }, { '', 0, false }, { true, 0, false },
+        { {}, 0, false }, { 0 / 0, 0, false }, { math.huge, 0, false }, { -math.huge, 0, false },
+        -- A number too big to be an integer is still a number, and math.floor
+        -- hands it back AS A FLOAT.
+        { 1e20, 0, false }, { -1e300, 0, false },
+        -- Read off a string, like anything else tonumber accepts.
+        { '7', 7, true }, { '  -7  ', -7, true },
+    }
+
+    for _, case in ipairs(cases) do
+        local value, expected, expectedUsable = case[1], case[2], case[3]
+        local applied, usable = Arena.HoursOffset(value)
+        t.equals(applied, expected, ('HoursOffset(%s)'):format(tostring(value)))
+        t.equals(usable, expectedUsable, ('HoursOffset(%s) usability'):format(tostring(value)))
+        -- The whole reason this function exists: the caller prints it with
+        -- '%+d', which RAISES on a float. A float here is the bug, not a
+        -- rounding detail.
+        t.equals(math.type(applied), 'integer',
+            ('HoursOffset(%s) answered a float, which no %%d can print'):format(tostring(value)))
+    end
+end)
+
+t.test('and math.mininteger is refused, which math.abs could not do', function()
+    -- THE ONE INTEGER THE OLD GUARD LET THROUGH. Integer abs overflows:
+    -- math.abs(math.mininteger) IS math.mininteger, still negative, so
+    -- `math.abs(x) <= 14` was true and all three readers accepted it. The
+    -- shift then multiplied out to exactly 0 -- 60 * 2^63 is 0 modulo 2^64 --
+    -- so the clock did not move while every screen announced a shift of
+    -- -9223372036854775808 hours, and the validator said nothing at all.
+    t.isTrue(math.abs(math.mininteger) <= 14,
+        'this Lua does not have the overflow the test is about, so it proves nothing')
+
+    local applied, usable = Arena.HoursOffset(math.mininteger)
+    t.equals(applied, 0, 'an offset no clock could apply was accepted')
+    t.isFalse(usable, 'and it was not reported as a fault')
+
+    -- AND THE OPERATOR IS TOLD. This was the silent half.
+    local arena = tweaked(function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } },
+            offsetHours = math.mininteger }
+    end)
+    local problems = arena.ValidateConfig()
+    t.equals(#problems, 1, table.concat(problems, ' | '))
+    t.contains(problems[1], 'offsetHours')
+
+    -- And the control, so this cannot pass by complaining about everything.
+    local fine = tweaked(function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = -5 }
+    end)
+    t.equals(#fine.ValidateConfig(), 0, table.concat(fine.ValidateConfig(), ' | '))
+end)
 -- ======================================================================
 -- HexToRgb -- one source for every place a team is coloured
 --

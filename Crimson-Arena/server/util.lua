@@ -306,11 +306,10 @@ end
 
 function ArenaHoursNow()
     local schedule = Config.Schedule
-    local offset = 0
-    if type(schedule) == 'table' then
-        local wanted = Arena.ToInt(schedule.offsetHours)
-        if wanted and math.abs(wanted) <= 14 then offset = wanted end
-    end
+    -- Arena.HoursOffset owns the -14..14 rule for the whole resource: the
+    -- validator that complains about a bad one and the two screens that print
+    -- it ask the same function, so they cannot name different numbers.
+    local offset = type(schedule) == 'table' and Arena.HoursOffset(schedule.offsetHours) or 0
 
     local now = os.date('*t')
     local minutes = (now.hour * 60 + now.min + offset * 60) % 1440

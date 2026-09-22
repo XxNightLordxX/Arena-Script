@@ -201,6 +201,43 @@ t.test('the panel can still be opened after a close that overtook one', function
     t.isTrue(f.UI.IsOpen())
 end)
 
+t.test('DEFECT: and after the state fetch RAISES, which used to cost the panel for the session', function()
+    -- THE SAME GUARD, THE OTHER WAY OUT. `isOpening` stops two opens racing
+    -- and was cleared on the line AFTER the await. lib.callback.await reaches
+    -- ox_lib and the server, and it RAISES -- an unregistered callback, a
+    -- server handler that errors, the timeout paths of some ox_lib builds.
+    -- Any of those unwound Open() with the flag still true, and every later
+    -- open returned at the first line.
+    --
+    -- Nothing said so. No error, no notify, no console line: the arena menu
+    -- was simply dead until the player reconnected. The test above covers the
+    -- close-overtakes-open path and could not see this one, because that path
+    -- RETURNS and this one THROWS.
+    local f = newUiFixture()
+    f.duringAwait = function() error('ox_lib callback timed out') end
+
+    -- It must not throw out to whatever pressed the key, either.
+    local escaped = pcall(f.UI.Open)
+    t.isTrue(escaped, 'a raised state fetch threw out of Open and into the keybind handler')
+
+    t.isNil(f.last('open'), 'the panel drew itself on a state fetch that never answered')
+    t.isFalse(f.UI.IsOpen())
+
+    -- AND THE PLAYER IS TOLD, rather than pressing a dead key.
+    t.isTrue(#f.notifications > 0,
+        'the fetch failed and the player was told nothing at all')
+
+    -- THE POINT OF THE TEST: the very next open, with a healthy server, works.
+    f.duringAwait = nil
+    f.UI.Open()
+
+    t.isNotNil(f.last('open'),
+        'one raised fetch latched the open guard, so the panel can never be opened again for the '
+        .. 'rest of this session')
+    t.equals(f.lastFocus(), true)
+    t.isTrue(f.UI.IsOpen())
+end)
+
 t.test('a server notification lands on the panel rail with the panel open', function()
     -- Pins the payload the server sends against the fields read here: the
     -- two are written in different realms and only meet at run time.

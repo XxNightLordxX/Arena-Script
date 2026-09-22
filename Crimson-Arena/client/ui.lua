@@ -53,12 +53,27 @@ function ArenaUI.Open()
 
     isOpening = true
 
+    -- pcall BECAUSE A RAISE HERE USED TO COST THE PANEL FOR THE WHOLE SESSION.
+    --
+    -- `isOpening` is the guard that stops two opens racing, and it was cleared
+    -- on the line AFTER the await. lib.callback.await reaches ox_lib and the
+    -- server: it raises if the callback is not registered, if the server
+    -- handler errors, and on the timeout paths of some ox_lib builds. Any of
+    -- those unwound this function with the flag still TRUE -- and every later
+    -- Open() then hit `if isOpen or isOpening then return end` and returned
+    -- immediately. No error, no notify, nothing on any screen: the arena menu
+    -- was simply dead until the player reconnected.
+    --
+    -- MEASURED: one raise, then a perfectly healthy await, and the panel never
+    -- opens again. So the flag is cleared on every path out, and a raise is
+    -- reported to the player as what it is -- the state could not be fetched
+    -- -- rather than swallowed.
     local token = closeToken
-    local state = lib.callback.await('crimson_arena:server:getState', false)
+    local fetched, state = pcall(lib.callback.await, 'crimson_arena:server:getState', false)
 
     isOpening = false
     if token ~= closeToken then return end
-    if not state then
+    if not fetched or not state then
         ArenaUI.Notify(locale('error.state_unavailable'), 'error')
         return
     end

@@ -10,12 +10,11 @@
 # Each spec is its OWN process: a spec that dies on a syntax error or a stray
 # global cannot take the rest of the suite with it, and no spec can leak a
 # mutated sandbox into the next one. This script aggregates their exit codes
-# and fails if any one of them failed -- the same contract the `Specs` step in
-# .github/workflows/lua-check.yml relies on.
+# and fails if any one of them failed -- the same contract the `The spec suite
+# passes` step in .github/workflows/checks.yml relies on.
 #
-# It also runs the two gates CI runs BEFORE the specs -- parse and luacheck --
-# so that a green run of this script means a green run of CI. See the block
-# below for why that is worth the few seconds of duplication.
+# It also runs the PARSE gate CI runs before the specs, so that a green run of
+# this script means a green run of that step. See the block below.
 
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -31,22 +30,28 @@ if ! command -v "$LUA_BIN" >/dev/null 2>&1; then
 fi
 
 # ----------------------------------------------------------------------
-# THE TWO GATES CI RUNS BEFORE THE SPECS, AND THIS SCRIPT DID NOT.
+# THE GATE CI RUNS BEFORE THE SPECS, AND THIS SCRIPT DID NOT.
 #
-# .github/workflows/lua-check.yml has three: every file PARSES, luacheck is
-# clean against this resource's own allow-list, and the specs pass. Only the
-# third was here -- so a green run of this script said nothing about the
-# other two, and a change could be committed and pushed on the strength of it
-# and still go red. That is not hypothetical; it happened, on a set of
-# shadowed locals in a spec file, with the whole suite passing.
+# Every file PARSES. It was not here -- so a green run of this script said
+# nothing about it, and a change could be committed and pushed on the
+# strength of it and still go red. That is not hypothetical; it happened, on
+# a set of shadowed locals in a spec file, with the whole suite passing.
 #
-# They run FIRST, in CI's order, because a file that does not parse makes
-# everything after it meaningless.
+# It runs FIRST, as it does in CI, because a file that does not parse makes
+# everything after it meaningless. Run twice -- once as CI's own step, once
+# here -- which costs a couple of seconds and is worth it: the alternative is
+# a switch to turn this off, and a switch to turn a guard off is how the
+# guard stops guarding.
 #
-# Run twice in CI -- once as its own step, once here -- which costs a couple
-# of seconds and is worth it: the alternative is a switch to turn this off,
-# and a switch to turn a guard off is how the guard stops guarding. CI keeps
-# its separate steps so its errors stay granular and annotate the right file.
+# AND LUACHECK IS NOT ONE OF CI'S GATES, WHICH THIS BLOCK USED TO SAY IT WAS.
+# It named a workflow file that no longer exists and a .luacheckrc that this
+# repository deliberately does not ship -- see the top of
+# .github/workflows/checks.yml, which explains why both went. So the lint
+# gate below runs only where somebody has put a .luacheckrc back: with no
+# config luacheck reports thousands of undefined FiveM natives and every line
+# over eighty columns, and this script treats a warning as a failure. A
+# contributor who followed the old "install it with luarocks" notice got a
+# suite that refused to run the specs at all, for a gate CI does not have.
 #
 # Both skip with a notice when the tool is absent, exactly as the Node panel
 # tests below do. Neither is a dependency of the resource itself.
@@ -75,19 +80,24 @@ else
     echo "tests/run.sh: '$LUAC_BIN' not found -- SKIPPED the parse gate that CI runs first." >&2
 fi
 
-if command -v "$LUACHECK_BIN" >/dev/null 2>&1; then
+if [ ! -f ../.luacheckrc ]; then
+    echo "tests/run.sh: no .luacheckrc in this repository -- SKIPPED the lint gate." >&2
+    echo "              It is not one of CI's gates either; see the block above. Add a" >&2
+    echo "              .luacheckrc naming this resource's globals and it runs from here on." >&2
+elif command -v "$LUACHECK_BIN" >/dev/null 2>&1; then
     echo "==> luacheck"
-    # From the resource root, which is where .luacheckrc lives and where CI
-    # runs it from. A warning is a CI failure, so it is one here too.
+    # From the repository root, which is where the .luacheckrc tested for
+    # above lives. A warning is treated as a failure.
     if ! ( cd .. && "$LUACHECK_BIN" . ); then
         echo "============================================================"
-        echo "LUACHECK FAILED -- the specs were not run. CI treats a warning as a failure."
+        echo "LUACHECK FAILED -- the specs were not run. A warning is treated as a failure."
         exit 1
     fi
     echo ""
 else
-    echo "tests/run.sh: '$LUACHECK_BIN' not found -- SKIPPED the lint gate CI runs. Install it with" >&2
-    echo "              'luarocks install luacheck', or your distribution's lua-check package." >&2
+    echo "tests/run.sh: '$LUACHECK_BIN' not found -- SKIPPED the lint gate this repository" >&2
+    echo "              configures. Install it with 'luarocks install luacheck', or your" >&2
+    echo "              distribution's lua-check package." >&2
 fi
 
 overall_status=0

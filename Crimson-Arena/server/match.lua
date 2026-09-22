@@ -231,7 +231,7 @@ local function topped(player, tiers)
     return select(2, tierForScore(tierScore(player), tiers)) == true
 end
 
-local function tierLoadout(weapon, supplies, rounds)
+local function tierLoadout(weapon, supplies, rounds, blade)
     -- THROUGH Arena.ResolveWeaponEntry, NOT HAND-BUILT, and the difference
     -- was four fields. The hand-built entry had no `ammoType`, no
     -- `ammoTypeLabel` and -- the one that showed -- no `ammoTypeItem`, which
@@ -276,12 +276,69 @@ local function tierLoadout(weapon, supplies, rounds)
     -- is a rule of the arena, and Arena.ResolveLoadout ignores any `armor`
     -- in the request it is handed. This used to pass the player's previous
     -- armour in and read the constant back out.
+    -- AND THE PERMANENT BLADE BESIDE IT, second in the list and NEVER first.
+    -- settleTier reads weapons[1] as THE rung -- the thing it swaps, bills and
+    -- takes back -- so a blade that landed first would be swapped for the next
+    -- tier and the rung would be the one left in their pocket.
+    --
+    -- SKIPPED WHEN IT WOULD BE A SECOND COPY OF THE RUNG. bladeOf already
+    -- refuses a blade that is on the ladder, so this only fires if an
+    -- operator names the drawn rung itself; it costs one comparison to be
+    -- sure rather than to assume.
+    local weapons = { tier }
+    if blade ~= nil and blade.weapon ~= weapon.weapon then
+        weapons[#weapons + 1] = Arena.ResolveWeaponEntry(blade, Arena.ResolveAmmoType(blade, nil), nil)
+    end
+
     return {
-        weapons = { tier },
+        weapons = weapons,
         armor = base.armor,
         health = base.health,
         supplies = supplies ~= nil and supplies or base.supplies,
     }
+end
+
+--- The permanent blade this match hands out beside every rung, or nil.
+---
+--- CHOSEN ONCE, AND NEVER A WEAPON THAT IS ON THIS LADDER. SwapWeapon sweeps
+--- the name of EVERY drawn rung off a climber on every tier change, so a
+--- blade whose key is also a rung is taken away by the first promotion and
+--- never comes back. MEASURED: with the melee pool forced to `knife`, a
+--- climber held WEAPON_KNIFE on tier 1 and WEAPON_KNIFEx0 from tier 2
+--- onwards, for the rest of the round. The shipped melee pool has 18 entries
+--- and draws one, so that is a one-in-eighteen round, which is exactly the
+--- kind of intermittent loss nobody reports and nobody can reproduce.
+local function bladeOf(match)
+    if match.blade ~= nil then return match.blade or nil end
+
+    local onLadder = {}
+    for _, rung in ipairs(ladderOf(match)) do
+        if Arena.IsKey(rung.weapon) then onLadder[rung.weapon] = true end
+    end
+
+    local mode = Arena.GetModeByKey(match.modeKey) or {}
+    local candidates = type(mode.permanentBlade) == 'table' and mode.permanentBlade or {}
+
+    for _, key in ipairs(candidates) do
+        local candidate = Arena.GetWeaponByKey(key)
+        if candidate and not onLadder[candidate.weapon] then
+            match.blade = candidate
+            return candidate
+        end
+    end
+
+    -- SAID ONCE, AND ONLY WHEN ONE WAS ASKED FOR. An operator who left the
+    -- list empty meant it; one whose five candidates were all drawn, all
+    -- switched off, or all misspelt did not, and that is the case worth a
+    -- line on the console.
+    if #candidates > 0 then
+        ArenaLog('gun game: match %s hands out no permanent blade -- every key in '
+            .. 'permanentBlade is either on this round\'s ladder or is not an enabled weapon. '
+            .. 'Fighters carry only the rung they are standing on.', tostring(match.id))
+    end
+
+    match.blade = false
+    return nil
 end
 
 local function loadoutFor(match, player)
@@ -291,7 +348,8 @@ local function loadoutFor(match, player)
     local tier = Arena.ClampInt(player.tier, 1, #ladder) or 1
     player.tier = tier
 
-    return tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey)), {}
+    return tierLoadout(ladder[tier], kitFor(match, player),
+        Arena.TierAmmoFor(match.modeKey), bladeOf(match)), {}
 end
 
 local function creditsTier(match, killer, victim)
@@ -496,7 +554,7 @@ local function settleTier(match, player, reasonKey)
     if tier == player.tier then return true end
 
     local previous = player.tier and ladder[player.tier] or nil
-    local moving = tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey))
+    local moving = tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey), bladeOf(match))
     local weapon = moving.weapons[1]
 
     local dropped = previous and previous.weapon or nil

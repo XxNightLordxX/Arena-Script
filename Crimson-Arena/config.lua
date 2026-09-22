@@ -22,16 +22,16 @@
       195   Match         Lives, timers, player counts, win condition
       515   Teams         The sides, and whether they may be uneven
       685   Modes         Free-for-all, team deathmatch and gun game
-     1011   DefaultMode   Which of them a new lobby opens on
-     1030   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1274   UI            Panel colours, logo and title
-     1332   Permissions   Who may open a match, who may force-stop one
-     1418   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1852   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2427   Database      Optional: four tables the arena owns. Ships OFF
-     2458   Leaderboard   Which matches count towards the board, and which do not
-     2524   Webhook       Optional: a Discord line per finished match
-     2556   Dispatch      Optional: keeping police and EMS out of the arena
+     1038   DefaultMode   Which of them a new lobby opens on
+     1057   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1301   UI            Panel colours, logo and title
+     1359   Permissions   Who may open a match, who may force-stop one
+     1445   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1879   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2454   Database      Optional: four tables the arena owns. Ships OFF
+     2485   Leaderboard   Which matches count towards the board, and which do not
+     2551   Webhook       Optional: a Discord line per finished match
+     2583   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -946,6 +946,33 @@ Config.Modes = {
         -- AND IT ADDS RATHER THAN TOPPING UP: ArenaAmmo.GrantSupply calls
         -- AddItem, so ten kills is ten plates, not one plate kept full. The
         -- exit takes back what the arena issued, however much that came to.
+        -- A BLADE IN EVERY POCKET, AT EVERY RUNG.
+        --
+        -- The ladder is the loadout in this mode: the rung you are standing
+        -- on is the only weapon you carry, so from tier 2 upwards nobody has
+        -- a melee option at all. This hands one out beside the rung, at every
+        -- tier, the way the arcade original does -- so the humiliation kill
+        -- is always available to anybody willing to close the distance.
+        --
+        -- IT IS A LIST BECAUSE IT HAS TO BE, and this is the whole reason
+        -- for the shape. ArenaAmmo.SwapWeapon sweeps the name of EVERY drawn
+        -- rung off a climber on every tier change, so a blade whose weapon
+        -- is also a rung is taken away by the first promotion and never
+        -- comes back. The melee pool ships 18 entries and draws ONE, so
+        -- naming a single blade loses it about one round in eighteen --
+        -- silently, and only for the players who got that draw.
+        --
+        -- MEASURED: with the melee pool forced to `knife` and `knife` as the
+        -- only candidate, a climber held WEAPON_KNIFE on tier 1 and
+        -- WEAPON_KNIFEx0 from tier 2 to the end of the round.
+        --
+        -- So the first key here that the round did NOT draw is the one
+        -- handed out. Five candidates against a one-rung melee pool cannot
+        -- run out. An empty list -- or one whose every key is drawn, off, or
+        -- not a weapon -- means no blade that round, and the console says so
+        -- once.
+        permanentBlade = { 'knife', 'switchblade', 'dagger', 'machete', 'knuckles' },
+
         killReward = {
             { key = 'bandage', count = 10 },
             { key = 'armour', count = 1 },

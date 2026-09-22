@@ -3641,4 +3641,119 @@ t.test('and the match a melee-only server creates is playable, not refused', fun
     t.equals(matches[1].modeKey, 'gungame')
 end)
 
+-- ======================================================================
+-- THE PERMANENT BLADE
+-- ======================================================================
+
+t.test('THE BLADE: it is carried at every rung, not just the melee one', function()
+    -- THE LADDER IS THE LOADOUT, and that is what this is answering. The rung
+    -- you are standing on is the only weapon you carry, so from tier 2 upwards
+    -- nobody had a melee option at all. A gun game without a blade at the top
+    -- is a gun game where the humiliation kill stops existing after the first
+    -- minute.
+    local s = newServer()
+    s.play(4)
+
+    local blade = s.match_().blade
+    t.isTrue(blade ~= nil and type(blade.weapon) == 'string' and blade.weapon ~= '',
+        'no blade was drawn for this match at all')
+    t.isTrue(s.arena.IsMeleeWeapon(blade) == true,
+        ('the blade drawn was %s, which is not melee'):format(tostring(blade.key)))
+
+    t.equals(s.ox.count(1, blade.weapon), 1, 'the blade was not handed out on tier 1')
+
+    -- CLIMBING MUST NOT COST IT. SwapWeapon sweeps every drawn rung off a
+    -- climber on each tier change; a blade caught in that sweep disappears on
+    -- the first promotion and never returns.
+    s.trade(2, 1)
+    t.equals(s.ox.count(1, blade.weapon), 1, 'the first promotion took the blade away')
+    t.equals(s.ox.count(1, weaponAt(s, 2)), 1, 'and the tier-2 weapon did not arrive')
+
+    s.trade(3, 1)
+    t.equals(s.ox.count(1, blade.weapon), 1, 'the second promotion took the blade away')
+
+    -- AND NEITHER MUST DYING. ox_inventory empties a dead fighter onto the
+    -- floor, so the blade has to be re-armed with the rung on respawn.
+    s.kill(1, 2)
+    s.revive(1)
+    t.equals(s.ox.count(1, blade.weapon), 1, 'the blade did not come back after a death')
+
+    -- EXACTLY ONE, EVERY TIME. A re-issue that does not take the old row back
+    -- hands out a second copy per respawn, which is a free weapon per life.
+    s.kill(1, 2)
+    s.revive(1)
+    t.equals(s.ox.count(1, blade.weapon), 1, 'a respawn handed out a SECOND blade')
+end)
+
+t.test('and it is never a weapon this round drew, which would delete it', function()
+    -- THE ONE-IN-EIGHTEEN ROUND. SwapWeapon's `alsoClear` is the name of every
+    -- drawn rung, and it strips all of them on each tier change -- so a blade
+    -- whose weapon is also a rung is taken away by the first promotion and
+    -- never comes back. The shipped melee pool has 18 entries and draws one.
+    --
+    -- MEASURED before the guard existed, with the pool forced to `knife` and
+    -- `knife` as the blade: WEAPON_KNIFEx1 on tier 1, WEAPON_KNIFEx0 from
+    -- tier 2 to the end of the round.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameClasses[1].weapons = { 'knife' }
+        config.Modes.gungame.permanentBlade = { 'knife', 'switchblade' }
+    end)
+    s.play(4)
+
+    t.equals(weaponAt(s, 1), 'WEAPON_KNIFE', 'the pool was not forced, so this proves nothing')
+
+    local blade = s.match_().blade
+    t.isTrue(blade ~= nil, 'the collision left the round with no blade at all')
+    t.isTrue(blade.weapon ~= 'WEAPON_KNIFE',
+        'the blade chosen is the drawn rung itself -- the first promotion will delete it')
+
+    s.trade(2, 1)
+    t.equals(s.ox.count(1, blade.weapon), 1, 'the promotion deleted the blade')
+end)
+
+t.test('and a list with nothing usable in it leaves the round without one', function()
+    -- The honest end of the same rule: every candidate was drawn, so there is
+    -- nothing safe to hand out and nothing is handed out. Better than handing
+    -- over a blade that vanishes at the first kill.
+    local s = newServer(function(config)
+        config.Modes.gungame.gunGameClasses[1].weapons = { 'knife' }
+        config.Modes.gungame.permanentBlade = { 'knife' }
+    end)
+    s.play(4)
+
+    t.isTrue(s.match_().blade == false or s.match_().blade == nil,
+        'a blade was handed out despite being on this round\'s ladder')
+    t.equals(s.ox.count(1, 'WEAPON_KNIFE'), 1,
+        'the tier-1 rung itself should still be in their hands, exactly once')
+end)
+
+t.test('CONTROL: an empty list really means no blade, and does not raise', function()
+    -- AN OPERATOR WHO TURNS IT OFF MUST GET IT OFF. The other half of every
+    -- switch in this resource: the shipped default is proved above, and this
+    -- proves the default is a choice rather than the only path through.
+    local off = newServer(function(config)
+        config.Modes.gungame.permanentBlade = {}
+    end)
+    off.play(4)
+    t.isTrue(off.match_().blade == false or off.match_().blade == nil,
+        'an empty list still handed out a blade')
+
+    -- AND NONSENSE DOES NOT RAISE, it just means none: this field is operator
+    -- text and a string, a number or a misspelling must cost the blade rather
+    -- than the round.
+    for _, bad in ipairs({ 'knife', 7, true }) do
+        local s = newServer(function(config) config.Modes.gungame.permanentBlade = bad end)
+        s.play(4)
+        t.isTrue(s.match_().blade == false or s.match_().blade == nil,
+            ('permanentBlade = %s was read as a list'):format(tostring(bad)))
+    end
+
+    local junk = newServer(function(config)
+        config.Modes.gungame.permanentBlade = { 'nope', 'alsonope' }
+    end)
+    junk.play(4)
+    t.isTrue(junk.match_().blade == false or junk.match_().blade == nil,
+        'a list of keys that are not weapons handed out something')
+end)
+
 os.exit(t.summary())

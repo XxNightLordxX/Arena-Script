@@ -786,6 +786,68 @@ t.test('and neither does a free-for-all, a round that ends in a restart, or a re
     t.isTrue(respawned.untouched(), 'a respawn touched one of the three')
 end)
 
+--- Blanks out every LONG comment, keeping the newlines so line numbers hold.
+---
+--- THE NAME-ONLY RULE ABOVE MADE THIS NECESSARY. Skipping lines that begin
+--- with `--` handles single-line comments, and that was enough while the rule
+--- demanded a bracket after the name. It is not enough now: a `--[[ ]]` block
+--- explaining why these natives are gone would have its CONTINUATION lines
+--- read as code, and every mention of a name in it reported as a call.
+--- MEASURED -- appending this to a client file failed the guard:
+---
+---     --[[
+---         A note about SetCanAttackFriendly and why it is gone.
+---     ]]
+---
+--- A guard that cries wolf at the documentation is a guard the next person
+--- deletes. Handles the `--[=*[` forms too, and an unterminated block runs to
+--- the end of the file, which is what Lua does.
+--- @param text string
+--- @return string
+local function blankLongComments(text)
+    local out, i = {}, 1
+    while true do
+        local open, openEnd, eq = text:find('%-%-%[(=*)%[', i)
+        if not open then
+            out[#out + 1] = text:sub(i)
+            break
+        end
+
+        out[#out + 1] = text:sub(i, open - 1)
+
+        local close = ']' .. eq .. ']'
+        local closeAt = text:find(close, openEnd + 1, true)
+        local body = closeAt and text:sub(open, closeAt + #close - 1) or text:sub(open)
+
+        -- ONLY THE NEWLINES SURVIVE, so every line below keeps its number.
+        out[#out + 1] = (body:gsub('[^\n]', ''))
+
+        if not closeAt then break end
+        i = closeAt + #close
+    end
+    return table.concat(out)
+end
+
+--- The four names no client file may mention outside a comment.
+local BANNED_NAMES = {
+    'SetPlayerTeam', 'GetPlayerTeam',
+    'NetworkSetFriendlyFireOption', 'SetCanAttackFriendly',
+}
+
+--- The same four natives BY HASH, which a name check cannot see.
+---
+--- Taken from the native reference, not from memory:
+---   SET_PLAYER_TEAM                   0x0299FA38396A4940  (PLAYER)
+---   GET_PLAYER_TEAM                   0x37039302F4E0A008  (PLAYER)
+---   SET_CAN_ATTACK_FRIENDLY           0xB3B1CB349FF9C75D  (PED)
+---   NETWORK_SET_FRIENDLY_FIRE_OPTION  0xF808475FA571D823  (NETWORK)
+local BANNED_HASHES = {
+    SET_PLAYER_TEAM = '0X0299FA38396A4940',
+    GET_PLAYER_TEAM = '0X37039302F4E0A008',
+    SET_CAN_ATTACK_FRIENDLY = '0XB3B1CB349FF9C75D',
+    NETWORK_SET_FRIENDLY_FIRE_OPTION = '0XF808475FA571D823',
+}
+
 t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of them', function()
     -- EVERY TEST ABOVE DRIVES ONE ENTRY PATH. This reads the file.
     --
@@ -832,7 +894,7 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
     for _, name in ipairs(files) do
         local handle = assert(io.open('../Crimson-Arena/' .. name, 'r'),
             name .. ' is in the manifest and not on disk')
-        local text = handle:read('a')
+        local text = blankLongComments(handle:read('a'))
         handle:close()
 
         local n = 0
@@ -840,10 +902,39 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
             n = n + 1
             local bare = line:gsub('^%s+', '')
             if not bare:match('^%-%-') then
-                for _, native in ipairs({ 'SetPlayerTeam', 'GetPlayerTeam',
-                                         'NetworkSetFriendlyFireOption', 'SetCanAttackFriendly' }) do
-                    if bare:find(native .. '%s*%(') then
+                -- THE NAME ANYWHERE, NOT THE NAME FOLLOWED BY A BRACKET.
+                --
+                -- This looked for `Name%s*%(`, which is one of several ways
+                -- to reach a native and the only one it caught. MEASURED --
+                -- each of these was appended to client/main.lua in a copy and
+                -- the whole suite stayed green:
+                --
+                --   local ff = SetCanAttackFriendly; ff(ped, true, true)
+                --   _G['SetCanAttackFriendly'](ped, true, true)
+                --
+                -- A bare mention of one of these names outside a comment is
+                -- a call, an alias or a string used to make one, and this
+                -- resource has no reason to write any of the three. Verified:
+                -- no client file mentions any of them outside a comment
+                -- today, so this cannot fire on the epitaph that names all
+                -- four.
+                for _, native in ipairs(BANNED_NAMES) do
+                    if bare:find(native, 1, true) then
                         offenders[#offenders + 1] = ('%s at %s:%d'):format(native, name, n)
+                    end
+                end
+
+                -- AND THE HASHES, which no name check can ever see.
+                --
+                -- Citizen.InvokeNative(0xB3B1CB349FF9C75D, ...) is the
+                -- ordinary way to call a native with no Lua wrapper, and it
+                -- reaches SET_CAN_ATTACK_FRIENDLY without writing a letter of
+                -- its name. Both hashes were appended to a client file in a
+                -- copy and the whole suite stayed green. A guard named for not
+                -- being satisfiable by luck has to read these too.
+                for label, hash in pairs(BANNED_HASHES) do
+                    if bare:upper():find(hash, 1, true) then
+                        offenders[#offenders + 1] = ('%s (%s) at %s:%d'):format(label, hash, name, n)
                     end
                 end
             end

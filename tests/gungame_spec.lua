@@ -2246,10 +2246,24 @@ t.test('and a kill on your own team-mate is credited to nobody', function()
         config.Modes.gungame.teams = true
         config.Teams.friendlyFire = false
     end)
-    s.play(4)
-    for src = 1, 4 do
-        s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
-    end
+    -- THROUGH play's `before` HOOK, BECAUSE AFTER IT IS TOO LATE. play()
+    -- readies everybody up, and readying up is what starts the round -- so
+    -- by the time it returns the match is 'live' and a team change is
+    -- refused. These four calls did nothing at all: the sides this test then
+    -- asserted on were whatever the automatic assignment happened to hand
+    -- out, and the guard below passed or failed on the draw.
+    --
+    -- MEASURED ACROSS 21 SEEDS: set after play(), fighters 1 and 3 landed on
+    -- OPPOSITE sides in 9 of them; set in this hook, the sides were
+    -- crimson,ash,crimson,ash in 21 of 21. The file's own note on `before`
+    -- says the same thing about loadouts -- "a test that picks after `play`
+    -- returns is silently picking nothing" -- and it is just as true of a
+    -- team.
+    s.play(4, nil, function()
+        for src = 1, 4 do
+            s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+    end)
 
     local match = s.match_()
     local function row(src) return match.players[src] end
@@ -2666,10 +2680,24 @@ t.test('a ladder round crowns a climber, not a side, so no side is named', funct
         -- apart in and which nothing else in this file builds.
         config.Modes.gungame.teams = true
     end)
-    s.play(4)
-    for src = 1, 4 do
-        s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
-    end
+    -- THROUGH play's `before` HOOK, BECAUSE AFTER IT IS TOO LATE. play()
+    -- readies everybody up, and readying up is what starts the round -- so
+    -- by the time it returns the match is 'live' and a team change is
+    -- refused. These four calls did nothing at all: the sides this test then
+    -- asserted on were whatever the automatic assignment happened to hand
+    -- out, and the guard below passed or failed on the draw.
+    --
+    -- MEASURED ACROSS 21 SEEDS: set after play(), fighters 1 and 3 landed on
+    -- OPPOSITE sides in 9 of them; set in this hook, the sides were
+    -- crimson,ash,crimson,ash in 21 of 21. The file's own note on `before`
+    -- says the same thing about loadouts -- "a test that picks after `play`
+    -- returns is silently picking nothing" -- and it is just as true of a
+    -- team.
+    s.play(4, nil, function()
+        for src = 1, 4 do
+            s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+    end)
 
     -- ONE CLIMBER, ENDED ON THE CLOCK. decideOnLadder crowns the highest
     -- tier when the round stops, which is one player -- fighter 3 is on

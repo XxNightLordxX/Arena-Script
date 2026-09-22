@@ -123,6 +123,19 @@ end
 
 function ArenaUI.UpdateHud(data)
     if not Config.UI.showMatchHud then return end
+
+    -- `visible = true` IS THE DEFAULT ON PURPOSE, and it is this function's
+    -- asserted contract: "a hud update is a visible hud", pinned by two tests
+    -- in tests/nuicallback_spec.lua. It was briefly removed here on the
+    -- reasoning that all three callers pass `visible` explicitly and the
+    -- default was therefore dead -- which was wrong twice over. It is not
+    -- dead, it is the contract; and those two tests caught the removal.
+    --
+    -- What the default does NOT excuse is going unchecked. A caller's own
+    -- value has to survive it, or restoring the unconditional bolt-on that
+    -- the note at the bottom of this file is about would go unnoticed.
+    -- tests/hudscope_spec.lua drives the exit path, which asks for the HUD to
+    -- be HIDDEN, and fails if it comes back visible.
     local payload = { visible = true }
     for key, value in pairs(data or {}) do
         payload[key] = value

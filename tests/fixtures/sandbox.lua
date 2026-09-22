@@ -512,6 +512,46 @@ function Sandbox.readDeclarations(path)
     return setmetatable(declared, nil)
 end
 
+--- Blanks out every LONG comment in a chunk of Lua, keeping the newlines so
+--- line numbers still line up with the original file.
+---
+--- FOR THE SOURCE-LEVEL GUARDS, which decide a line is a comment by testing
+--- for a leading `--`. That handles single-line comments and nothing else: the
+--- interior lines of a `--[[ ]]` block do not start with `--`, so a banned
+--- name written inside one is read as code; and `--[[x]] realCall()` DOES
+--- start with `--`, so a call that genuinely executes is skipped. One of those
+--- cries wolf at the documentation and the other lets a defect through, and
+--- both were live. MEASURED: an inline `--[[x]]` prefix hid a second matchHud
+--- registration from tests/hudscope_spec.lua entirely.
+---
+--- Handles the `--[=*[` forms, and an unterminated block runs to the end of
+--- the chunk, which is what Lua does.
+--- @param text string
+--- @return string
+function Sandbox.blankLongComments(text)
+    local out, i = {}, 1
+    while true do
+        local open, openEnd, eq = text:find('%-%-%[(=*)%[', i)
+        if not open then
+            out[#out + 1] = text:sub(i)
+            break
+        end
+
+        out[#out + 1] = text:sub(i, open - 1)
+
+        local close = ']' .. eq .. ']'
+        local closeAt = text:find(close, openEnd + 1, true)
+        local body = closeAt and text:sub(open, closeAt + #close - 1) or text:sub(open)
+
+        -- ONLY THE NEWLINES SURVIVE, so every line keeps its number.
+        out[#out + 1] = (body:gsub('[^\n]', ''))
+
+        if not closeAt then break end
+        i = closeAt + #close
+    end
+    return table.concat(out)
+end
+
 --- The scripts fxmanifest.lua loads into one realm, in manifest order, with
 --- other resources' `@resource/file` includes dropped.
 ---

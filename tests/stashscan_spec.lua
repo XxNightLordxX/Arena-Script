@@ -167,12 +167,35 @@ local function newAmmo(control, mutate)
     -- worth anything" test had to tell "nothing was ever persisted" from
     -- "persisted and unreachable", which is exactly that switch, and the
     -- fixture was asserting on a world where the two disagreed.
-    if control.dbReady then
-        env.Config.Database = env.Config.Database or {}
+    -- `== true`, MATCHING THE STUB. The ArenaDbReady stub above tests
+    -- `control.dbReady == true`; a truthiness test here would split them on
+    -- any truthy non-true value, turning one control field into an accidental
+    -- tri-state where the switch reads on and the gate still answers false.
+    --
+    -- No `or {}` fallback: config.lua is loaded two lines up and defines
+    -- Config.Database with three keys, so the fallback could never fire --
+    -- and if it ever did it would replace the table with one holding only
+    -- `enabled`, dropping the other two.
+    if control.dbReady == true then
         env.Config.Database.enabled = true
     end
 
     if mutate then mutate(env.Config) end
+
+    -- AND THE INVARIANT IS ENFORCED AFTER mutate, NOT BEFORE IT.
+    --
+    -- The write above lands before the mutate callback, so a test whose
+    -- mutate sets Database.enabled = false while control.dbReady is true put
+    -- the resource straight back into the state the comment calls impossible
+    -- -- silently, with the test still green and the assertion the fixture
+    -- change was made for quietly flipped. Nothing asserted the invariant it
+    -- documented. Now a test that does that fails here and says why.
+    if control.dbReady == true then
+        assert(env.Config.Database.enabled == true,
+            'this fixture models ArenaDbReady as true while Config.Database.enabled is not -- '
+            .. 'a state no server can be in, because the real gate is `enabled == true AND '
+            .. 'oxmysql started`. Either drop control.dbReady or stop setting enabled false.')
+    end
     Sandbox.loadInto('../Crimson-Arena/server/ammo.lua', env)
 
     local fixture = { env = env, ammo = env.ArenaAmmo, queries = queries, registered = registered }

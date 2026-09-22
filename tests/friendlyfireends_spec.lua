@@ -786,48 +786,6 @@ t.test('and neither does a free-for-all, a round that ends in a restart, or a re
     t.isTrue(respawned.untouched(), 'a respawn touched one of the three')
 end)
 
---- Blanks out every LONG comment, keeping the newlines so line numbers hold.
----
---- THE NAME-ONLY RULE ABOVE MADE THIS NECESSARY. Skipping lines that begin
---- with `--` handles single-line comments, and that was enough while the rule
---- demanded a bracket after the name. It is not enough now: a `--[[ ]]` block
---- explaining why these natives are gone would have its CONTINUATION lines
---- read as code, and every mention of a name in it reported as a call.
---- MEASURED -- appending this to a client file failed the guard:
----
----     --[[
----         A note about SetCanAttackFriendly and why it is gone.
----     ]]
----
---- A guard that cries wolf at the documentation is a guard the next person
---- deletes. Handles the `--[=*[` forms too, and an unterminated block runs to
---- the end of the file, which is what Lua does.
---- @param text string
---- @return string
-local function blankLongComments(text)
-    local out, i = {}, 1
-    while true do
-        local open, openEnd, eq = text:find('%-%-%[(=*)%[', i)
-        if not open then
-            out[#out + 1] = text:sub(i)
-            break
-        end
-
-        out[#out + 1] = text:sub(i, open - 1)
-
-        local close = ']' .. eq .. ']'
-        local closeAt = text:find(close, openEnd + 1, true)
-        local body = closeAt and text:sub(open, closeAt + #close - 1) or text:sub(open)
-
-        -- ONLY THE NEWLINES SURVIVE, so every line below keeps its number.
-        out[#out + 1] = (body:gsub('[^\n]', ''))
-
-        if not closeAt then break end
-        i = closeAt + #close
-    end
-    return table.concat(out)
-end
-
 --- The four names no client file may mention outside a comment.
 local BANNED_NAMES = {
     'SetPlayerTeam', 'GetPlayerTeam',
@@ -860,41 +818,66 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
     -- Comments are allowed and deliberately so -- the epitaph in
     -- client/match.lua names all three while explaining why they are gone --
     -- so this strips comment lines before looking.
-    -- EVERY CLIENT FILE, AND IT USED TO READ ONE.
+    -- EVERY FILE IN BOTH REALMS, READ OUT OF THE MANIFEST BY EXECUTING IT.
     --
-    -- This opened client/match.lua alone -- because that is where the writes
-    -- were -- and the guarantee it is named for is about the CLIENT, not
-    -- about one file of it. The banned pair could go back into
-    -- client/main.lua, client/spectate.lua or client/dispatch.lua and every
-    -- spec in this suite would stay green. Measured, not assumed.
+    -- This opened client/match.lua alone, then grew a hand-rolled regex over
+    -- fxmanifest.lua's client_scripts block. Both were too narrow, and each
+    -- failure was silent:
     --
-    -- THE LIST COMES OUT OF fxmanifest.lua, so a client file added tomorrow
-    -- is covered the day it is added rather than the day somebody remembers
-    -- this test exists.
-    local manifest = assert(io.open('../Crimson-Arena/fxmanifest.lua', 'r'))
-    local manifestText = manifest:read('a')
-    manifest:close()
+    --   the regex read SINGLE-QUOTED names only, and fxmanifest.lua is
+    --     ordinary Lua where "client/newmod.lua" is equally valid. MEASURED:
+    --     a double-quoted client file containing SetCanAttackFriendly left
+    --     the whole suite green.
+    --   it matched to the FIRST closing brace, so a `}` inside a comment
+    --     truncated the list, and the floor of 5 against a real 6 absorbed
+    --     exactly one silent loss without complaining.
+    --   it read client_scripts only. shared_scripts LOADS INTO THE CLIENT VM
+    --     TOO -- the repo says so itself in tests/fixtures/luacheckrc.lua --
+    --     so a banned native in shared/arena.lua executes on every client.
+    --     MEASURED: inside a function there, all 129 spec files stayed green.
+    --   and nothing anywhere read the SERVER realm.
+    --
+    -- Sandbox.readDeclarations EXECUTES the manifest, so quoting, formatting,
+    -- comments and brace placement stop mattering entirely, and
+    -- Sandbox.realmScripts already unions shared_scripts with the realm's own
+    -- and drops other resources' @includes. Both realms are scanned, deduped,
+    -- because the shared files are in both.
+    local manifest = Sandbox.readDeclarations('../Crimson-Arena/fxmanifest.lua')
 
-    local block = manifestText:match('client_scripts%s*{(.-)}')
-    t.isNotNil(block, 'fxmanifest.lua no longer has a client_scripts block this test can read')
-
-    -- '@other_resource/file.lua' IS NOT THIS RESOURCE'S CODE. The manifest
-    -- pulls qbx_core's playerdata into the client realm; it is not ours to
-    -- police and it is not on our disk.
-    local files = {}
-    for name in block:gmatch("'([^']+%.lua)'") do
-        if not name:match('^@') then files[#files + 1] = name end
+    local files, seen = {}, {}
+    for _, realm in ipairs({ 'client', 'server' }) do
+        for _, name in ipairs(Sandbox.realmScripts(manifest, realm)) do
+            if not seen[name] then
+                seen[name] = true
+                files[#files + 1] = name
+            end
+        end
     end
-    t.isTrue(#files >= 5,
-        ('only %d client file(s) were parsed out of fxmanifest.lua -- the parse has come '
-            .. 'unstuck from the manifest and this test is now guarding almost nothing')
-            :format(#files))
+
+    -- AND THE LIST IS CROSS-CHECKED AGAINST THE DISK, so a manifest that has
+    -- lost an entry cannot quietly shrink what is guarded. Every .lua file
+    -- under client/ and shared/ must be in it.
+    local onDisk = io.popen('ls ../Crimson-Arena/client/*.lua ../Crimson-Arena/shared/*.lua '
+        .. '../Crimson-Arena/shared/compat/*.lua 2>/dev/null')
+    if onDisk then
+        for line in onDisk:lines() do
+            local name = line:gsub('^%.%./Crimson%-Arena/', '')
+            t.isTrue(seen[name] == true,
+                name .. ' is on disk and not in the list this guard scans -- either the manifest '
+                .. 'no longer loads it, or the manifest read has come unstuck')
+        end
+        onDisk:close()
+    end
+
+    t.isTrue(#files >= 15,
+        ('only %d file(s) came back from the manifest -- the read has come unstuck and this '
+            .. 'guard is now covering almost nothing'):format(#files))
 
     local offenders = {}
     for _, name in ipairs(files) do
         local handle = assert(io.open('../Crimson-Arena/' .. name, 'r'),
             name .. ' is in the manifest and not on disk')
-        local text = blankLongComments(handle:read('a'))
+        local text = Sandbox.blankLongComments(handle:read('a'))
         handle:close()
 
         local n = 0
@@ -902,36 +885,11 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
             n = n + 1
             local bare = line:gsub('^%s+', '')
             if not bare:match('^%-%-') then
-                -- THE NAME ANYWHERE, NOT THE NAME FOLLOWED BY A BRACKET.
-                --
-                -- This looked for `Name%s*%(`, which is one of several ways
-                -- to reach a native and the only one it caught. MEASURED --
-                -- each of these was appended to client/main.lua in a copy and
-                -- the whole suite stayed green:
-                --
-                --   local ff = SetCanAttackFriendly; ff(ped, true, true)
-                --   _G['SetCanAttackFriendly'](ped, true, true)
-                --
-                -- A bare mention of one of these names outside a comment is
-                -- a call, an alias or a string used to make one, and this
-                -- resource has no reason to write any of the three. Verified:
-                -- no client file mentions any of them outside a comment
-                -- today, so this cannot fire on the epitaph that names all
-                -- four.
                 for _, native in ipairs(BANNED_NAMES) do
                     if bare:find(native, 1, true) then
                         offenders[#offenders + 1] = ('%s at %s:%d'):format(native, name, n)
                     end
                 end
-
-                -- AND THE HASHES, which no name check can ever see.
-                --
-                -- Citizen.InvokeNative(0xB3B1CB349FF9C75D, ...) is the
-                -- ordinary way to call a native with no Lua wrapper, and it
-                -- reaches SET_CAN_ATTACK_FRIENDLY without writing a letter of
-                -- its name. Both hashes were appended to a client file in a
-                -- copy and the whole suite stayed green. A guard named for not
-                -- being satisfiable by luck has to read these too.
                 for label, hash in pairs(BANNED_HASHES) do
                     if bare:upper():find(hash, 1, true) then
                         offenders[#offenders + 1] = ('%s (%s) at %s:%d'):format(label, hash, name, n)
@@ -942,7 +900,8 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
     end
 
     t.equals(#offenders, 0,
-        'a client file is calling a friendly-fire native again (' .. table.concat(offenders, ', ')
+        'a file in this resource is calling a friendly-fire native again ('
+        .. table.concat(offenders, ', ')
         .. '). Two of these have each already caused the report "enemies cannot kill each other" '
         .. 'in a live round. Read the epitaph in client/match.lua before putting any of them back.')
 end)

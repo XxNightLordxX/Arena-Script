@@ -199,38 +199,42 @@ end)
 
 t.test('and NO client file registers a second one, which the count above cannot see', function()
     -- THE HANDLER COUNT ABOVE ONLY SEES THE TWO FILES THIS FIXTURE LOADS.
-    -- fxmanifest.lua puts six Lua files in the client realm, and the note
-    -- left where the handler used to be in client/ui.lua tells a future
-    -- maintainer that this spec 'fails if a second handler comes back'. That
-    -- was true of ui.lua and match.lua and of nowhere else: the identical
-    -- three lines added to client/main.lua would have undone the guard in
-    -- exactly the same way with every spec green.
+    -- fxmanifest.lua puts far more than two Lua files into the client VM, and
+    -- the note left where the handler used to be in client/ui.lua tells a
+    -- future maintainer that this spec 'fails if a second handler comes
+    -- back'. Making that true took three corrections, each of which was
+    -- silent while it was wrong:
     --
-    -- So this reads the source of every client file the manifest names, the
-    -- same way tests/friendlyfireends_spec.lua guards its own banned natives,
-    -- and the list comes out of the manifest so a file added tomorrow is
-    -- covered the day it is added.
-    local manifest = assert(io.open('../Crimson-Arena/fxmanifest.lua', 'r'))
-    local manifestText = manifest:read('a')
-    manifest:close()
+    --   AddEventHandler. Once any file has called RegisterNetEvent for an
+    --     event name -- client/match.lua:2844 does -- a handler attached
+    --     anywhere with AddEventHandler(name, fn) runs on every server push
+    --     too, in registration order. This fixture concedes the point by
+    --     aliasing both natives to one recorder. The census greped only for
+    --     RegisterNetEvent. MEASURED: the original defect re-added with
+    --     AddEventHandler left all 129 spec files green.
+    --
+    --   Long comments. The comment test is a leading `--`, so `--[[x]]
+    --     RegisterNetEvent('...matchHud', ...)` was discarded as a comment
+    --     while the registration after it executes. MEASURED: also green.
+    --
+    --   The file list. A hand-rolled regex over the client_scripts block read
+    --     single-quoted names only, stopped at the first closing brace, and
+    --     never looked at shared_scripts -- which loads into the client VM as
+    --     well. Sandbox.readDeclarations EXECUTES the manifest instead, so
+    --     quoting and formatting stop mattering, and Sandbox.realmScripts
+    --     unions the shared list in.
+    local manifest = Sandbox.readDeclarations('../Crimson-Arena/fxmanifest.lua')
+    local files = Sandbox.realmScripts(manifest, 'client')
 
-    local block = manifestText:match('client_scripts%s*{(.-)}')
-    t.isNotNil(block, 'fxmanifest.lua no longer has a client_scripts block this test can read')
-
-    local files = {}
-    for name in block:gmatch("'([^']+%.lua)'") do
-        -- '@other_resource/file.lua' is not this resource's code.
-        if not name:match('^@') then files[#files + 1] = name end
-    end
-    t.isTrue(#files >= 5,
-        ('only %d client file(s) were parsed out of fxmanifest.lua -- the parse has come '
-            .. 'unstuck and this test is guarding almost nothing'):format(#files))
+    t.isTrue(#files >= 8,
+        ('only %d client-realm file(s) came back from the manifest -- the read has come unstuck '
+            .. 'and this census is covering almost nothing'):format(#files))
 
     local sites = {}
     for _, name in ipairs(files) do
         local handle = assert(io.open('../Crimson-Arena/' .. name, 'r'),
             name .. ' is in the manifest and not on disk')
-        local text = handle:read('a')
+        local text = Sandbox.blankLongComments(handle:read('a'))
         handle:close()
 
         local n = 0
@@ -239,17 +243,20 @@ t.test('and NO client file registers a second one, which the count above cannot 
             local bare = line:gsub('^%s+', '')
             -- Comments are allowed: the note in client/ui.lua names the event
             -- at length while explaining why it registers nothing.
-            if not bare:match('^%-%-')
-                and bare:find("RegisterNetEvent%s*%(%s*'crimson_arena:client:matchHud'")
-            then
-                sites[#sites + 1] = ('%s:%d'):format(name, n)
+            if not bare:match('^%-%-') and bare:find('crimson_arena:client:matchHud', 1, true) then
+                for _, native in ipairs({ 'RegisterNetEvent', 'AddEventHandler' }) do
+                    if bare:find(native, 1, true) then
+                        sites[#sites + 1] = ('%s at %s:%d'):format(native, name, n)
+                    end
+                end
             end
         end
     end
 
     t.equals(#sites, 1,
-        ('%d client file(s) register a handler for matchHud (%s). FiveM runs them ALL, so a '
-            .. 'second one undoes the guard in client/match.lua no matter which file it is in.')
+        ('%d handler(s) for matchHud are registered across the client realm (%s). FiveM runs '
+            .. 'them ALL -- RegisterNetEvent and AddEventHandler alike -- so a second one undoes '
+            .. 'the guard in client/match.lua whichever file and whichever native it uses.')
             :format(#sites, table.concat(sites, ', ')))
 end)
 
@@ -297,9 +304,17 @@ t.test('and the panel is not forced open to show it', function()
 
     -- And the foreign one, asserted as a COUNT rather than by walking a list
     -- that is empty when the code is right.
+    -- COUNTED THROUGH boardOf, WHICH ACCEPTS EITHER SHAPE -- and the first
+    -- version of this read `(payload.hud or {}).matchId`, the NESTED shape
+    -- client/match.lua posts. The defect it is named for posts the board
+    -- FLAT: ui.lua's deleted handler called ArenaUI.UpdateHud(data), which
+    -- puts matchId at the top level and leaves payload.hud nil. So under the
+    -- real defect this counter never incremented, and the test went red on
+    -- its control instead -- fallible, but not for the reason on the tin.
     local opened = 0
     for _, payload in ipairs(f.hudSince(mark)) do
-        if payload.visible == true and (payload.hud or {}).matchId == 'match-2' then
+        local hud = type(payload.hud) == 'table' and payload.hud or payload
+        if payload.visible == true and hud.matchId == 'match-2' then
             opened = opened + 1
         end
     end
@@ -326,6 +341,30 @@ t.test('the player\'s OWN board still reaches the panel', function()
     local rows = f.boardOf(posted[1])
     t.isNotNil(rows, 'the payload carried no scoreboard at all')
     t.equals(rows[1].name, 'You', 'the wrong roster was posted')
+end)
+
+t.test('and the caller\'s visibility survives ArenaUI.UpdateHud', function()
+    -- UpdateHud used to open `{ visible = true }` and depend on every caller
+    -- passing a key that overwrote it. Nothing pinned that override, so
+    -- putting the bolt-on back -- which is the shape of the original defect
+    -- -- would have gone unnoticed.
+    --
+    -- Driven through the real exitArena path, which is one of the three
+    -- callers that asks for the HUD to be HIDDEN.
+    local f = newFixture()
+    f.enterMatch('match-1')
+
+    local mark = #f.sent
+    f.fire('crimson_arena:client:exitArena', { returnCoords = { x = 0.0, y = 0.0, z = 0.0, w = 0.0 } })
+
+    local posted = f.hudSince(mark)
+    t.isTrue(#posted > 0, 'leaving the arena posted no hud message at all, so this proves nothing')
+
+    for _, payload in ipairs(posted) do
+        t.isFalse(payload.visible == true,
+            'a caller asked for the HUD to be hidden and UpdateHud posted it visible anyway -- '
+            .. 'the bolt-on default is back, which is the original defect wearing a new hat')
+    end
 end)
 
 t.test('a board carrying no match id at all is still drawn', function()

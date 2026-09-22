@@ -237,18 +237,37 @@ t.test('and NO client file registers a second one, which the count above cannot 
         local text = Sandbox.blankLongComments(handle:read('a'))
         handle:close()
 
-        local n = 0
-        for line in (text .. '\n'):gmatch('([^\n]*)\n') do
-            n = n + 1
-            local bare = line:gsub('^%s+', '')
-            -- Comments are allowed: the note in client/ui.lua names the event
-            -- at length while explaining why it registers nothing.
-            if not bare:match('^%-%-') and bare:find('crimson_arena:client:matchHud', 1, true) then
-                for _, native in ipairs({ 'RegisterNetEvent', 'AddEventHandler' }) do
-                    if bare:find(native, 1, true) then
-                        sites[#sites + 1] = ('%s at %s:%d'):format(native, name, n)
-                    end
-                end
+        -- MATCHED ACROSS THE WHOLE FILE, NOT LINE BY LINE.
+        --
+        -- A per-line scan needs the native and the quoted event name on the
+        -- same physical line, and breaking a long registration over lines is
+        -- an ordinary formatting choice:
+        --
+        --     RegisterNetEvent(
+        --         'crimson_arena:client:matchHud',
+        --         function(d) ArenaUI.UpdateHud(d) end
+        --     )
+        --
+        -- MEASURED: written that way in client/main.lua, the census found
+        -- nothing and all 129 spec files stayed green. Lua's `%s` matches a
+        -- newline, so matching the whole file closes it -- and both quote
+        -- styles are accepted, because fxmanifest.lua is not the only place
+        -- this resource is ordinary Lua.
+        --
+        -- Long comments are already blanked above. A `--` LINE comment
+        -- containing the full pattern would be a false positive; verified
+        -- against the shipped tree that none does, including the note in
+        -- client/ui.lua that names the event at length while explaining why
+        -- it registers nothing.
+        for _, native in ipairs({ 'RegisterNetEvent', 'AddEventHandler' }) do
+            local pattern = native .. '%s*%(%s*[\'"]crimson_arena:client:matchHud'
+            local from = 1
+            while true do
+                local at = text:find(pattern, from)
+                if not at then break end
+                local _, newlines = text:sub(1, at):gsub('\n', '')
+                sites[#sites + 1] = ('%s at %s:%d'):format(native, name, newlines + 1)
+                from = at + 1
             end
         end
     end

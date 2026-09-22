@@ -1042,50 +1042,61 @@ t.test('and a SPECTATOR is still sent a board, because they have no match of the
     t.equals(sent.hud.matchId, 'match-2', 'the wrong board reached the HUD')
 end)
 
-t.test('and a stray matchLive cannot set a watcher drawing the round they are watching', function()
-    -- THE BLIP SIDE, AND THE FIRST VERSION OF THIS TEST COULD NOT FAIL
-    -- EITHER -- which is worse than the one it was written to replace,
-    -- because it was written in the knowledge that that one could not fail.
+t.test('and a WATCHER draws nobody, where a fighter in the same fixture draws', function()
+    -- WHAT THIS CAN AND CANNOT PROVE, said plainly, because two earlier
+    -- versions of it claimed more than they held.
     --
-    -- It fired matchHud at a watcher, called f.step, and asserted no blips.
-    -- Its comment credited blipColorFor's `if not currentMatch then return
-    -- nil end`. But blipColorFor is only ever reached from the blip THREAD,
-    -- and that thread is started from exactly one place -- the matchLive
-    -- handler -- which itself returns early without a currentMatch, and
-    -- startBlipThread guards again on the same thing. A watcher never starts
-    -- the loop, so f.step did nothing and the count was 0 whatever the
-    -- production code said. MEASURED: making blipColorFor hand a watcher a
-    -- colour instead of nil -- the exact wallhack the test names -- left all
-    -- 60 assertions in this file green.
+    -- The first fired matchHud at a watcher and asserted no blips, crediting
+    -- blipColorFor's `if not currentMatch` guard. blipColorFor is only reached
+    -- from the blip THREAD, and the thread is started from one place -- the
+    -- matchLive handler -- which returns early without a currentMatch, and
+    -- startBlipThread guards again on the same thing. MEASURED: making
+    -- blipColorFor hand a watcher a live enemy colour left all 60 assertions
+    -- in this file green.
     --
-    -- The protection is a CHAIN OF TWO currentMatch tests on the way to the
-    -- loop, and what can actually be driven is the wire: a matchLive that
-    -- arrives at somebody who is in no round. The server never sends that,
-    -- which is the point -- the client must not rely on it not arriving.
+    -- The second added a stray matchLive to drive the wire. That IS the right
+    -- thing to drive, but its only failure mode is a crash, not this
+    -- assertion: the handler runs `startBoundaryThread(currentMatch.boundary)`
+    -- BEFORE startBlipThread, so a mutant without the guard dies indexing nil
+    -- at client/match.lua:2781 and never reaches the blip loop at all.
+    -- Removing only startBlipThread's own guard leaves the file 60/60 green,
+    -- correctly -- the outer guard still blocks.
     --
-    -- blipColorFor's own nil test is defence in depth BEHIND that chain and
-    -- is not reachable from here. Do not read this test as covering it.
-    local f = newFixture()
-    f.fire('crimson_arena:client:matchHud', {
+    -- So the chain is structurally unreachable from the wire, which is the
+    -- point of it, and no mutation inside the blip code can be caught here.
+    -- What this test CAN hold is that a watcher draws nobody AND that the
+    -- zero means something: the same fixture, driven as a fighter, draws.
+    -- Without that control the assertion is satisfied by a fixture that
+    -- cannot draw at all, which is how the first version passed.
+    --
+    -- The matchLive payload is omitted deliberately: the handler is declared
+    -- `function()` and takes none, so a { matchId = ... } argument would be
+    -- discarded and would read as identity this test does not exercise.
+    local watcher = newFixture()
+    watcher.fire('crimson_arena:client:matchHud', {
         visible = true,
         scoreboard = scoreboard(),
         matchId = 'match-2',
     })
-    f.fire('crimson_arena:client:matchLive', { matchId = 'match-2' })
-    for _ = 1, 4 do f.step() end
+    watcher.fire('crimson_arena:client:matchLive')
+    for _ = 1, 4 do watcher.step() end
 
-    t.equals(f.blipCount(), 0,
-        'a matchLive aimed at somebody in no round of their own started the blip loop -- they '
-        .. 'are now carrying a live map of a round they are only watching')
+    t.equals(watcher.blipCount(), 0,
+        'somebody in no round of their own is carrying a live map of the round they are only '
+        .. 'watching')
+
+    -- THE CONTROL, and it is the whole reason the zero above is worth
+    -- anything: the identical fixture, with this client actually in the
+    -- round, puts dots on the map.
+    local fighter = newFixture()
+    fighter.enterLive()
+    fighter.hud()
+    fighter.step()
+
+    t.isTrue(fighter.blipCount() > 0,
+        'the fixture drew nothing even for a fighter, so the zero above is not evidence of '
+        .. 'anything about watchers')
 end)
-
--- ======================================================================
--- NOTHING ACCUMULATES, AND NOTHING IS LEFT BEHIND
---
--- Every one of these outlives the round if it is missed. A blip nobody
--- removes stays on the map until the player reconnects; an outline nobody
--- removes follows a ped around the city.
--- ======================================================================
 
 t.test('a hundred sweeps do not leave a hundred blips', function()
     -- The loop redraws every pass. A redraw that adds without removing looks

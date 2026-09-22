@@ -54,11 +54,21 @@ local SILENT = {
 }
 
 --- One fresh load of the REAL client/ui.lua and client/match.lua, together.
+---
+--- `wholeRealm` loads EVERY client-realm file the manifest names instead, and
+--- records which of them registered what. Only the census test wants that:
+--- the behavioural tests below want the two files the defect lived in and
+--- nothing else attaching handlers to the same events.
+--- @param wholeRealm boolean? -- load every client-realm file, not just two
 --- @return table fixture
-local function newFixture()
+local function newFixture(wholeRealm)
     local runner = Sandbox.newThreadRunner()
     local handlers = {}
-    local f = { sent = {} }
+    local f = { sent = {}, registeredIn = {} }
+
+    --- Which file is being loaded right now, so a registration can be blamed
+    --- on it. nil while the fixture is not walking the manifest.
+    local loading = nil
 
     -- EVERY handler kept, in registration order. A fixture that wrote
     -- `handlers[name] = fn` would silently drop one of the two this whole
@@ -66,6 +76,11 @@ local function newFixture()
     local function register(name, fn)
         handlers[name] = handlers[name] or {}
         handlers[name][#handlers[name] + 1] = fn
+        if loading then
+            f.registeredIn[name] = f.registeredIn[name] or {}
+            local where = f.registeredIn[name]
+            where[#where + 1] = loading
+        end
     end
 
     local overrides = {
@@ -109,6 +124,15 @@ local function newFixture()
             callback = { await = function() return nil end },
             notify = function() end,
         },
+        -- client/exports.lua calls `exports('name', fn)`; without this it
+        -- cannot be loaded at all, which is why the census below never
+        -- looked at the one file the manifest marks LAST.
+        exports = setmetatable({}, { __call = function() end }),
+        -- WHICH VM THIS IS, and false is the honest answer here: a
+        -- shared_script asks it to decide which half of itself to run, and
+        -- this fixture is the CLIENT. shared/compat/dispatch.lua cannot be
+        -- loaded at all without it.
+        IsDuplicityVersion = function() return false end,
         ArenaDispatch = {
             Enter = function() end,
             Exit = function() end,
@@ -119,13 +143,27 @@ local function newFixture()
     for _, name in ipairs(SILENT) do overrides[name] = function() end end
 
     local env = Sandbox.newEnv(overrides)
-    Sandbox.loadInto('../Crimson-Arena/config.lua', env)
-    Sandbox.loadInto('../Crimson-Arena/config.weapons.lua', env)
-    Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
-    -- fxmanifest.lua's own order. Reversing these two would hide the defect
-    -- this file is about, because then the guard would run last and win.
-    Sandbox.loadInto('../Crimson-Arena/client/ui.lua', env)
-    Sandbox.loadInto('../Crimson-Arena/client/match.lua', env)
+
+    if wholeRealm then
+        -- THE MANIFEST'S OWN LIST, IN THE MANIFEST'S OWN ORDER, so this
+        -- cannot drift from what FXServer loads and cannot be narrowed by
+        -- somebody editing a list in here.
+        local manifest = Sandbox.readDeclarations('../Crimson-Arena/fxmanifest.lua')
+        for _, name in ipairs(Sandbox.realmScripts(manifest, 'client')) do
+            loading = name
+            Sandbox.loadInto('../Crimson-Arena/' .. name, env)
+        end
+        loading = nil
+    else
+        Sandbox.loadInto('../Crimson-Arena/config.lua', env)
+        Sandbox.loadInto('../Crimson-Arena/config.weapons.lua', env)
+        Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+        -- fxmanifest.lua's own order. Reversing these two would hide the
+        -- defect this file is about, because then the guard would run last
+        -- and win.
+        Sandbox.loadInto('../Crimson-Arena/client/ui.lua', env)
+        Sandbox.loadInto('../Crimson-Arena/client/match.lua', env)
+    end
 
     f.env = env
 
@@ -299,6 +337,57 @@ t.test('and NO client file registers a second one, which the count above cannot 
             .. 'them ALL -- RegisterNetEvent and AddEventHandler alike -- so a second one undoes '
             .. 'the guard in client/match.lua whichever file and whichever native it uses.')
             :format(#sites, table.concat(sites, ', ')))
+end)
+
+t.test('and the same question asked by LOADING the realm, which no spelling can dodge', function()
+    -- THE CENSUS ABOVE READS TEXT, AND TEXT CAN ALWAYS BE WRITTEN ANOTHER WAY.
+    --
+    -- It has been widened three times -- AddEventHandler, long comments,
+    -- across newlines, either quote style -- and each widening was prompted
+    -- by a form it had missed. MEASURED against the current pattern, five
+    -- forms are caught and two are not:
+    --
+    --     local E = 'crimson_arena:client:matchHud'
+    --     RegisterNetEvent(E, function(d) ArenaUI.UpdateHud(d) end)
+    --
+    --     RegisterNetEvent('crimson_arena:client:' .. 'matchHud', ...)
+    --
+    -- Both leave the census green, because the literal is not next to the
+    -- call. Widening the pattern again would buy the next two forms and not
+    -- the two after that: a source scan cannot win this.
+    --
+    -- SO ASK THE RUNTIME INSTEAD. This loads every client-realm file the
+    -- manifest names, into the same recorder the fixture already uses for
+    -- both natives, and counts what actually attached. A hoisted local, a
+    -- concatenation, a name off a table -- all of them register, so all of
+    -- them are counted. MEASURED: each of the three forms above makes this
+    -- read 2, and the shipped tree reads 1.
+    --
+    -- THE TEXT CENSUS STAYS. It names the FILE AND LINE of an offender,
+    -- which a count cannot, and it reads the four client files this fixture
+    -- would otherwise never have loaded at all. The two fail differently and
+    -- that is the point of having both.
+    local f = newFixture(true)
+
+    local where = f.registeredIn['crimson_arena:client:matchHud'] or {}
+    t.equals(f.handlerCount('crimson_arena:client:matchHud'), 1,
+        ('%d handler(s) for matchHud attached when the whole client realm was loaded (%s). '
+            .. 'FiveM runs them ALL, so a second one undoes the guard in client/match.lua '
+            .. 'however its name was spelled at the call.')
+            :format(f.handlerCount('crimson_arena:client:matchHud'),
+                #where > 0 and table.concat(where, ', ') or 'no file recorded'))
+
+    -- AND IT REALLY LOADED THE WHOLE REALM, not the two files the other
+    -- fixture loads -- otherwise a count of 1 is satisfied by never looking.
+    local loaded = {}
+    for _, names in pairs(f.registeredIn) do
+        for _, name in ipairs(names) do loaded[name] = true end
+    end
+    local seen = 0
+    for _ in pairs(loaded) do seen = seen + 1 end
+    t.isTrue(seen >= 4,
+        ('only %d client-realm file(s) registered anything, so this fixture is not loading the '
+            .. 'realm and the count above proves nothing'):format(seen))
 end)
 
 t.test('a board from somebody else\'s round never reaches the panel', function()

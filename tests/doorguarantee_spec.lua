@@ -1138,6 +1138,62 @@ local function armedDoorOffMatch(ids)
     return server, match.id
 end
 
+t.test('DEFECT: a round nobody picked a weapon for says so, once', function()
+    -- THE SHIPPED CONFIG PRODUCES THIS, and nothing said a word about it.
+    --
+    -- Config.Loadouts.chooser is 'host', 96 weapons ship and not one carries a
+    -- default, so a host who creates a match without opening the weapon list
+    -- sends everybody in with armour, a bandage and bare hands. MEASURED:
+    -- ResolveLoadout(nil).weapons is empty, Arena.ValidateConfig says nothing,
+    -- and the only other mention anywhere is an ArenaDebug line in
+    -- server/lobby.lua -- off by default, and only reached if somebody called
+    -- setLoadout, which a host who never opened the picker did not.
+    --
+    -- Two players paid the shipped 500 entry fee each and fought a deathmatch
+    -- bare-handed, in silence. This file already calls an unarmed fighter "a
+    -- worse bug than an imprecise exit" and shouts when ox_inventory is the
+    -- cause; it is no better when the cause is that nobody picked.
+    --
+    -- The neighbouring warning cannot cover it: that one is guarded on
+    -- `#loadout.weapons > 0`, because it is about names ox_inventory refused.
+    -- An EMPTY loadout never reaches it.
+    --
+    -- armedDoorOffMatch's own comment says liveMatch leaves people on an empty
+    -- loadout, so this is the ordinary path, not a contrivance.
+    local server = liveMatch({ 1, 2 })
+    server.step(6)
+
+    local said = server.log()
+    t.contains(said, 'NO WEAPON AT ALL',
+        'a round was fought bare-handed and the console said nothing at all about it')
+
+    -- ONCE, AND THE NAME OF THIS TEST SAYS SO. Two fighters went in, and a
+    -- line printed per fighter per round is a line an operator reads past
+    -- within a week -- which is the same as not printing it. warnedStripOff
+    -- beside it is once-per-process for exactly this reason.
+    local times = select(2, said:gsub('NO WEAPON AT ALL', ''))
+    t.equals(times, 1, ('the bare-handed warning printed %d times for one round of two fighters '
+        .. '-- it is meant to be said once, the way the switched-off-door warning is'):format(times))
+
+    -- AND IT NAMES THE SETTING **AND ITS VALUE**, because "check your config"
+    -- is not a diagnosis. Asserting only the setting's name passes on a
+    -- message that dropped the value.
+    t.contains(said, 'Config.Loadouts.chooser',
+        'the warning did not name the setting that decides who picks, so it is not actionable')
+    t.contains(said, "chooser is host",
+        'the warning names the setting but not what it is set to, so an operator still has to '
+        .. 'go and look it up')
+end)
+
+t.test('and an ARMED round says nothing, which is what stops it being noise', function()
+    -- Without this the test above is satisfied by a line printed every round,
+    -- which an operator learns to read past in a week.
+    local server = armedDoorOffMatch({ 1, 2 })
+
+    t.notContains(server.log(), 'NO WEAPON AT ALL',
+        'a round where everybody was armed was reported as bare-handed')
+end)
+
 t.test('with the door off a fighter keeps their own things and gains the arena kit', function()
     -- The premise, asserted so the tests below cannot pass by the arena
     -- quietly having issued nothing.

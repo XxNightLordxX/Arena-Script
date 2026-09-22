@@ -790,6 +790,10 @@ local warnedNoContainerExport = false
 --- Said once per run: it is a fact about the config, not about a player.
 local warnedStripOff = false
 
+--- Said ONCE, for the same reason warnedStripOff is: it is a fact about how
+--- the round was set up, not about this fighter.
+local warnedNoWeapons = false
+
 local function holdContainers(ox, src, citizenid)
     local keys = {}
     if doorConfig().emptyContainers == false then return keys end
@@ -3110,6 +3114,36 @@ local function issueWeapons(ox, src, matchId, loadout)
     if #given == 0 and #(loadout.weapons or {}) > 0 then
         ArenaLog('weapons: %s was issued NOTHING despite a loadout of %d weapon(s). Every name was refused by ox_inventory -- check they exist in its weapon data, spelled exactly as in Config.Loadouts.weapons.',
             tostring(src), #loadout.weapons)
+    end
+
+    -- AND THE CASE ABOVE CANNOT SEE: NOBODY ASKED FOR A WEAPON AT ALL.
+    --
+    -- That line is guarded on `#loadout.weapons > 0` -- it is about names
+    -- ox_inventory refused. An EMPTY loadout never reaches it, and an empty
+    -- loadout is what the shipped config produces: `chooser = 'host'`, 96
+    -- weapons and not one of them flagged as a default, so a host who creates
+    -- a match without opening the weapon picker sends everybody in with
+    -- armour, a bandage and bare hands.
+    --
+    -- MEASURED on the shipped config: ResolveLoadout(nil).weapons is empty,
+    -- Arena.ValidateConfig says nothing about it, and the only other mention
+    -- anywhere is an ArenaDebug line in server/lobby.lua that is off by
+    -- default AND only runs if somebody called setLoadout -- which a host who
+    -- never opened the picker did not. Two players paid the shipped 500 entry
+    -- fee each and fought a deathmatch bare-handed, in silence.
+    --
+    -- This file already calls that outcome "a worse bug than an imprecise
+    -- exit" and shouts when ox_inventory causes it. It is no better when the
+    -- cause is that nobody picked.
+    --
+    -- ONCE PER PROCESS, like warnedStripOff: it is a fact about the setup.
+    if #given == 0 and #(loadout.weapons or {}) == 0 and not warnedNoWeapons then
+        warnedNoWeapons = true
+        ArenaLog('weapons: %s went into a round with NO WEAPON AT ALL -- the loadout asked for '
+            .. 'none. On the shipped config nothing is picked for you: Config.Loadouts.chooser '
+            .. 'is %s, so whoever picks has to open the weapon list and choose before the round '
+            .. 'starts. If a bare-handed round IS what you meant, ignore this; it is said once.',
+            tostring(src), tostring((Config.Loadouts or {}).chooser))
     end
 
     return failed

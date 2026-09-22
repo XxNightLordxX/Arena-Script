@@ -2742,6 +2742,95 @@ t.test('and his switch is read off his own config, both ways', function()
         'an integration that is switched OFF was not reported as off')
 end)
 
+--- A sc-dispatch whose two files answer separately, the way LoadResourceFile
+--- really does. Every test above hands the same body to every path, which is
+--- why a check that reads a SECOND file needed this.
+--- @param config string|nil -- nil means the config could not be read
+--- @param client string|nil -- nil means client/main.lua could not be read
+local function scDispatchFiles(config, client)
+    local f = newCompatAndServer({ ['sc-dispatch'] = true })
+    f.env.LoadResourceFile = function(resource, path)
+        if resource ~= 'sc-dispatch' then return nil end
+        if path == 'config.lua' then return config end
+        return client
+    end
+    return table.concat(f.env.ArenaDispatch.CompatReport(), '\n')
+end
+
+--- A client file with no mention of this resource anywhere in it -- which is
+--- what an older sc-dispatch really is. MEASURED: the 1.0.1 build dated two
+--- days before the one that ships the check has no `CrimsonArena` in any of
+--- its 253 files.
+local NO_ARENA_CLIENT = 'function IsInPaintball()\n    return false\nend\n'
+local ARENA_CLIENT = 'function IsInCrimsonArena()\n    return LocalPlayer.state.crimsonArena ~= nil\nend\n'
+local SWITCH_ON = 'Config.Integrations = {\n    PugPaintball = false,\n    CrimsonArena = true,\n}'
+
+t.test('THE SWITCH IS NOT THE INTEGRATION: a key nothing reads is not a mute', function()
+    -- THE FALSE ALL-CLEAR. The arena check is something sc-dispatch itself
+    -- added; a build without it has no code that looks at the key, so setting
+    -- it does NOTHING. The tablet read his CONFIG and nothing else, so the
+    -- operator set the key, was told the integration was on, and stopped
+    -- looking -- while every shots-fired, person-down and person-dead call
+    -- still fired. Both builds call themselves 1.0.1.
+    local report = scDispatchFiles(SWITCH_ON, NO_ARENA_CLIENT)
+
+    t.contains(report, 'nothing in its client/main.lua mentions this resource',
+        'a switch nothing reads was reported as a working integration')
+    t.contains(report, 'NOT muted',
+        'the table credited a mute to a build with no code to do it')
+    t.notContains(report, 'no arena shot, death or help-call is paged',
+        'the operator was told alerts were handled by a build that cannot handle them')
+end)
+
+t.test('and an ESCROWED client file does not cost a working integration its credit', function()
+    -- THE OPPOSITE MISTAKE, AND THE MORE LIKELY ONE. Client files are exactly
+    -- what operators escrow. Reading "cannot tell" as "no integration" would
+    -- report a correctly integrated server as unhandled for no better reason
+    -- than that its client is packed -- and hand it a paste it does not need.
+    -- nil is not false. DO NOT collapse these.
+    local report = scDispatchFiles(SWITCH_ON, nil)
+
+    t.contains(report, 'muted by its own integration',
+        'a packed client file was read as proof there is no integration')
+    t.notContains(report, 'nothing in its client/main.lua mentions this resource',
+        'an unreadable file was reported as an empty one')
+end)
+
+t.test('and a build that DOES ship the check keeps saying so', function()
+    -- The control in the other direction: the whole point is that the newer
+    -- build is unaffected.
+    local report = scDispatchFiles(SWITCH_ON, ARENA_CLIENT)
+
+    t.contains(report, 'muted by its own integration', 'a real integration lost its credit')
+    t.contains(report, 'no arena shot, death or help-call is paged',
+        'a real integration stopped being described as working')
+end)
+
+t.test('and a config with NO such key is not reported as an unreadable one', function()
+    -- TWO ANSWERS THAT WERE ONE. A config that cannot be read and a config
+    -- read perfectly well that has no such key both came back nil, and both
+    -- printed "its config could not be read from here" -- which sends an
+    -- operator whose file is open in front of them hunting an escrow problem
+    -- that does not exist. The real answer is that their BUILD is old.
+    --
+    -- PAIRED WITH A CLIENT THAT DOES READ IT, because "nothing reads the
+    -- switch" outranks "the switch is not set" and would answer first
+    -- otherwise -- correctly, since on that build the key is beside the
+    -- point. What is left here is the build that CAN read it and has had the
+    -- key taken out of its config.
+    local report = scDispatchFiles('Config.Integrations = {\n    PugPaintball = false,\n}', ARENA_CLIENT)
+
+    t.contains(report, 'no Integrations.CrimsonArena key in it at all',
+        'a config that was read and has no key was reported as unreadable')
+
+    -- AND THE UNREADABLE CASE STILL SAYS UNREADABLE, or the split is no split.
+    local packed = scDispatchFiles(nil, ARENA_CLIENT)
+    t.contains(packed, 'could not be read from here',
+        'a config that really could not be read stopped saying so')
+    t.notContains(packed, 'no Integrations.CrimsonArena key in it at all',
+        'an unreadable config was reported as one that was read')
+end)
+
 t.test('AND THE TABLE AT THE TOP AGREES WITH IT, which it did not', function()
     -- THE SEAM, DRIVEN END TO END. Reported off a live server: one report
     -- said, of the same resource, twenty lines apart:

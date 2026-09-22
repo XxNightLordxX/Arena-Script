@@ -1666,7 +1666,16 @@ end
 --- READ, NEVER WRITTEN, and unknown-safe: see the file-reading note in the
 --- body. nil means "could not tell", which is NOT the same as false and must
 --- never be reported as one.
---- @return boolean|nil on -- true, false, or nil when it could not be read
+--- AND WHETHER THE FILE WAS READ AT ALL, as a SECOND value, because nil
+--- meant two different things and only one of them was being reported. A
+--- config that cannot be read and a config that is read perfectly well and
+--- has no such key both answered nil, and the line below said "its config
+--- could not be read from here" for both -- which sends an operator whose
+--- file is right there in front of them hunting an escrow problem that does
+--- not exist. The real answer in that case is that their BUILD of sc-dispatch
+--- has no arena integration; see scDispatchReadsSwitch.
+--- @return boolean|nil on -- true, false, or nil when the key is not there
+--- @return boolean read -- whether config.lua could be read at all
 local function scDispatchIntegrationOn()
     -- HIS `Integrations` TABLE IS A TABLE IN HIS LUA STATE -- nothing to do
     -- with this resource's own settings, and deliberately not written here as
@@ -1675,7 +1684,7 @@ local function scDispatchIntegrationOn()
     -- for it either, so this reads the file he ships unencrypted and looks
     -- for the assignment.
     local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'config.lua')
-    if not read or type(body) ~= 'string' then return nil end
+    if not read or type(body) ~= 'string' then return nil, false end
 
     -- LINE BY LINE, WITH TRAILING COMMENTS CUT OFF, because a match run over
     -- the whole file reads a COMMENTED-OUT example as the live setting.
@@ -1690,11 +1699,56 @@ local function scDispatchIntegrationOn()
     -- it is why the nil answer exists.
     for line in body:gmatch('[^\n]+') do
         local value = line:gsub('%-%-.*$', ''):match('CrimsonArena%s*=%s*([%a]+)')
-        if value == 'true' then return true end
-        if value == 'false' then return false end
+        if value == 'true' then return true, true end
+        if value == 'false' then return false, true end
     end
 
-    return nil
+    return nil, true
+end
+
+--- WHETHER HIS BUILD HAS ANY CODE THAT LOOKS AT THAT SWITCH.
+---
+--- THE SWITCH IS NOT THE INTEGRATION, and the difference is a whole hole.
+--- The arena check is something sc-dispatch itself added, and a build without
+--- it has nothing anywhere that reads `Integrations.CrimsonArena` -- so
+--- setting the key does NOTHING, and an operator who set it, and was told by
+--- the line below that the integration was on, stops looking while every
+--- shots-fired, person-down and person-dead call still fires. MEASURED
+--- against two real builds that BOTH call themselves 1.0.1: the newer ships
+--- `IsInCrimsonArena()` wired through `IsInCombatSafeZone()`, the older does
+--- not mention this resource in any of its 253 files.
+---
+--- READ, NEVER WRITTEN, and the same technique ambulanceGuardLine already
+--- uses on sc-ambulance's own source.
+---
+--- nil IS NOT false HERE EITHER, and that matters more than usual: client
+--- files are the ones operators escrow. A build that cannot be read must keep
+--- whatever credit the switch earns, or a correctly integrated server is
+--- reported as unhandled for no better reason than that its client file is
+--- packed. Only a file that WAS read and mentions nothing counts against it.
+---
+--- IT CANNOT LINT THEIR LUA. A mention is a mention: a pasted block that is
+--- present but wrong reads as present here. Saying "nothing reads it" when
+--- nothing does is the part worth having; the rest is the operator's to test.
+--- @return boolean|nil reads
+local function scDispatchReadsSwitch()
+    local read, body = pcall(LoadResourceFile, 'sc-dispatch', 'client/main.lua')
+    if not read or type(body) ~= 'string' then return nil end
+
+    -- ANY MENTION OF THE NAME, not one spelling of it. `CrimsonArena` catches
+    -- both the function the newer build defines, IsInCrimsonArena, and a read
+    -- of the switch itself; `Crimson-Arena` catches the export and the
+    -- GetResourceState guard around it. The older build has NEITHER, in any
+    -- of its files -- which is the whole measurement this rests on.
+    if body:find('CrimsonArena', 1, true) then return true end
+    if body:find('Crimson-Arena', 1, true) then return true end
+
+    -- THE BAG BY WHATEVER NAME IT IS WRITTEN UNDER, because an operator who
+    -- renamed it and pasted the guard by hand spelled it their way.
+    local key = stateKey()
+    if type(key) == 'string' and key ~= '' and body:find(key, 1, true) then return true end
+
+    return false
 end
 
 --- WHAT THE COMPAT TABLE SHOULD SAY ABOUT EACH DETECTED RESOURCE, for the
@@ -1714,6 +1768,11 @@ local function compatIntegrations()
     if known and state == 'started'
         and stateKey() == 'crimsonArena'
         and scDispatchIntegrationOn() == true
+        -- AND SOMETHING IN HIS BUILD ACTUALLY READS IT. `== false` and not
+        -- `~= true`: see scDispatchReadsSwitch -- a client file that could
+        -- not be read answers nil and must keep the credit, or an escrowed
+        -- build is reported as unhandled for being packed.
+        and scDispatchReadsSwitch() ~= false
     then
         out['sc-dispatch'] = {
             muted = true,
@@ -1754,7 +1813,22 @@ local function alertGuardLine()
     -- HIS SWITCH, READ OFF HIS OWN CONFIG FILE -- see scDispatchIntegrationOn.
     -- ONE READER, SHARED WITH THE TABLE ABOVE. It used to be inlined here,
     -- which is how the row and this paragraph came to disagree.
-    local settingSays = scDispatchIntegrationOn()
+    local settingSays, configRead = scDispatchIntegrationOn()
+    local readsIt = scDispatchReadsSwitch()
+
+    -- NOTHING IN HIS BUILD READS THE SWITCH, which outranks whatever the
+    -- switch is set to. Said before the true/false branches because both of
+    -- those describe a build that can act on it, and this one cannot: the
+    -- operator would otherwise be told the integration is on, or told to turn
+    -- it on, when turning it on changes nothing at all.
+    if readsIt == false then
+        return 'sc-dispatch is running, but nothing in its client/main.lua mentions this resource '
+            .. '-- so this build has no arena integration and '
+            .. 'Integrations.CrimsonArena is a setting nothing reads. Setting it does NOTHING on '
+            .. 'its own: every arena shot, death and help-call is still paged as an ordinary city '
+            .. 'call. Newer builds of sc-dispatch ship the check as IsInCrimsonArena(); update it, '
+            .. 'or paste the block in DISPATCH-ALERTS.md Part 1. Nothing needs changing here.'
+    end
 
     if settingSays == true then
         return 'sc-dispatch is running with Integrations.CrimsonArena = true in its own config, '
@@ -1770,6 +1844,16 @@ local function alertGuardLine()
             .. 'never asks this resource and every arena shot and death is paged as an ordinary '
             .. 'city call. Set it to true in sc-dispatch/config.lua -- nothing needs changing '
             .. 'here.'
+    end
+
+    -- READ, AND THE KEY IS SIMPLY NOT IN IT. Reported as its own answer
+    -- rather than as "could not be read", which sent an operator looking at
+    -- escrow and file paths while the file sat there in front of them.
+    if configRead then
+        return 'sc-dispatch is running. Its config was read and has no Integrations.CrimsonArena '
+            .. 'key in it at all, which is what an older build looks like. Add the key AND make '
+            .. 'sure something reads it -- see DISPATCH-ALERTS.md Part 1, which has the one '
+            .. 'command that tells you which build you have. Nothing needs changing here.'
     end
 
     return 'sc-dispatch is running. Its config could not be read from here, so check '

@@ -5,7 +5,7 @@ There are two scripts to touch and nothing else:
 
 | Script | What to do | Effort |
 |---|---|---|
-| `sc-dispatch` | Set one line in **its own** config | one line |
+| `sc-dispatch` | Set one line in **its own** config — **on a build that ships the arena check.** Part 1 says how to tell, and what to paste if yours does not | one line, or one paste |
 | `sc-ambulance` | Paste two lines at the top of **two** handlers | two pastes |
 
 Nothing needs setting up on the Crimson-Arena side. Everything both of them
@@ -33,20 +33,107 @@ Config.Integrations = {
 on a server running pug-paintball starts filing shots-fired calls for paintball
 matches, with nothing saying why.
 
-That is the whole job. There is no block to paste into `sc-dispatch`.
+## FIRST — check that your `sc-dispatch` can read that key
+
+**Not every build of `sc-dispatch` can.** The integration is something
+`sc-dispatch` itself added, and a build without it has no code that looks at
+`Config.Integrations.CrimsonArena` at all — so setting the key does **nothing
+whatsoever**, and you would be left believing police alerts are handled when
+every one of them still fires. Both builds report `version '1.0.1'`, so the
+version string will not tell you.
+
+Run this against your own copy:
+
+```
+grep -n "IsInCrimsonArena" sc-dispatch/client/main.lua
+```
+
+- **Something comes back** → your build has it. Set the key as above. **That is
+  the whole job, and there is no block to paste.** Skip to *What that switch
+  does*.
+- **Nothing comes back** → your build does not have it. Do the paste below
+  instead, and set the key anyway so it keeps working if you update later.
+
+### If your build does not have it
+
+Add this **once**, at the very bottom of `sc-dispatch/client/main.lua`:
+
+```lua
+-- Crimson-Arena: no shots-fired, person-down or person-dead calls from inside
+-- an arena match. Paste ONCE, at the very bottom of the file.
+local scOriginalIsInPaintball = IsInPaintball
+
+function IsInPaintball()
+    local arena = LocalPlayer.state.crimsonArena
+    if arena and arena.active then return true end
+
+    if GetResourceState('Crimson-Arena') == 'started' then
+        local ok, inArena = pcall(function()
+            return exports['Crimson-Arena']:IsInArena()
+        end)
+        if ok and inArena == true then return true end
+    end
+
+    return scOriginalIsInPaintball()
+end
+```
+
+**The `local` line comes first, and it matters more than it looks.** It has to
+be above the function so the function closes over it. Below it, the name inside
+the function is a *global* that is never assigned — nil — and calling it raises.
+
+This covers the three gates an older build has. It **cannot** cover the manual
+"press G for help" EMS call, because that build has no check on it at all — not
+even for paintball. Part 2's `EMSDownAlert` paste is what covers that one.
+
+### ⚠ If you already pasted an older version of this, delete it
+
+A block of this shape may already be at the bottom of your
+`sc-dispatch/client/main.lua` — **two** `function IsInPaintball()` definitions,
+one of them calling `scOriginalIsInPaintball()` *before* the
+`local scOriginalIsInPaintball = ...` line that creates it:
+
+```lua
+function IsInPaintball()
+    if GetResourceState('Crimson-Arena') == 'started' then
+        ...
+    end
+    return scOriginalIsInPaintball()     -- nil here: the local is declared BELOW
+end
+-- Crimson Arena: no shots-fired or person-down calls from inside an arena.
+local scOriginalIsInPaintball = IsInPaintball
+function IsInPaintball()
+    ...
+end
+```
+
+**Delete the whole thing and use the single block above.** It is not merely
+useless — it raises. Measured, by running it:
+
+| Player is | What `IsInPaintball()` does |
+|---|---|
+| in an arena match | returns `true` — correct |
+| **anywhere else** | **raises** `attempt to call a nil value (global 'scOriginalIsInPaintball')` |
+| in a paintball match | never reached — raises first |
+
+"Anywhere else" is almost everyone, almost always. Every gate that calls it —
+shots fired, person down, person dead — raises instead of answering, so
+**ordinary police alerts for the rest of your city stop working**, and
+pug-paintball stops being gated too. The arena stays covered the whole time,
+which is exactly why it can sit there unnoticed.
 
 ## What that switch does
 
 `sc-dispatch` asks this resource whether a player is in an arena match, on that
-player's **own client**, before it raises an alert at all. It gates four
-things:
+player's **own client**, before it raises an alert at all. On a build that
+ships the check it gates four things, through `IsInCombatSafeZone()`:
 
-| What | Where, in sc-dispatch |
-|---|---|
-| Shots fired | `client/main.lua` — `TriggerShotsFiredAlert` |
-| Person down (laststand) | `client/main.lua` — the laststand watcher |
-| Person dead | `client/main.lua` — the death watcher |
-| The manual "press G for help" EMS call | `client/main.lua` — the down-player loop |
+| What | Where, in sc-dispatch | Covered by the paste above? |
+|---|---|---|
+| Shots fired | `client/main.lua` — `TriggerShotsFiredAlert` | yes |
+| Person down (laststand) | `client/main.lua` — the laststand watcher | yes |
+| Person dead | `client/main.lua` — the death watcher | yes |
+| The manual "press G for help" EMS call | `client/main.lua` — the down-player loop | **no** — an older build has no check on that loop at all, not even for paintball. Part 2's `EMSDownAlert` paste is what covers it |
 
 Because it runs **before** the alert is raised, there is no call to withdraw
 and nothing flashes on a medic's screen. That is strictly better than anything
@@ -253,7 +340,12 @@ console. The last two lines are about the two halves above.
 
 **The `sc-dispatch` line** says one of:
 
-- `sc-dispatch is running with Integrations.CrimsonArena = true ...` — Part 1 done.
+- `sc-dispatch is running with Integrations.CrimsonArena = true ...` — the key is set.
+  **That is not the same as the key being read.** This line reads
+  `sc-dispatch`'s config; it cannot tell whether that build has the code that
+  looks at the key. On a build without it the key is set, this line is green,
+  and every police alert still fires. Run the `grep` in Part 1 once — it is the
+  only thing that answers that question.
 - `... Integrations.CrimsonArena in its own config is FALSE ...` — set it to true.
 - `... stateBagKey here is "x" and sc-dispatch reads "crimsonArena" ...` — see Part 1.
 - `... Its config could not be read from here ...` — usually an escrowed or moved config; check the setting by hand.

@@ -22,16 +22,16 @@
       195   Match         Lives, timers, player counts, win condition
       515   Teams         The sides, and whether they may be uneven
       685   Modes         Free-for-all, team deathmatch and gun game
-      989   DefaultMode   Which of them a new lobby opens on
-     1008   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1252   UI            Panel colours, logo and title
-     1310   Permissions   Who may open a match, who may force-stop one
-     1396   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1830   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2405   Database      Optional: four tables the arena owns. Ships OFF
-     2436   Leaderboard   Which matches count towards the board, and which do not
-     2502   Webhook       Optional: a Discord line per finished match
-     2534   Dispatch      Optional: keeping police and EMS out of the arena
+     1011   DefaultMode   Which of them a new lobby opens on
+     1030   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1274   UI            Panel colours, logo and title
+     1332   Permissions   Who may open a match, who may force-stop one
+     1418   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1852   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2427   Database      Optional: four tables the arena owns. Ships OFF
+     2458   Leaderboard   Which matches count towards the board, and which do not
+     2524   Webhook       Optional: a Discord line per finished match
+     2556   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -924,9 +924,31 @@ Config.Modes = {
         -- weapon's own default exactly as it did before.
         tierAmmo = 200,
 
+        -- WHAT A CREDITED KILL PAYS, and it pays EVERY TIME.
+        --
+        -- `chance` is what makes a reward a gamble. Leaving it off -- as both
+        -- of these now do -- pays on every credited kill: see payKillReward,
+        -- where `rolled(nil)` is true. The plate used to be a 25% roll, so a
+        -- climber could take four fights in a row and be handed nothing to
+        -- take the fifth with.
+        --
+        -- A KILL IS THE ONLY RESUPPLY THIS MODE HAS. The loadout screen is
+        -- shut, the starting kit is the operator's, and ox_inventory empties
+        -- a dead fighter's pockets onto the floor -- so the plate and the
+        -- bandages a kill pays are the whole of what keeps somebody standing
+        -- between tiers.
+        --
+        -- CLAMPED TO EACH SUPPLY'S OWN `max` -- armour 25, bandage 30 as
+        -- shipped -- and to Config.Loadouts.supplies.totalItems when that is
+        -- not 0. Asking for more than a supply allows is NOT refused, it is
+        -- trimmed in silence, so keep these numbers under those ceilings.
+        --
+        -- AND IT ADDS RATHER THAN TOPPING UP: ArenaAmmo.GrantSupply calls
+        -- AddItem, so ten kills is ten plates, not one plate kept full. The
+        -- exit takes back what the arena issued, however much that came to.
         killReward = {
-            { key = 'bandage', count = 3 },
-            { key = 'armour', count = 1, chance = 25 },
+            { key = 'bandage', count = 10 },
+            { key = 'armour', count = 1 },
         },
 
         -- WHAT EVERYBODY WALKS IN WITH, every round, whatever they picked --

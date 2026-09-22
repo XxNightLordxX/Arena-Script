@@ -1052,7 +1052,20 @@ t.test('a credited kill pays bandages every time and armour on a roll', function
 
     -- THE ROLL IS A ROLL. Over many kills a 25% chance must land sometimes
     -- and not always -- the two ways a "chance" stops being one.
-    local rolled = newServer(nil, 4242)
+    --
+    -- PINNED HERE RATHER THAN READ OFF THE SHIPPED CONFIG, which is what it
+    -- used to do. This block is about the `chance` FIELD, not about whatever
+    -- number the mode happens to ship -- and when the shipped plate stopped
+    -- being a roll and started paying every time, this failed with "the 25%
+    -- plate landed on every one of 20 kills" while the field it is really
+    -- testing still worked perfectly. A test that leans on a default is a
+    -- test that changes meaning when the default does.
+    local rolled = newServer(function(config)
+        config.Modes.gungame.killReward = {
+            { key = 'bandage', count = 3 },
+            { key = 'armour', count = 1, chance = 25 },
+        }
+    end, 4242)
     rolled.play(6)
     local paid, kills = 0, 0
     for round = 1, 20 do
@@ -1069,6 +1082,48 @@ t.test('a credited kill pays bandages every time and armour on a roll', function
     end
     t.isTrue(paid > 0, ('the 25%% plate never landed in %d kills'):format(kills))
     t.isTrue(paid < kills, ('the 25%% plate landed on every one of %d kills'):format(kills))
+end)
+
+t.test('THE SHIPPED REWARD: every credited kill pays a plate and ten bandages', function()
+    -- READ OFF THE SHIPPED CONFIG ON PURPOSE, which is the one thing the
+    -- tests above deliberately do not do. They pin their own numbers because
+    -- they are about the plumbing; this one is about what an operator who
+    -- changes nothing actually gets, and it is the only test that would
+    -- notice the mode's own reward being edited.
+    --
+    -- EVERY TIME, NOT ON A ROLL. The plate used to be `chance = 25`, so a
+    -- climber could win four fights in a row and be handed nothing to take
+    -- the fifth with. A kill is the only resupply this mode has -- the
+    -- loadout screen is shut and a death empties their pockets onto the
+    -- floor -- so the roll was deciding whether somebody could keep playing.
+    local s = newServer()
+    s.play(6)
+
+    local bandages = s.ox.count(1, 'bandage')
+    local armour = s.ox.count(1, 'armour')
+
+    -- FIVE CREDITED KILLS, SPREAD ACROSS VICTIMS AND KNOCKED BACK DOWN, so
+    -- every one of them is really credited: maxTiersPerVictim would stop
+    -- paying tiers on a farmed victim, and topping the ladder would end the
+    -- round out from under the test.
+    local paid = 0
+    for round = 1, 5 do
+        local victim = 2 + (round % 5)
+        s.trade(victim, 1)
+        paid = paid + 1
+
+        t.equals(s.ox.count(1, 'bandage'), bandages + (paid * 10),
+            ('kill %d did not pay ten bandages'):format(paid))
+        t.equals(s.ox.count(1, 'armour'), armour + paid,
+            ('kill %d did not pay a plate -- the shipped reward is not paying every time')
+                :format(paid))
+
+        s.kill(1, victim)
+        s.revive(1)
+        s.row(1).ladderVictims = {}
+    end
+
+    t.equals(paid, 5, 'the loop did not run the kills it claims to have run')
 end)
 
 t.test('an uncredited kill pays nothing at all', function()

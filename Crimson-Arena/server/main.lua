@@ -717,7 +717,7 @@ local function hoursReport()
     --
     -- Three different mistakes with three different repairs. DO NOT go back to
     -- one subtraction and one sentence.
-    local strayNames, strayHoles = 0, 0
+    local strayNames, strayHoles, strayLow = 0, 0, 0
     local bracesForgotten = false
     if type(block) == 'table' then
         for _ in ipairs(block) do written = written + 1 end
@@ -725,12 +725,18 @@ local function hoursReport()
         bracesForgotten = block.from ~= nil or block.to ~= nil
 
         for key in pairs(block) do
-            if type(key) == 'number' then
-                if key < 1 or key > written or key % 1 ~= 0 then
-                    strayHoles = strayHoles + 1
-                end
-            else
+            if type(key) ~= 'number' then
                 strayNames = strayNames + 1
+            elseif key < 1 then
+                -- BELOW THE START, NOT PAST A GAP, and the difference is the
+                -- whole point of counting these separately. ipairs begins at
+                -- 1, so `[0]` is never reached -- and there is no gap in the
+                -- list to close. Told to close one, an operator goes looking
+                -- for something that is not there, which is the mistake the
+                -- three shapes below were split up to stop making.
+                strayLow = strayLow + 1
+            elseif key > written or key % 1 ~= 0 then
+                strayHoles = strayHoles + 1
             end
         end
     end
@@ -829,6 +835,13 @@ local function hoursReport()
             .. 'with ipairs, which stops at the first missing number, so everything after the '
             .. 'gap is invisible. Close the gap.',
             strayHoles, strayHoles == 1 and '' or 's', strayHoles == 1 and 's' or '')
+    end
+
+    if strayLow > 0 then
+        say('                     AND %d window%s numbered BELOW 1. The list is read with '
+            .. 'ipairs, which starts at 1, so nothing numbered under it is ever reached -- and '
+            .. 'there is no gap to close. Number them from 1 upwards.',
+            strayLow, strayLow == 1 and ' is' or 's are')
     end
 
     if hours.forced then

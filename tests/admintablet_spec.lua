@@ -1748,6 +1748,51 @@ t.test('DEFECT: and a window past a GAP in the list is not called a name', funct
     t.notContains(said, 'has a NAME', 'an integer key past a gap was reported as a name')
 end)
 
+t.test('and a window numbered BELOW 1 is not sent looking for a gap either', function()
+    -- THE THIRD NUMERIC SHAPE, and the GAP message is wrong for it in the
+    -- same way the NAME message was wrong for the GAP. ipairs starts at 1, so
+    -- `[0]` is never reached -- but the list has no hole in it. "Close the
+    -- gap" sends the operator hunting something that does not exist, which is
+    -- exactly what splitting these messages up was for.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { [0] = { from = 9, to = 11 }, { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'numbered BELOW 1', 'a window the list never reaches was not reported')
+    t.notContains(said, 'past a GAP',
+        'a key under 1 was reported as sitting past a gap, and the list has no gap in it')
+    t.notContains(said, 'has a NAME', 'a numeric key was reported as a name')
+end)
+
+t.test('and a table with BOTH gets BOTH, because one sentence cannot say two things', function()
+    -- Without this the split above is satisfied by a report that swaps one
+    -- wrong sentence for another wrong sentence.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = {
+            [0] = { from = 1, to = 2 }, [1] = { from = 5, to = 7 }, [3] = { from = 9, to = 11 },
+        }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'past a GAP', 'the window past the gap went unreported')
+    t.contains(said, 'numbered BELOW 1', 'the window under the start went unreported')
+
+    -- AND THE CONTROL: a list with neither says neither.
+    local clean = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, { from = 9, to = 11 } }
+    end)
+    local fine = hoursText(clean)
+    t.notContains(fine, 'numbered BELOW 1', 'a well-formed list was accused of a stray key')
+    t.notContains(fine, 'past a GAP', 'a well-formed list was accused of a gap')
+end)
+
 t.test('and a note left in the table is not told to become a window', function()
     -- `note = 'x'` is not a window and never will be. The old message told
     -- the operator to write it as { from = 5, to = 7 }.

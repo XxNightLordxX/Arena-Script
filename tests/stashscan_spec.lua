@@ -156,6 +156,22 @@ local function newAmmo(control, mutate)
 
     Sandbox.loadInto('../Crimson-Arena/config.lua', env)
     Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+
+    -- `dbReady` HAS TO CARRY THE SWITCH THAT MAKES IT POSSIBLE.
+    --
+    -- This fixture stubbed ArenaDbReady and left Config.Database.enabled at
+    -- the shipped false, which is a state no server can be in: the real gate
+    -- is `Config.Database.enabled == true AND oxmysql started`, so a true
+    -- answer implies the switch is on. Nothing noticed while every reader
+    -- went through the stub -- and then the jam list's own "is this answer
+    -- worth anything" test had to tell "nothing was ever persisted" from
+    -- "persisted and unreachable", which is exactly that switch, and the
+    -- fixture was asserting on a world where the two disagreed.
+    if control.dbReady then
+        env.Config.Database = env.Config.Database or {}
+        env.Config.Database.enabled = true
+    end
+
     if mutate then mutate(env.Config) end
     Sandbox.loadInto('../Crimson-Arena/server/ammo.lua', env)
 

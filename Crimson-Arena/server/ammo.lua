@@ -6169,6 +6169,35 @@ keepStashesAlive()
 --- @return string[]
 --- @return string[] stashes
 --- @return boolean known -- false while the list has not been read back yet
+--- Whether an empty jam list means anything.
+---
+--- ONE READER, BECAUSE THERE WERE TWO AND THEY WERE BOTH WRONG THE SAME WAY.
+--- Both read `jamsLoaded or not ArenaDbReady('the jam list')`, and
+--- ArenaDbReady answers false for TWO completely different facts:
+---
+---   Config.Database.enabled ~= true   nothing was EVER persisted, so an
+---                                     empty list is a complete answer and
+---                                     hedging it would put a permanent
+---                                     "not read back yet" on the majority
+---                                     of installs.
+---   enabled, but oxmysql NOT started  the table exists, may well hold holds
+---                                     from before this restart, and this
+---                                     run has not read a byte of it.
+---
+--- The second is the case the whole flag was invented for and it was being
+--- answered "known". Worse, the door does not hold on that path either --
+--- handBack's grace is gated on the same ArenaDbReady -- so the sweep walks
+--- those stashes and can hand a player a second copy of something they
+--- already carry, while /arenaunjam and the tablet report, as fact, that no
+--- stash is being held back.
+---
+--- So the question is not "can we reach the database", it is "was there ever
+--- anything to read, and did we read it". DO NOT put ArenaDbReady back here.
+--- @return boolean
+local function jamListIsKnown()
+    return jamsLoaded or Config.Database.enabled ~= true
+end
+
 function ArenaAmmo.JammedStashes()
     local out = {}
     for stash in pairs(jammedStash) do out[#out + 1] = stash end
@@ -6187,8 +6216,7 @@ function ArenaAmmo.JammedStashes()
     --
     -- THE SAME DISTINCTION THIS FILE DRAWS EVERYWHERE ELSE: an empty read is
     -- never "none". See handBack's grace and stashRows' nil.
-    local known = jamsLoaded or not ArenaDbReady('the jam list')
-    return out, known
+    return out, jamListIsKnown()
 end
 
 --- Whether ONE named stash is being held back, and whether that answer is
@@ -6204,7 +6232,7 @@ end
 --- @return boolean jammed
 --- @return boolean known -- false while the list has not been read back yet
 function ArenaAmmo.IsJammed(stash)
-    local known = jamsLoaded or not ArenaDbReady('the jam list')
+    local known = jamListIsKnown()
     if not Arena.IsKey(stash) then return false, known end
     return jammedStash[stash] == true, known
 end

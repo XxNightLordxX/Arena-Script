@@ -3727,6 +3727,57 @@ t.test('AND A LIST THAT IS NOT THE WHOLE LIST SAYS SO, rather than reading as co
         .. 'it were the complete set of things to settle')
 end)
 
+t.test('DEFECT: with the database ON and oxmysql DOWN, an empty list is not reported as fact', function()
+    -- THE CASE THE `known` FLAG WAS INVENTED FOR, ANSWERED "known".
+    --
+    -- `known` read `jamsLoaded or not ArenaDbReady('the jam list')`, and
+    -- ArenaDbReady answers false for two completely different facts:
+    -- Config.Database.enabled being off (nothing was EVER persisted, so an
+    -- empty list is a complete answer) and the switch being ON while oxmysql
+    -- is not started (the table exists, may hold holds from before this
+    -- restart, and this run has read none of it). The second was being
+    -- reported as the first.
+    --
+    -- And the door does not hold on that path either: handBack's grace is
+    -- gated on the same ArenaDbReady, so with oxmysql down it goes straight
+    -- through without the list. So the sweep walks those stashes and can hand
+    -- a player a second copy of something they already carry, while the
+    -- tablet says, as fact, that no stash is being held back. That is the
+    -- exact pairing the flag exists to prevent, reached through a different
+    -- door.
+    local server = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = false, jamRows = { 'crimson_arena_CIDOLD' } })
+
+    server.startResource()
+    server.step(2)
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.notContains(report, 'no stash is being held back',
+        'the database is switched ON and oxmysql is not running, so this run has read nothing '
+        .. 'of the hold list -- and the tablet reported an empty list as fact')
+    t.contains(report, 'NOT been read back',
+        'the report did not say the list is unread, so an admin is told there is nothing to '
+        .. 'settle while the sweep is walking holds from before the restart')
+end)
+
+t.test('CONTROL: and with no database at all an empty list IS reported as fact', function()
+    -- The other side, and the reason the fix cannot simply hedge whenever
+    -- ArenaDbReady is false. On the SHIPPED default nothing was ever
+    -- persisted, so an empty list is a complete answer -- hedging it would
+    -- put a permanent "not read back yet" on the majority of installs, which
+    -- is a new false alarm in place of a correct answer.
+    local server = newServer({ 1, 2 })
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.contains(report, 'no stash is being held back',
+        'a server that never persisted anything was told its hold list is unknown')
+    t.notContains(report, 'NOT been read back',
+        'a server with no database was told to go and read a table it does not have')
+end)
+
 t.test('CONTROL: and a list read back from a healthy database carries no such caveat', function()
     -- A caveat on every list would teach the admin to ignore it.
     local server, matchId = liveMatch({ 1, 2 }, nil, function(config)

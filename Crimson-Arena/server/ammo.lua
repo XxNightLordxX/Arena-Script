@@ -6154,21 +6154,6 @@ end
 -- so the earliest possible moment is also the correct one.
 keepStashesAlive()
 
---- Every stash the door has stopped touching, newest problem last.
----
---- A JAM IS A DEAD END UNTIL SOMEBODY CAN SEE IT. Three separate failures in
---- this file set `jammedStash` -- a rollback that could not be undone, a
---- hand-back whose removal was refused, and a stash holding more than the
---- door put in it -- and every one of them prints "settle it by hand". Until
---- this existed there was no way to see WHICH stashes were in that state
---- without reading the console back, and no way at all to tell the door the
---- settling was done: the flag lived and died with the resource. An operator
---- could follow the instructions exactly and the stash stayed dead, which
---- also meant that player was never stripped at the door again -- they
---- fought every later round in their own gear.
---- @return string[]
---- @return string[] stashes
---- @return boolean known -- false while the list has not been read back yet
 --- Whether an empty jam list means anything.
 ---
 --- ONE READER, BECAUSE THERE WERE TWO AND THEY WERE BOTH WRONG THE SAME WAY.
@@ -6212,6 +6197,20 @@ local function jamListIsKnown()
     return jamsLoaded or Config.Database.enabled ~= true
 end
 
+--- Every stash the door has stopped touching, newest problem last.
+---
+--- A JAM IS A DEAD END UNTIL SOMEBODY CAN SEE IT. Three separate failures in
+--- this file set `jammedStash` -- a rollback that could not be undone, a
+--- hand-back whose removal was refused, and a stash holding more than the
+--- door put in it -- and every one of them prints "settle it by hand". Until
+--- this existed there was no way to see WHICH stashes were in that state
+--- without reading the console back, and no way at all to tell the door the
+--- settling was done: the flag lived and died with the resource. An operator
+--- could follow the instructions exactly and the stash stayed dead, which
+--- also meant that player was never stripped at the door again -- they
+--- fought every later round in their own gear.
+--- @return string[] stashes
+--- @return boolean known -- false while the list has not been read back yet
 function ArenaAmmo.JammedStashes()
     local out = {}
     for stash in pairs(jammedStash) do out[#out + 1] = stash end

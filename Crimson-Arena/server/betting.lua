@@ -923,21 +923,44 @@ end
 local function sendDrop(citizenid, key)
     local ok = pcall(function()
         ArenaDb(UNPAID_SUBJECT, UNPAID_DROP_SQL, { citizenid, key }, function(answer)
-            unpaidWrote(answer)
-
             -- NIL IS NOT AN ANSWER, IT IS THE ABSENCE OF ONE. ArenaDb calls
             -- back with nil on every path that never reached oxmysql, which
             -- is exactly the outage this exists for -- so clearing on nil
             -- would forget the drop precisely when it had not happened. DO
             -- NOT relax this to a bare callback.
-            if answer == nil then return end
+            --
+            -- THE REFUSAL IS REPORTED HERE AND NOT BELOW, because this branch
+            -- returns and nothing after the return would ever see a nil.
+            if answer == nil then
+                unpaidWrote(nil)
+                return
+            end
 
             local keys = pendingDrops[citizenid]
-            if keys == nil or keys[key] == nil then return end
+            if keys ~= nil and keys[key] ~= nil then
+                keys[key] = nil
+                pendingDropCount = pendingDropCount - 1
+                if next(keys) == nil then pendingDrops[citizenid] = nil end
+            end
 
-            keys[key] = nil
-            pendingDropCount = pendingDropCount - 1
-            if next(keys) == nil then pendingDrops[citizenid] = nil end
+            -- THE ALL-CLEAR GOES AFTER THE DEQUEUE, AND IT USED TO GO BEFORE.
+            --
+            -- unpaidWrote only clears the refusal when nothing is queued in
+            -- either direction. Called at the top of this callback, the drop
+            -- being answered was still sitting in its own queue -- so
+            -- unpaidQueueIdle() was false for the statement that had just
+            -- landed, and the all-clear could NEVER be issued by a landing
+            -- DELETE. On a server whose writes are all deletes (every debt
+            -- settled, none newly filed) the warning stuck for the whole run
+            -- even after the operator had fixed the grant, which is the exact
+            -- stuck latch the re-arm exists to remove. Measured: the test
+            -- that claimed to prove a landing delete clears it was actually
+            -- watching an INSERT it filed one line later.
+            --
+            -- It is also the safer order if unpaidWrote ever throws: the drop
+            -- is already off the queue rather than stuck on it. DO NOT move
+            -- this back above the dequeue.
+            unpaidWrote(answer)
         end)
     end)
 

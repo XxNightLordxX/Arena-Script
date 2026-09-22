@@ -798,29 +798,62 @@ t.test('THE GUARD THAT CANNOT BE SATISFIED BY LUCK: the source calls none of the
     -- Comments are allowed and deliberately so -- the epitaph in
     -- client/match.lua names all three while explaining why they are gone --
     -- so this strips comment lines before looking.
-    local source = assert(io.open('../Crimson-Arena/client/match.lua', 'r'))
-    local text = source:read('a')
-    source:close()
+    -- EVERY CLIENT FILE, AND IT USED TO READ ONE.
+    --
+    -- This opened client/match.lua alone -- because that is where the writes
+    -- were -- and the guarantee it is named for is about the CLIENT, not
+    -- about one file of it. The banned pair could go back into
+    -- client/main.lua, client/spectate.lua or client/dispatch.lua and every
+    -- spec in this suite would stay green. Measured, not assumed.
+    --
+    -- THE LIST COMES OUT OF fxmanifest.lua, so a client file added tomorrow
+    -- is covered the day it is added rather than the day somebody remembers
+    -- this test exists.
+    local manifest = assert(io.open('../Crimson-Arena/fxmanifest.lua', 'r'))
+    local manifestText = manifest:read('a')
+    manifest:close()
+
+    local block = manifestText:match('client_scripts%s*{(.-)}')
+    t.isNotNil(block, 'fxmanifest.lua no longer has a client_scripts block this test can read')
+
+    -- '@other_resource/file.lua' IS NOT THIS RESOURCE'S CODE. The manifest
+    -- pulls qbx_core's playerdata into the client realm; it is not ours to
+    -- police and it is not on our disk.
+    local files = {}
+    for name in block:gmatch("'([^']+%.lua)'") do
+        if not name:match('^@') then files[#files + 1] = name end
+    end
+    t.isTrue(#files >= 5,
+        ('only %d client file(s) were parsed out of fxmanifest.lua -- the parse has come '
+            .. 'unstuck from the manifest and this test is now guarding almost nothing')
+            :format(#files))
 
     local offenders = {}
-    local n = 0
-    for line in (text .. '\n'):gmatch('([^\n]*)\n') do
-        n = n + 1
-        local bare = line:gsub('^%s+', '')
-        if not bare:match('^%-%-') then
-            for _, native in ipairs({ 'SetPlayerTeam', 'GetPlayerTeam',
-                                     'NetworkSetFriendlyFireOption', 'SetCanAttackFriendly' }) do
-                if bare:find(native .. '%s*%(') then
-                    offenders[#offenders + 1] = ('%s at line %d'):format(native, n)
+    for _, name in ipairs(files) do
+        local handle = assert(io.open('../Crimson-Arena/' .. name, 'r'),
+            name .. ' is in the manifest and not on disk')
+        local text = handle:read('a')
+        handle:close()
+
+        local n = 0
+        for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+            n = n + 1
+            local bare = line:gsub('^%s+', '')
+            if not bare:match('^%-%-') then
+                for _, native in ipairs({ 'SetPlayerTeam', 'GetPlayerTeam',
+                                         'NetworkSetFriendlyFireOption', 'SetCanAttackFriendly' }) do
+                    if bare:find(native .. '%s*%(') then
+                        offenders[#offenders + 1] = ('%s at %s:%d'):format(native, name, n)
+                    end
                 end
             end
         end
     end
 
     t.equals(#offenders, 0,
-        'client/match.lua is calling a friendly-fire native again (' .. table.concat(offenders, ', ')
+        'a client file is calling a friendly-fire native again (' .. table.concat(offenders, ', ')
         .. '). Two of these have each already caused the report "enemies cannot kill each other" '
-        .. 'in a live round. Read the epitaph at the top of the file before putting any of them back.')
+        .. 'in a live round. Read the epitaph in client/match.lua before putting any of them back.')
 end)
 
 os.exit(t.summary())

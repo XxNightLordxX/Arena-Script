@@ -355,17 +355,22 @@ t.test('and the all-clear DOES arrive once the delete has landed too', function(
     -- cannot fire in the middle of an unrelated assertion -- and 0 makes
     -- that thread return without starting. Calling it is what the timer
     -- would have done.
+    --
+    -- AND NOTHING IS FILED AFTERWARDS, which is the whole of this test.
+    -- The first version ended with `s.fileDebt(400, 'm2')` before asserting,
+    -- so the all-clear it observed was issued by that INSERT and the DELETE
+    -- proved nothing -- the test passed against a build where a landing
+    -- delete could never clear the latch at all, which is what the build
+    -- actually did. The delete has to be the last statement standing.
     s.control.failWrites = false
     s.betting.SweepUnpaid()
     s.step(5)
     t.equals(s.rows(), 0, 'the queued DELETE was never replayed, so this proves nothing')
 
-    s.fileDebt(400, 'm2')
-    s.step(5)
-
     t.equals(s.says(ALL_CLEAR), 1,
-        'the database has taken every statement including the delete, and the money screen is '
-        .. 'still reporting writes as refused')
+        'the DELETE the operator had just granted landed, and the money screen went on '
+        .. 'reporting writes as refused -- the latch sticks for the whole run on a server '
+        .. 'whose writes are all deletes')
 end)
 
 -- ======================================================================
@@ -440,6 +445,54 @@ t.test('and the qualifier goes once the queued debt has actually landed', functi
     t.notContains(s.report(), 'EXCEPT',
         'the debt has reached the table and the screen is still warning that a restart '
         .. 'forgets it')
+end)
+
+t.test('DEFECT: and a landing DELETE does NOT clear it while an INSERT is still queued', function()
+    -- THE OTHER HALF OF unpaidQueueIdle, AND IT WAS PINNED BY NOTHING.
+    -- The predicate reads `pendingAddCount == 0 and pendingDropCount == 0`;
+    -- deleting the FIRST term left all nine tests in this file green, so half
+    -- of the rule the whole re-arm rests on was decoration.
+    --
+    -- It is the half that matters in the same direction as everything else
+    -- here. A debt filed while oxmysql was away was never sent -- it sits in
+    -- pendingAdds, in memory only. If a landing DELETE is allowed to issue
+    -- the all-clear while that INSERT is still queued, the money screen says
+    -- the ledger is being written again at the moment it is holding a debt
+    -- the database has never seen.
+    local s = opened({ failWrites = false })
+
+    -- A debt that really is in the table, so there is something to delete.
+    s.fileDebt(700, 'm1')
+    s.step(3)
+    t.equals(s.rows(), 1, 'the seed debt never landed, so this proves nothing')
+
+    -- The DELETE is refused: the player is paid, the row stays, latch on.
+    s.control.failWrites = true
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the refused DELETE was never reported')
+    s.forget()
+
+    -- Now oxmysql goes away and a SECOND debt is filed on another ledger key.
+    -- Nothing is sent: it is queued for replay and lives in memory alone.
+    s.control.down = true
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    t.equals(s.betting.PendingUnpaidWrites(), 1, 'the debt was not queued, so this proves nothing')
+
+    -- Everything granted and oxmysql back. SweepUnpaid replays drops BEFORE
+    -- adds, so the DELETE lands while that INSERT is still outstanding.
+    s.control.down = false
+    s.control.failWrites = false
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.step(5)
+    s.control.offline = false
+
+    t.equals(s.says(ALL_CLEAR), 0,
+        'a landing DELETE issued the all-clear while a debt was still queued and had never '
+        .. 'reached the database -- the money screen promises durability for a debt only '
+        .. 'memory is holding')
 end)
 
 t.test('CONTROL: a ledger with nothing queued carries no qualifier at all', function()

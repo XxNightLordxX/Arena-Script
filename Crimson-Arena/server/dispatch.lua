@@ -684,9 +684,14 @@ function ArenaDispatch.ReviveReport(target)
     -- Byte-identical to the healthy case, on the one tool whose entire output
     -- is a diagnosis, for its primary use.
     --
-    -- Taking the reading first also means Revive's own clear becomes the
-    -- no-op rather than this one, so nothing is written twice on a build with
-    -- no getter to read back through.
+    -- AND ON A BUILD WITH NO GETTER IT IS WRITTEN TWICE, which an earlier
+    -- version of this comment claimed it was not. clearDownMetadata opens
+    -- `local current = true` and only narrows that when GetMetaData exists,
+    -- so without one it writes every key on every pass -- this one and
+    -- Revive's. That costs a second SetMetaData per key and nothing else:
+    -- both write the same `false`, and the COUNT comes from this pass, which
+    -- is the only thing the report prints. It is not a reason to move the
+    -- reading back below the revive, where it always answered zero.
     local keys = downStateConfig().keys
     local layerOff = type(keys) ~= 'table' or #keys == 0
     local cleared = ArenaDispatch.ClearDownState(target)

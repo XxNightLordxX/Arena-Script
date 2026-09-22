@@ -2912,12 +2912,24 @@ end
 
 local MINUTES_PER_DAY = 1440
 
+--- @return table spans -- merged, sorted { start, stop } in minutes
+--- @return integer accepted -- how many CONFIGURED WINDOWS survived the test below
+---
+--- THE SECOND RETURN IS NOT #spans AND THE TWO MUST NEVER BE CONFUSED.
+--- Spans are MERGED: two adjacent good windows (0-12 and 12-24) collapse into
+--- one span, and one wrap-around window (22-03) becomes two. So #spans is not
+--- a count of anything an operator typed. /arenahours needs the number they
+--- typed that survived -- the difference between the two is how many they got
+--- wrong -- and computing that anywhere else would be a second reader of the
+--- validity rule below, which is exactly how the panel and the server come to
+--- disagree. DO NOT count windows outside this function.
 function Arena.ScheduleSpans()
     local schedule = Config.Schedule
-    if type(schedule) ~= 'table' or schedule.enabled ~= true then return {} end
-    if type(schedule.windows) ~= 'table' then return {} end
+    if type(schedule) ~= 'table' or schedule.enabled ~= true then return {}, 0 end
+    if type(schedule.windows) ~= 'table' then return {}, 0 end
 
     local raw = {}
+    local accepted = 0
     for _, window in ipairs(schedule.windows) do
         if type(window) == 'table' then
             local from = Arena.ToInt(window.from)
@@ -2933,6 +2945,7 @@ function Arena.ScheduleSpans()
             if from and to and from >= 0 and from <= 23
                 and to >= 0 and to <= 24 and from ~= to
             then
+                accepted = accepted + 1
                 local s, e = from * 60, to * 60
 
                 if e < s then
@@ -2957,7 +2970,7 @@ function Arena.ScheduleSpans()
         end
     end
 
-    return spans
+    return spans, accepted
 end
 
 function Arena.ScheduleStatus(hour, minute)

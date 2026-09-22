@@ -1486,9 +1486,55 @@ t.test('DEFECT: but an ALL-DAY window is not "thrown away" -- config.lua recomme
     t.notContains(said, 'none usable',
         'an all-day window -- the one config.lua recommends by name -- was reported as thrown '
         .. 'away, and the operator was sent to read a console that names nothing')
-    t.contains(said, 'all of them GOOD',
+    t.contains(said, '1 of 1 good',
         'the report did not say the windows are fine, so the operator still cannot tell this '
         .. 'apart from a schedule that was rejected')
+    t.notContains(said, 'THROWN AWAY',
+        'a schedule with nothing wrong with it was told something had been thrown away')
+end)
+
+t.test('DEFECT: and a MIXED schedule is not vouched for wholesale', function()
+    -- THE FIX FOR THE ALL-DAY CASE INVENTED A WORSE LIE THAN THE ONE IT
+    -- REPLACED. The branch gated on how many SPANS survived and then printed
+    -- how many windows were WRITTEN, inside the words "all of them GOOD".
+    --
+    -- One good all-day window plus one typo -- the exact mixture an operator
+    -- produces while editing -- read "2 written, all of them GOOD" while one
+    -- of the two had been thrown away. The old message at least sent them to
+    -- the startup console; this one told them there was nothing to look for.
+    -- A report that invents an all-clear is the thing this screen exists to
+    -- stop.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 24 }, { from = 99, to = 100 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '1 of 2 good',
+        'a schedule with one good window and one typo was counted as though all of it were good')
+    t.contains(said, 'THROWN AWAY',
+        'one window was thrown away and the operator was not told, so they never look at the '
+        .. 'startup console that names it')
+end)
+
+t.test('and windows that MERGE are not mistaken for windows that were thrown away', function()
+    -- THE OTHER HALF, AND THE REASON THE COUNT CANNOT COME FROM #spans.
+    -- Spans are MERGED: 0-12 and 12-24 are two perfectly good windows that
+    -- collapse into one span. Counting spans would report "1 of 2 good" and
+    -- accuse the operator of a mistake they did not make -- which is the
+    -- same defect as the test above, pointing the other way.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 12 }, { from = 12, to = 24 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '2 of 2 good',
+        'two good windows that merged into one span were counted as one good window')
+    t.notContains(said, 'THROWN AWAY',
+        'two perfectly good windows were reported as partly thrown away')
 end)
 
 t.test('DEFECT: and windows left in a schedule that is switched OFF are not "thrown away" either', function()
@@ -1515,6 +1561,24 @@ t.test('DEFECT: and windows left in a schedule that is switched OFF are not "thr
         .. 'goes and fixes four windows that are fine')
     t.contains(said, 'NOT IN USE',
         'the report did not name the reason the windows are doing nothing')
+end)
+
+t.test('and a non-boolean `enabled` is not reported as the word false', function()
+    -- `hours.enabled` is `schedule.enabled == true`, so `enabled = 1` lands in
+    -- the NOT IN USE branch -- correctly, because every reader in this
+    -- resource tests `== true`. But the branch used to state as fact that
+    -- "Config.Schedule.enabled is false", which is not what the file says.
+    -- The operator goes looking for a line that is not there.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = 1
+        config.Schedule.windows = { { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'NOT IN USE', 'a non-boolean enabled was treated as switching the hours on')
+    t.notContains(said, 'enabled is false',
+        'the report told the operator their file says false when it says 1')
 end)
 
 t.test('CONTROL: and a schedule that is ON with windows that work prints the range', function()

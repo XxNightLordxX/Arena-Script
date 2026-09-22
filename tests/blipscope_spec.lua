@@ -1042,23 +1042,41 @@ t.test('and a SPECTATOR is still sent a board, because they have no match of the
     t.equals(sent.hud.matchId, 'match-2', 'the wrong board reached the HUD')
 end)
 
-t.test('and drawing nobody on the map, which is the other half of it', function()
-    -- The blip side of the same claim, counted the way the rest of this file
-    -- counts blips. blipColorFor returns nil without a currentMatch, so a
-    -- watcher's roster marks nobody -- and a watcher who DID get blips would
-    -- be carrying a live map of a round they are not in.
+t.test('and a stray matchLive cannot set a watcher drawing the round they are watching', function()
+    -- THE BLIP SIDE, AND THE FIRST VERSION OF THIS TEST COULD NOT FAIL
+    -- EITHER -- which is worse than the one it was written to replace,
+    -- because it was written in the knowledge that that one could not fail.
     --
-    -- f.step is called here on purpose: a count taken before the loop has run
-    -- a pass is 0 no matter what the production code does.
+    -- It fired matchHud at a watcher, called f.step, and asserted no blips.
+    -- Its comment credited blipColorFor's `if not currentMatch then return
+    -- nil end`. But blipColorFor is only ever reached from the blip THREAD,
+    -- and that thread is started from exactly one place -- the matchLive
+    -- handler -- which itself returns early without a currentMatch, and
+    -- startBlipThread guards again on the same thing. A watcher never starts
+    -- the loop, so f.step did nothing and the count was 0 whatever the
+    -- production code said. MEASURED: making blipColorFor hand a watcher a
+    -- colour instead of nil -- the exact wallhack the test names -- left all
+    -- 60 assertions in this file green.
+    --
+    -- The protection is a CHAIN OF TWO currentMatch tests on the way to the
+    -- loop, and what can actually be driven is the wire: a matchLive that
+    -- arrives at somebody who is in no round. The server never sends that,
+    -- which is the point -- the client must not rely on it not arriving.
+    --
+    -- blipColorFor's own nil test is defence in depth BEHIND that chain and
+    -- is not reachable from here. Do not read this test as covering it.
     local f = newFixture()
     f.fire('crimson_arena:client:matchHud', {
         visible = true,
         scoreboard = scoreboard(),
         matchId = 'match-2',
     })
-    f.step()
+    f.fire('crimson_arena:client:matchLive', { matchId = 'match-2' })
+    for _ = 1, 4 do f.step() end
 
-    t.equals(f.blipCount(), 0, 'a watcher with no match of their own drew blips')
+    t.equals(f.blipCount(), 0,
+        'a matchLive aimed at somebody in no round of their own started the blip loop -- they '
+        .. 'are now carrying a live map of a round they are only watching')
 end)
 
 -- ======================================================================

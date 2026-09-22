@@ -197,6 +197,62 @@ t.test('ONE handler answers matchHud, not two', function()
         .. 'at the top of this file and the one where the handler used to be in client/ui.lua')
 end)
 
+t.test('and NO client file registers a second one, which the count above cannot see', function()
+    -- THE HANDLER COUNT ABOVE ONLY SEES THE TWO FILES THIS FIXTURE LOADS.
+    -- fxmanifest.lua puts six Lua files in the client realm, and the note
+    -- left where the handler used to be in client/ui.lua tells a future
+    -- maintainer that this spec 'fails if a second handler comes back'. That
+    -- was true of ui.lua and match.lua and of nowhere else: the identical
+    -- three lines added to client/main.lua would have undone the guard in
+    -- exactly the same way with every spec green.
+    --
+    -- So this reads the source of every client file the manifest names, the
+    -- same way tests/friendlyfireends_spec.lua guards its own banned natives,
+    -- and the list comes out of the manifest so a file added tomorrow is
+    -- covered the day it is added.
+    local manifest = assert(io.open('../Crimson-Arena/fxmanifest.lua', 'r'))
+    local manifestText = manifest:read('a')
+    manifest:close()
+
+    local block = manifestText:match('client_scripts%s*{(.-)}')
+    t.isNotNil(block, 'fxmanifest.lua no longer has a client_scripts block this test can read')
+
+    local files = {}
+    for name in block:gmatch("'([^']+%.lua)'") do
+        -- '@other_resource/file.lua' is not this resource's code.
+        if not name:match('^@') then files[#files + 1] = name end
+    end
+    t.isTrue(#files >= 5,
+        ('only %d client file(s) were parsed out of fxmanifest.lua -- the parse has come '
+            .. 'unstuck and this test is guarding almost nothing'):format(#files))
+
+    local sites = {}
+    for _, name in ipairs(files) do
+        local handle = assert(io.open('../Crimson-Arena/' .. name, 'r'),
+            name .. ' is in the manifest and not on disk')
+        local text = handle:read('a')
+        handle:close()
+
+        local n = 0
+        for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+            n = n + 1
+            local bare = line:gsub('^%s+', '')
+            -- Comments are allowed: the note in client/ui.lua names the event
+            -- at length while explaining why it registers nothing.
+            if not bare:match('^%-%-')
+                and bare:find("RegisterNetEvent%s*%(%s*'crimson_arena:client:matchHud'")
+            then
+                sites[#sites + 1] = ('%s:%d'):format(name, n)
+            end
+        end
+    end
+
+    t.equals(#sites, 1,
+        ('%d client file(s) register a handler for matchHud (%s). FiveM runs them ALL, so a '
+            .. 'second one undoes the guard in client/match.lua no matter which file it is in.')
+            :format(#sites, table.concat(sites, ', ')))
+end)
+
 t.test('a board from somebody else\'s round never reaches the panel', function()
     local f = newFixture()
     f.enterMatch('match-1')
@@ -215,17 +271,41 @@ t.test('and the panel is not forced open to show it', function()
     -- into every payload it builds, so the stray handler did not merely leak
     -- a roster: it opened the HUD on a player who was mid-round with their
     -- own board already drawn, and replaced what was on it.
+    --
+    -- THE FIRST VERSION OF THIS TEST RAN NO ASSERTIONS AT ALL. It was written
+    -- as `for _, payload in ipairs(f.hudSince(mark)) do t.isFalse(...) end`,
+    -- and when production is CORRECT that list is empty -- so the loop body
+    -- never ran and the test passed having checked nothing. It could only
+    -- ever fire in the state the test above already fails on, which makes it
+    -- a duplicate of that test wearing a different name, not a second check.
+    --
+    -- A loop over a list that is empty on the happy path is never a test.
+    -- Assert the list is non-empty first, or assert on a single value.
     local f = newFixture()
     f.enterMatch('match-1')
 
     local mark = #f.sent
     f.fire('crimson_arena:client:matchHud', board('match-2', 'SomebodyElse'))
 
+    -- The CONTROL: a board this player IS in must reach the panel visible, or
+    -- everything below is satisfied by a HUD that never opens for anybody.
+    local ownMark = #f.sent
+    f.fire('crimson_arena:client:matchHud', board('match-1', 'You'))
+    local own = f.hudSince(ownMark)
+    t.equals(#own, 1, 'the player\'s own board did not reach the panel, so this proves nothing')
+    t.isTrue(own[1].visible == true, 'the HUD never opens at all, so "not forced open" is empty')
+
+    -- And the foreign one, asserted as a COUNT rather than by walking a list
+    -- that is empty when the code is right.
+    local opened = 0
     for _, payload in ipairs(f.hudSince(mark)) do
-        t.isFalse(payload.visible == true,
-            'a foreign board was posted with visible = true, which opens the panel over the '
-            .. 'player\'s own round')
+        if payload.visible == true and (payload.hud or {}).matchId == 'match-2' then
+            opened = opened + 1
+        end
     end
+    t.equals(opened, 0,
+        'a foreign board was posted with visible = true, which opens the panel over the '
+        .. 'player\'s own round')
 end)
 
 t.test('the player\'s OWN board still reaches the panel', function()

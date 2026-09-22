@@ -635,17 +635,42 @@ local function hoursReport()
             for _ in pairs(block) do written = written + 1 end
         end
 
-        local kept = #Arena.ScheduleSpans()
+        -- THE SECOND RETURN, NOT #spans. See the note on Arena.ScheduleSpans:
+        -- spans are merged, so #spans is not a count of anything an operator
+        -- typed. `kept` is how many of THEIR windows survived.
+        local _, kept = Arena.ScheduleSpans()
 
         if written == 0 then
             say('  windows:           (none -- open at every hour)')
         elseif not hours.enabled then
+            -- "is not true" RATHER THAN "is false", because this branch is
+            -- also where `enabled = 1` and `enabled = 'yes'` land. The flag is
+            -- read as `== true` everywhere in this resource, so those really
+            -- are off -- but telling an operator their file says `false` when
+            -- it says `1` sends them looking for a line that is not there.
             say('  windows:           (%d written, and NOT IN USE -- Config.Schedule.enabled is '
-                .. 'false, so the arena is open at every hour. Nothing is wrong with them.)', written)
+                .. 'not true, so the arena is open at every hour. Nothing is wrong with them.)',
+                written)
         elseif kept > 0 then
-            say('  windows:           (%d written, all of them GOOD, and between them they cover '
-                .. 'the whole day -- so the arena is open at every hour. This is what '
-                .. '{ from = 0, to = 24 } does.)', written)
+            -- AND "ALL OF THEM" HAS TO MEAN ALL OF THEM.
+            --
+            -- The first version of this branch gated on the number of SPANS
+            -- and then printed `written` inside the words "all of them GOOD".
+            -- Those are two different numbers, and a schedule with one good
+            -- all-day window and one typo -- the exact mixture an operator
+            -- produces while editing -- read "2 written, all of them GOOD"
+            -- while one of the two had been thrown away, and the sentence that
+            -- would have sent them to the startup console was gone.
+            --
+            -- A report that invents an all-clear is the thing this screen
+            -- exists to stop. DO NOT vouch for a window this did not count.
+            say('  windows:           (%d of %d good, and between them they cover the whole day '
+                .. '-- so the arena is open at every hour. That is what { from = 0, to = 24 } '
+                .. 'does.)', kept, written)
+            if kept < written then
+                say('                     AND %d of them were THROWN AWAY and are doing nothing. '
+                    .. 'The startup console names each one.', written - kept)
+            end
         else
             say('  windows:           (none usable -- %d written, all of them thrown away, so '
                 .. 'NOTHING is being refused. The startup console names each one.)', written)

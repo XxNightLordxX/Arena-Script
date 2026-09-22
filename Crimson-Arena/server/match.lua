@@ -2397,7 +2397,8 @@ end
 --- @param serverSaw boolean? -- true ONLY from this file's own dead sweep
 --- @param why any -- why the reporter named nobody; A LOG LINE AND NOTHING ELSE
 --- @return boolean counted
-function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
+--- @param causeHash integer? -- the weapon hash the dying client reported
+function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     local id = Arena.ToInt(src)
     if not id then return false end
 
@@ -2460,6 +2461,50 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     elseif killerSrc ~= nil then
         ArenaDebug('unverified kill claim on match %s: %s says %s killed them',
             tostring(match.id), tostring(id), tostring(killerSrc))
+
+        -- AND THE ONE REFUSAL WORTH SAYING OUT LOUD: A TEAM-MATE.
+        --
+        -- resolveKiller refuses this claim through Arena.CanDamage, so the
+        -- killer is credited nothing and the line above was all that was ever
+        -- said about it. That is the right answer for the SCOREBOARD and the
+        -- wrong one for the operator: a team-mate landing a killing blow at
+        -- all is the thing they need to know about, and that line does not
+        -- even name what did it.
+        --
+        -- ArenaLog, NOT ArenaDebug, and the difference is the whole point.
+        -- Config.Debug ships ON -- so both would print on a stock server and
+        -- a test cannot tell them apart by watching the console -- but it is
+        -- a switch, and the operator most likely to have turned the noise off
+        -- is the one running a busy server where this is happening. A hole
+        -- the server cannot close must not be reported through a tap the
+        -- operator can. The spec pins this with Config.Debug = false.
+        --
+        -- THE SERVER REFUSES GUNFIRE BETWEEN TEAM-MATES AND CANNOT REFUSE
+        -- MELEE. server/dispatch.lua cancels weaponDamageEvent, which the
+        -- engine does not reliably raise for a blade or a fist -- see the
+        -- note in client/match.lua where the client-side hold was removed,
+        -- which says this in as many words. So a bottle to a team-mate's
+        -- head lands, and until the cause was reported there was nothing
+        -- anywhere that could even say so.
+        --
+        -- NAMES THE WEAPON WHEN IT CAN AND THE HASH WHEN IT CANNOT. A cause
+        -- this catalogue does not carry -- a fall, a car, fire, a weapon the
+        -- operator switched off -- is printed as the raw number rather than
+        -- guessed at.
+        local accused = match.players[killerSrc]
+        if accused ~= nil and Arena.ModeUsesTeams(match.modeKey)
+            and Arena.IsKey(accused.team) and accused.team == player.team
+            and Config.Teams.friendlyFire ~= true
+        then
+            local weapon = Arena.WeaponByHash(causeHash)
+            ArenaLog('TEAMKILL: %s was killed by their own team-mate %s with %s in match %s. '
+                .. 'Friendly fire is off, so the kill was credited to nobody -- but the damage '
+                .. 'landed, which for melee is a hole this server cannot close: the engine does '
+                .. 'not raise weaponDamageEvent for it, so there is nothing to cancel.',
+                tostring(player.name or id), tostring(accused.name or killerSrc),
+                weapon and weapon.label or ('cause hash ' .. tostring(causeHash)),
+                tostring(match.id))
+        end
     end
 
     -- A DEATH THE ROUND HAS NO WITNESS FOR, and it is priced rather than

@@ -486,7 +486,20 @@ onClient('crimson_arena:server:reportDeath', RATE.death, function(src, data)
     -- sentences and never lets it decide anything. DO NOT widen it to a
     -- string -- that is a client writing its own lines into the operator's
     -- console.
-    ArenaMatch.OnDeath(src, intArg(payload.killerServerId), nil, intArg(payload.why))
+    -- AND WHAT KILLED THEM, sanitised the same way and trusted the same
+    -- amount: not at all. `cause` is a weapon hash the dying client read off
+    -- its own ped, and it is the ONE fact about a death the server cannot
+    -- obtain any other way -- weaponDamageEvent does not carry it, melee
+    -- frequently does not raise one, and there is no server native.
+    --
+    -- SO IT IS RECORDED, NEVER OBEYED. ArenaMatch.OnDeath writes it to the
+    -- log and the roster row and nothing reads it to decide a tier, a life
+    -- or a score. The rule about `why` above is the same rule: a client may
+    -- tell this server what happened to IT, and may not tell this server
+    -- what to do about it. An integer or nothing, like every other field
+    -- that crosses this line.
+    ArenaMatch.OnDeath(src, intArg(payload.killerServerId), nil, intArg(payload.why),
+        intArg(payload.cause))
 end)
 
 onClient('crimson_arena:server:spectateMatch', RATE.spectate, function(src, data)

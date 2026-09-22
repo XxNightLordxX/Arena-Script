@@ -431,7 +431,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 105 functions
+#### `shared/arena.lua` — 106 functions
 
 | Function | What it does |
 |---|---|
@@ -443,6 +443,7 @@ listed; the source documents them where they are.
 | `Arena.TangentHeading(dx, dy, longIsX)` | The heading that lays a piece's LONG side across the radius rather than along it -- side-on to the middle of the arena, which is what makes a ring of containers a wall instead of a set of spokes. |
 | `Arena.Count(tbl)` | How many entries a table holds, including string keys. |
 | `Arena.GetEnabledWeapons()` | Every weapon an operator has left switched on, in config order. |
+| `Arena.WeaponByHash(hash)` | The catalogue weapon a death's cause-of-death hash names, or nil. The dying client reads `GetPedCauseOfDeath` and reports the hash; there is no server native for it and `weaponDamageEvent` does not carry it, so this is the only way the server can name what killed somebody. Indexes BOTH signs of every hash -- `GetHashKey` answers signed and `GetPedCauseOfDeath` unsigned, so a map built from one answers nothing to the other. nil is an ordinary answer: a fall, a vehicle, fire and every switched-off weapon all land there. |
 | `Arena.GetWeaponByKey(key)` | The one weapon with this key, or nil. |
 | `Arena.GetEnabledTeams()` | Enabled teams, sorted by their `order` then key so every client renders the picker in the same sequence. |
 | `Arena.GetTeamByKey(key)` | One enabled team by key, or nil. |

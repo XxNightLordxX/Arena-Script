@@ -179,6 +179,69 @@ local function buildWeaponIndex(catalogue)
     return index
 end
 
+local weaponHashSource, weaponHashIndex = nil, nil
+
+--- The catalogue weapon a death's cause-of-death hash names, or nil.
+---
+--- THE ONLY WAY THE SERVER CAN NAME WHAT KILLED SOMEBODY. The dying client
+--- reads GetPedCauseOfDeath off its own ped and reports the hash; there is no
+--- server native for it and weaponDamageEvent does not carry it.
+---
+--- BOTH SIGNS OF THE SAME HASH ARE INDEXED, and that is not belt-and-braces.
+--- GetHashKey hands back a SIGNED 32-bit integer in FiveM's Lua while
+--- GetPedCauseOfDeath reports the UNSIGNED one -- WEAPON_PISTOL is
+--- -1569615261 from one and 2725352035 from the other -- so a map built from
+--- one answers nothing at all to the other. The caller has no way to know
+--- which spelling it is holding, so both are keys.
+---
+--- NIL IS AN ORDINARY ANSWER, not a failure: a fall, a drowning, a vehicle,
+--- fire, and every weapon an operator has switched off or never listed all
+--- land here and all come back nil. Callers must read nil as "not a weapon
+--- this arena knows" and never as "no weapon".
+--- @param hash any
+--- @return table|nil
+function Arena.WeaponByHash(hash)
+    local wanted = Arena.ToInt(hash)
+    if wanted == nil then return nil end
+
+    local catalogue = Config.Loadouts.weapons
+    if type(catalogue) ~= 'table' then return nil end
+
+    if weaponHashSource ~= catalogue then
+        local index = {}
+
+        -- NO HASHER, NO MAP, AND THAT IS FINE. This file loads in both realms
+        -- and in the specs, and GetHashKey is not there for all of them. An
+        -- empty map answers nil to everything, which is exactly what the
+        -- doc above tells callers to expect.
+        -- NAMED DIRECTLY, NOT THROUGH _G. An undefined global is nil in
+        -- Lua, so `type(GetHashKey) == 'function'` asks the question without
+        -- touching the globals table -- which is how client/match.lua asks
+        -- the same thing about GetPedCauseOfDeath, and what keeps the scope
+        -- checker in verify_release able to read this file.
+        local hasher = (type(GetHashKey) == 'function' and GetHashKey)
+            or (type(joaat) == 'function' and joaat)
+            or nil
+        if hasher then
+            for _, weapon in ipairs(catalogue) do
+                if weapon.enabled ~= false and Arena.IsKey(weapon.weapon) then
+                    local ok, signed = pcall(hasher, weapon.weapon)
+                    local number = ok and Arena.ToInt(signed) or nil
+                    if number then
+                        if index[number] == nil then index[number] = weapon end
+                        local other = number < 0 and (number + 4294967296) or (number - 4294967296)
+                        if index[other] == nil then index[other] = weapon end
+                    end
+                end
+            end
+        end
+
+        weaponHashSource, weaponHashIndex = catalogue, index
+    end
+
+    return weaponHashIndex[wanted]
+end
+
 --- The one weapon with this key, or nil. Returns nil for a disabled weapon
 --- as well as an unknown one -- callers must not be able to tell the
 --- difference, or `enabled = false` would only be a UI hint.

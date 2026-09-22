@@ -486,16 +486,25 @@ end)
 -- THE ROUND
 -- ----------------------------------------------------------------------
 
-t.test('reportDeath: killer and why are integers or nothing; the middle argument is always nil', function()
+t.test('reportDeath: killer, why and cause are integers or nothing; the middle argument is always nil', function()
     local s = newFunnel()
-    s.fire('reportDeath', 5, { killerServerId = '7', why = '2' })
+    s.fire('reportDeath', 5, { killerServerId = '7', why = '2', cause = '2725352035' })
     local a = s.last('ArenaMatch', 'OnDeath').args
     t.equals(a[1], 5); t.equals(a[2], 7); t.equals(a[3], nil); t.equals(a[4], 2)
-    t.equals(a.n, 4)
 
-    s.fire('reportDeath', 5, { killerServerId = {}, why = 'console injection' })
+    -- THE FIFTH IS THE WEAPON HASH THE DYING CLIENT REPORTED, and it is
+    -- sanitised exactly like the other two: an integer or nothing. It is the
+    -- one fact about a death the server cannot get any other way -- there is
+    -- no server native and weaponDamageEvent does not carry it -- so it
+    -- crosses this line, and server/match.lua records it rather than letting
+    -- it decide a tier, a life or a score.
+    t.equals(a[5], 2725352035, 'the cause did not travel as an integer')
+    t.equals(a.n, 5)
+
+    s.fire('reportDeath', 5, { killerServerId = {}, why = 'console injection', cause = 'WEAPON_KNIFE' })
     a = s.last('ArenaMatch', 'OnDeath').args
     t.equals(a[2], nil); t.equals(a[4], nil, 'a string why never travels')
+    t.equals(a[5], nil, 'a cause that is not a number never travels')
 
     s.fire('reportDeath', 5, 'junk')
     t.equals(s.count('ArenaMatch', 'OnDeath'), 2, 'junk is dropped without a toast')

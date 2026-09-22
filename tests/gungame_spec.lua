@@ -3883,4 +3883,119 @@ t.test('CONTROL: with the rule OFF every death costs a tier, as it always did', 
     t.equals(s.row(1).tier, 3, 'with the rule off a gun kill must still cost a tier')
 end)
 
+-- ======================================================================
+-- WHAT KILLED THEM
+-- ======================================================================
+
+--- A match with sides, so a team-mate kill is a thing that can happen.
+local function teamedServer(mutate)
+    return newServer(function(config)
+        config.Modes.gungame.teams = true
+        config.Teams.friendlyFire = false
+        if mutate then mutate(config) end
+    end)
+end
+
+local function sidesFor(s)
+    s.play(4, nil, function()
+        for src = 1, 4 do
+            s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+    end)
+end
+
+local function consoleOf(s) return table.concat(s.console, '\n') end
+
+t.test('A TEAM-MATE KILL IS SAID OUT LOUD, with what did it', function()
+    -- THE HOLE THIS MAKES VISIBLE. server/dispatch.lua refuses gunfire
+    -- between team-mates by cancelling weaponDamageEvent -- but the engine
+    -- does not reliably raise one for melee, so a blade lands and nothing
+    -- anywhere could even say it had. resolveKiller refuses the CREDIT, and
+    -- said so at debug level only, which ships off.
+    local s = teamedServer()
+    sidesFor(s)
+
+    local match = s.match_()
+    t.equals(match.players[1].team, match.players[3].team, '1 and 3 are not on one side')
+
+    -- 3 kills their own team-mate 1. Credit is refused; the damage was not.
+    s.match.OnDeath(1, 3, nil, nil, 987654321)
+
+    t.contains(consoleOf(s), 'TEAMKILL:', 'a team-mate kill was never reported at all')
+    t.contains(consoleOf(s), '987654321',
+        'the cause was not named, so nobody can tell a blade from a car')
+    t.equals(match.players[3].kills or 0, 0, 'the team-mate kill was CREDITED, which it must not be')
+end)
+
+t.test('and it names the WEAPON when the catalogue knows the hash', function()
+    -- BOTH SIGNS OF THE SAME HASH, because GetHashKey answers signed and
+    -- GetPedCauseOfDeath reports unsigned, and a map built from one answers
+    -- nothing at all to the other.
+    local s = teamedServer()
+
+    -- A hasher the test controls: the sandbox ships joaat as the identity,
+    -- which cannot produce a number, so the real map is empty in here.
+    local knife = s.arena.GetWeaponByKey('knife')
+    t.isNotNil(knife, 'the catalogue has no knife, so this proves nothing')
+    s.env.GetHashKey = function(name)
+        if name == knife.weapon then return -1569615261 end
+        return nil
+    end
+
+    sidesFor(s)
+    s.match.OnDeath(1, 3, nil, nil, -1569615261 + 4294967296)
+
+    t.contains(consoleOf(s), knife.label,
+        'the unsigned hash did not find the weapon its signed twin was indexed under')
+end)
+
+t.test('and it survives Config.Debug being switched off', function()
+    -- THE TAP THE OPERATOR CAN TURN OFF MUST NOT CARRY IT. Config.Debug
+    -- ships ON, so ArenaDebug and ArenaLog both print on a stock server and
+    -- watching the console cannot tell them apart -- which is exactly how a
+    -- mutant swapping one for the other survived the first pass of this
+    -- suite. The operator most likely to have silenced the debug noise is
+    -- the one running the busy server where team-kills are happening.
+    local s = teamedServer(function(config) config.Debug = false end)
+    sidesFor(s)
+    s.match.OnDeath(1, 3, nil, nil, 987654321)
+
+    t.contains(consoleOf(s), 'TEAMKILL:',
+        'with debug off the team-kill went unreported -- it is on the debug tap')
+
+    -- AND THE CONTROL THAT PROVES THE SWITCH REALLY IS OFF, or the assertion
+    -- above passes on a server that simply never turned it off.
+    t.isNil(consoleOf(s):find('[debug]', 1, true),
+        'Config.Debug = false did not silence the debug lines, so this proves nothing')
+end)
+
+t.test('CONTROL: an ENEMY kill says nothing, and friendly fire ON says nothing', function()
+    -- Two ways this line could be noise instead of a signal.
+    local enemy = teamedServer()
+    sidesFor(enemy)
+    enemy.match.OnDeath(1, 2, nil, nil, 987654321)
+    t.isNil(consoleOf(enemy):find('TEAMKILL:', 1, true),
+        'an ordinary kill on the other side was reported as a team-kill')
+
+    local allowed = newServer(function(config)
+        config.Modes.gungame.teams = true
+        config.Teams.friendlyFire = true
+    end)
+    sidesFor(allowed)
+    allowed.match.OnDeath(1, 3, nil, nil, 987654321)
+    t.isNil(consoleOf(allowed):find('TEAMKILL:', 1, true),
+        'a server that ALLOWS friendly fire was told its own rule was a hole')
+end)
+
+t.test('and an unknown cause is printed raw rather than guessed at', function()
+    -- A fall, a car, fire, or a weapon the operator switched off. nil is an
+    -- ordinary answer from WeaponByHash and must not read as "no weapon".
+    local s = teamedServer()
+    sidesFor(s)
+    s.match.OnDeath(1, 3, nil, nil, 424242)
+
+    t.contains(consoleOf(s), 'cause hash 424242',
+        'an unrecognised cause was not reported at all')
+end)
+
 os.exit(t.summary())

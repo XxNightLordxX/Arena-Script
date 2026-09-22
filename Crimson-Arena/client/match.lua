@@ -1080,6 +1080,26 @@ local function handleDeath(ped, attacker)
         killerServerId, why = id, math.max(why, fourth)
     end
 
+    -- WHAT KILLED THEM, READ ONCE AND FOR EVERY DEATH.
+    --
+    -- This used to be computed inside the unattributed-death branch below,
+    -- because the only thing that wanted it was a line printed to the dead
+    -- player. The SERVER wants it now, and it wants it most for the deaths
+    -- that WERE attributed -- a kill with a named killer is the one where
+    -- "what killed them" decides anything.
+    --
+    -- THE ONE FACT THE SERVER CANNOT GET ANY OTHER WAY. It is not in
+    -- weaponDamageEvent (melee does not reliably raise one at all, which is
+    -- why melee between team-mates is refused by nothing), it is not on the
+    -- roster, and there is no server native for it. It is here or nowhere.
+    --
+    -- AND IT IS A CLIENT'S WORD, WHICH IS WHY NOTHING IS DECIDED ON IT
+    -- ALONE. server/main.lua sanitises it to an integer or nothing, and
+    -- server/match.lua RECORDS it -- the log, the admin screen -- rather
+    -- than letting it move a tier, a life or a score. A dying client has an
+    -- interest in every one of those and none in the log.
+    local cause = type(GetPedCauseOfDeath) == 'function' and GetPedCauseOfDeath(ped) or nil
+
     -- DO NOT put this back behind Config.Debug. THE REPORT this whole change
     -- exists for is a player quoting this line -- "it said nobody was seen as
     -- the killer in my f8" -- and what it said was two raw entity handles,
@@ -1087,7 +1107,6 @@ local function handleDeath(ped, attacker)
     -- dead player alone, and it names the CAUSE: the one fact that separates
     -- "the arena killed me" from "somebody shot me and got nothing for it".
     if not killerServerId then
-        local cause = type(GetPedCauseOfDeath) == 'function' and GetPedCauseOfDeath(ped) or nil
         -- ONCE A SESSION, NOT ONCE A DEATH. Still not behind Config.Debug,
         -- for the reason above -- the report that drove this change was a
         -- player quoting the line out of their own F8 -- but a fighter dying
@@ -1103,7 +1122,7 @@ local function handleDeath(ped, attacker)
             tostring(cause), tostring(attacker), tostring(ofDeath))
     end
 
-    local report = { killerServerId = killerServerId }
+    local report = { killerServerId = killerServerId, cause = cause }
     if not killerServerId then report.why = why end
 
     TriggerServerEvent('crimson_arena:server:reportDeath', report)

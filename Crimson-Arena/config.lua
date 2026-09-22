@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       195   Match         Lives, timers, player counts, win condition
-      500   Teams         The sides, and whether they may be uneven
-      670   Modes         Free-for-all, team deathmatch and gun game
-      974   DefaultMode   Which of them a new lobby opens on
-      993   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1237   UI            Panel colours, logo and title
-     1295   Permissions   Who may open a match, who may force-stop one
-     1381   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1815   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2390   Database      Optional: four tables the arena owns. Ships OFF
-     2421   Leaderboard   Which matches count towards the board, and which do not
-     2487   Webhook       Optional: a Discord line per finished match
-     2519   Dispatch      Optional: keeping police and EMS out of the arena
+      515   Teams         The sides, and whether they may be uneven
+      685   Modes         Free-for-all, team deathmatch and gun game
+      989   DefaultMode   Which of them a new lobby opens on
+     1008   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1252   UI            Panel colours, logo and title
+     1310   Permissions   Who may open a match, who may force-stop one
+     1396   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1830   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2405   Database      Optional: four tables the arena owns. Ships OFF
+     2436   Leaderboard   Which matches count towards the board, and which do not
+     2502   Webhook       Optional: a Discord line per finished match
+     2534   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -210,8 +210,23 @@ Config.Match = {
     -- met, without waiting for the host to press start.
     autoStartWhenAllReady = true,
 
-    -- The countdown shown in the lobby once a start is triggered. Players
-    -- may still back out during it.
+    -- The countdown shown in the lobby once a start is triggered.
+    --
+    -- PLAYERS ARE HELD FOR IT. This comment used to say they may still back
+    -- out during it, and the server refuses exactly that: ArenaLobby.MayLeave
+    -- answers `error.match_in_progress` for the whole of this window. The
+    -- reason is that the countdown thread re-checks Arena.CanStartMatch every
+    -- second and drops the room back to the lobby the moment it fails, so
+    -- anybody the roster still needs could call off every round on the server
+    -- by standing up -- and with refundOnDisconnectBeforeStart true their fee
+    -- comes back, so they could do it for nothing, for as long as they liked.
+    --
+    -- What IS still possible during it: the host's Cancel Start, which puts
+    -- the whole room back in the lobby, and a disconnect, which is never
+    -- refused -- and if that drops the roster below what the mode needs, the
+    -- countdown stops and nobody loses their seat.
+    --
+    -- So this number is how long a player is committed for. Keep it short.
     lobbyCountdownSeconds = 10,
 
     -- The frozen countdown after everyone is teleported in, before weapons

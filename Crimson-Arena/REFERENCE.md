@@ -67,8 +67,9 @@ instancing really happened rather than assuming it did.
   sets. Losing your last one eliminates you; losing one before that respawns you
   at the point furthest from everyone still alive.
 - **Win conditions:** last standing, a score limit, or a round timer, per mode.
-- **A countdown you can still back out of**, then a frozen countdown once
-  everybody is in the arena and armed.
+- **A countdown you are held for** -- leaving is refused for its whole length,
+  so one player cannot call the round off for everybody -- then a frozen
+  countdown once everybody is in the arena and armed.
 - **Concurrent matches.** Several rounds run at once, each in its own instance,
   and two of them can share one arena because they cannot see each other. If the
   server is not instancing, the second match at a busy arena is refused rather
@@ -725,7 +726,7 @@ listed; the source documents them where they are.
 | Function | What it does |
 |---|---|
 | `ArenaMatch.UnplaceAuto(match)` | Puts back the sides `Begin` handed to players who never picked one, for an exit back to the lobby that lives outside this file -- the host's Stop The Countdown. Answers whether it moved anybody. |
-| `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players may still back out of. |
+| `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players are held for -- it re-checks the roster every second and drops the room back to the lobby the moment it no longer qualifies, which is why `ArenaLobby.MayLeave` refuses a voluntary leave for its whole length. A disconnect is never refused. |
 | `ArenaMatch.Start(matchId)` | Teleports everybody in, hands out the loadouts, and starts the frozen countdown that ends with weapons live. |
 | `ArenaMatch.OnDeath(src, killerSrc)` | One player died. |
 | `ArenaMatch.End(matchId, reasonKey, winners)` | Ends a round that was actually fought: decides the winners, settles the money, records it, and sends everybody home with a result. |

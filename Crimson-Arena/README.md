@@ -54,7 +54,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 - Modes: **Free For All**, **Team Deathmatch** and **Gun Game** — all three ship enabled.
 - **Gun Game is a ladder, not a deathmatch.** Nobody is eliminated: every kill moves you one rung up and every death moves you one down, and the round ends on its own clock (`Config.Modes.gungame.roundTimeSeconds`, 480s) or when somebody tops the ladder. It ignores `winCondition` and `lives` entirely, and issues its own kit rather than letting anybody pick one. The rungs are drawn from ordered weapon-class pools, so the shape of the climb is the same every round and the guns on it are not.
 - Win conditions: `last_standing` (default), `most_kills`, `score_limit`. A tie is a draw and refunds rather than picking one of two equal scores.
-- Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players can still back out of, and a frozen start countdown.
+- Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players are held for, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
 - Optional per-arena weather and time overrides. Both `nil` by default.
 - **The server checks two things for itself**, once a second, because a
@@ -939,7 +939,7 @@ setting to make it try.
 
 5. **Ready up.** With `autoStartWhenAllReady = true` the match starts on its own once everyone has readied and `minPlayers` is met. Otherwise the host presses start (`onlyHostCanStart`).
 
-6. **Lobby countdown.** `lobbyCountdownSeconds` of a countdown players can still back out of. If someone leaves and the lobby drops below what it needs, the countdown stops and the lobby goes back to waiting — nobody loses their seat.
+6. **Lobby countdown.** `lobbyCountdownSeconds` of a countdown **players are held for** — leaving is refused with `error.match_in_progress` for the whole window. That is deliberate: the countdown re-checks the roster every second and drops the room back to the lobby the moment it no longer qualifies, so anybody the roster still needs could call off every round on the server just by standing up, and get their entry fee back each time. Two things still end it — the host's **Cancel Start**, which puts the whole room back in the lobby, and a **disconnect**, which is never refused. If either drops the lobby below what the mode needs, the countdown stops and the lobby goes back to waiting — nobody loses their seat.
 
 7. **In.** Everyone is teleported to a spawn point, scattered, frozen, and handed their loadout. Loadouts are **re-resolved at this moment** against the live catalogue, not replayed from what was stored — a weapon an operator switched off since is dropped here rather than granted. This is also the one moment [ammo items](#ammo-types--handing-out-your-own-ammo-items) are handed over, if you have them on.
 

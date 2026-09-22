@@ -22,16 +22,16 @@
       195   Match         Lives, timers, player counts, win condition
       515   Teams         The sides, and whether they may be uneven
       685   Modes         Free-for-all, team deathmatch and gun game
-     1038   DefaultMode   Which of them a new lobby opens on
-     1057   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1301   UI            Panel colours, logo and title
-     1359   Permissions   Who may open a match, who may force-stop one
-     1445   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1879   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2454   Database      Optional: four tables the arena owns. Ships OFF
-     2485   Leaderboard   Which matches count towards the board, and which do not
-     2551   Webhook       Optional: a Discord line per finished match
-     2583   Dispatch      Optional: keeping police and EMS out of the arena
+     1069   DefaultMode   Which of them a new lobby opens on
+     1088   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1332   UI            Panel colours, logo and title
+     1390   Permissions   Who may open a match, who may force-stop one
+     1476   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1910   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2485   Database      Optional: four tables the arena owns. Ships OFF
+     2516   Leaderboard   Which matches count towards the board, and which do not
+     2582   Webhook       Optional: a Discord line per finished match
+     2614   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -946,6 +946,37 @@ Config.Modes = {
         -- AND IT ADDS RATHER THAN TOPPING UP: ArenaAmmo.GrantSupply calls
         -- AddItem, so ten kills is ten plates, not one plate kept full. The
         -- exit takes back what the arena issued, however much that came to.
+        -- WHAT A DEATH COSTS, AND WHAT BUYS YOU OUT OF IT. SHIPS ON.
+        --
+        -- With this on, a death costs you a tier UNLESS the server positively
+        -- saw the fighter who killed you standing on a FIREARM rung. So being
+        -- knifed by somebody on the melee rung drops you; being shot does
+        -- not. With it off, every death costs a tier exactly as it always
+        -- did.
+        --
+        -- READ THE OTHER WAY ROUND BEFORE YOU JUDGE IT. The obvious wording
+        -- is "you only drop a tier if a melee kill did it", and that rule
+        -- cannot be defended: a client that simply never reports its own
+        -- death is booked by the arena's own dead sweep with NO killer
+        -- attached, so there is no melee to find, no tier is taken, no life
+        -- is spent -- ladders spend none -- and the unwitnessed-death price
+        -- is skipped because the server saw it itself. Total tier immunity,
+        -- for ever, by sending nothing. Putting the burden on the SPARING
+        -- instead closes that: silence proves nothing, so silence is charged.
+        --
+        -- WHAT THAT COSTS HONEST PLAYERS, said plainly rather than buried: a
+        -- fall, a drowning, a suicide, a boundary bleed and a kill claim the
+        -- server refuses all still take a tier. The only way out is naming a
+        -- real opponent on a real gun -- which hands THEM the kill, the rung
+        -- and the kill reward. The tier still moves; it moves to somebody
+        -- else.
+        --
+        -- ONLY A GUN SPARES YOU, so on the shipped ladder the melee rung is
+        -- rung 1 and every rung above it is a firearm. An operator who fills
+        -- the whole ladder with blades has a mode where nothing is ever
+        -- spared, which is the same as switching this off.
+        demoteOnMeleeOnly = true,
+
         -- A BLADE IN EVERY POCKET, AT EVERY RUNG.
         --
         -- The ladder is the loadout in this mode: the rung you are standing

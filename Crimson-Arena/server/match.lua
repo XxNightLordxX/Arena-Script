@@ -2417,6 +2417,32 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
     local playingLadder = #ladderOf(match) > 0
 
     local killer, namedAFighter = resolveKiller(match, player, killerSrc)
+
+    -- WHAT THE KILLER WAS STANDING ON, READ BEFORE THEY MOVE OFF IT.
+    --
+    -- THE PROMOTION IS TWELVE LINES BELOW AND IT REWRITES killer.tier. Read
+    -- this in the demotion block at the bottom of the function instead and
+    -- you get the rung they moved ONTO, not the one they killed FROM -- and
+    -- on the shipped ladder, where melee is rung 1 and only rung 1, that
+    -- off-by-one is the whole difference between "a melee kill demotes" and
+    -- "nothing ever demotes". Every melee killer is promoted onto a sidearm
+    -- before the question is asked.
+    --
+    -- THE RAW RUNG, NOT THE ISSUED ENTRY. `Arena.ResolveWeaponEntry` does
+    -- not carry `category` through, so killer.loadout.weapons[1].category is
+    -- always nil and every kill would read as a gun kill. `ladderOf` holds
+    -- the config.weapons.lua tables themselves, which is what
+    -- Arena.IsMeleeWeapon is written against.
+    --
+    -- A DEATH WITH NO KILLER LEAVES THIS FALSE, and that is the whole shape
+    -- of the rule below: nothing was positively seen, so nothing is spared.
+    local ladder = ladderOf(match)
+    local killedWithAGun = false
+    if playingLadder and killer ~= nil then
+        local rung = ladder[Arena.ClampInt(killer.tier, 1, #ladder) or 1]
+        killedWithAGun = rung ~= nil and Arena.IsMeleeWeapon(rung) ~= true
+    end
+
     if killer then
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
 
@@ -2565,7 +2591,38 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why)
         end
     end
 
-    if playingLadder then
+    -- WHETHER A GUN KILL SPARED THEM, which is the only thing that does.
+    --
+    -- THE BURDEN IS ON THE SPARING, NOT ON THE CHARGE, and that inversion is
+    -- the entire safety of this rule. Written the obvious way round -- "a
+    -- death costs a tier only if the server saw a MELEE killer" -- a client
+    -- that simply stops sending reportDeath is booked by the dead sweep as
+    -- OnDeath(src, nil, true): no killer, so no melee, so no tier. Ladders
+    -- spend no lives, and `serverSaw` is true so the unwitnessed price never
+    -- lands either. Total, permanent, unrate-limited tier immunity, for
+    -- free, on every death, by sending nothing at all.
+    --
+    -- This way round silence is not a dodge: no killer means no sparing
+    -- means the tier is charged, exactly as it always was. The ONLY way out
+    -- is to name a live opponent the roster accepts who is standing on a
+    -- firearm rung -- and that hands them a kill, a rung and a killReward.
+    -- The tier still moves, it just moves to somebody else.
+    --
+    -- SO A FALL, A DROWNING, A SUICIDE AND A REFUSED KILL CLAIM ALL STILL
+    -- COST A TIER. That is not the literal sentence "you only drop a level
+    -- if you die to melee", and the difference is deliberate: the literal
+    -- sentence cannot be defended against a client that says nothing.
+    --
+    -- AND THE UNWITNESSED PRICE IS LEFT ALONE ON PURPOSE. Its exemption at
+    -- `not playingLadder` rests on "the same death has already taken a tier
+    -- off them", and under this rule every unnamed ladder death still does.
+    -- Narrowing that gate to match a conditional demotion re-creates the
+    -- bare-handed-respawn regression this file already documents. DO NOT.
+    local spared = playingLadder
+        and killedWithAGun
+        and (Arena.GetModeByKey(match.modeKey) or {}).demoteOnMeleeOnly ~= false
+
+    if playingLadder and not spared then
         if tierScore(player) > 0 then
             player.tiersLost = (Arena.ToInt(player.tiersLost) or 0) + 1
             refundTierCredit(player)

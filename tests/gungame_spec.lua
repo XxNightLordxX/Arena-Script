@@ -1730,7 +1730,17 @@ t.test('the real respawn thread puts a climber back on their own tier', function
     -- because `server.revive` stood everybody up before the thread could
     -- run. The header claims the ladder replaces the loadout "on every
     -- respawn"; nothing had ever watched one.
-    local s = newServer()
+    --
+    -- DEMOTION RULE OFF, BECAUSE THIS TEST IS NOT ABOUT IT. The walk down to
+    -- tier 1 below is `while tier > 1 do kill end`, and with
+    -- demoteOnMeleeOnly on that loop NEVER ENDS: each kill promotes the
+    -- killer, and the moment they step off the melee rung onto a sidearm
+    -- their kills stop costing the victim anything. Measured -- the file
+    -- hung here. Pinning the rule off keeps this about the respawn thread
+    -- and leaves the rule to the tests that are about the rule.
+    local s = newServer(function(config)
+        config.Modes.gungame.demoteOnMeleeOnly = false
+    end)
     s.play(3)
 
     for _, victim in ipairs({ 2, 3 }) do s.trade(victim, 1) end
@@ -1919,6 +1929,11 @@ t.test('the ladder beats the clock, the score limit and the last one standing', 
         -- a three-tier ladder that tops it and ends the round before the
         -- thing this test is about can be asked.
         config.Modes.gungame.maxTiersPerVictim = 2
+        -- AND THE DEMOTION RULE OFF, because the walk down below is scenery
+        -- for a WIN CONDITION test. With it on, each of player 1's deaths
+        -- promotes player 2 off the melee rung and their later kills stop
+        -- costing anything, so "standing on tier 1 for it" never comes true.
+        config.Modes.gungame.demoteOnMeleeOnly = false
     end)
     s.play(4)
 
@@ -3399,7 +3414,14 @@ t.test('THE REPORT: climb, die it all back, and the same opponent pays again', f
     -- everything -- and worth nothing for the rest of the round. They could
     -- stand next to the only other player in the arena, kill them over and
     -- over, and never move.
-    local s = newServer(sevenTiers)
+    -- DEMOTION RULE OFF: this is about creditsTier's per-victim ledger, and
+    -- "die it all back" is how it gets there. With the rule on, the opponent
+    -- doing the killing climbs off the melee rung and stops taking tiers, so
+    -- the climber never gets back down to where the bug shows.
+    local s = newServer(function(config)
+        sevenTiers(config)
+        config.Modes.gungame.demoteOnMeleeOnly = false
+    end)
     s.play(5)
     local cap = s.config.Modes.gungame.maxTiersPerVictim
     t.isTrue(cap > 0, 'the cap is off, so this proves nothing')
@@ -3754,6 +3776,111 @@ t.test('CONTROL: an empty list really means no blade, and does not raise', funct
     junk.play(4)
     t.isTrue(junk.match_().blade == false or junk.match_().blade == nil,
         'a list of keys that are not weapons handed out something')
+end)
+
+-- ======================================================================
+-- ONLY A GUN SPARES YOU
+-- ======================================================================
+
+t.test('THE RULE: a melee killer takes a tier, a gun killer does not', function()
+    local s = newServer()
+    s.play(4)
+
+    -- THE KILLER IS ON THE MELEE RUNG. Tier 1 is melee on every shipped
+    -- ladder, and 3 has killed nobody, so that is where they are standing.
+    for _ = 1, 3 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, 4, 'the climb did not happen, so there is nothing to lose')
+    t.equals(s.row(3).tier, 1, 'player 3 is not on the melee rung, so this proves nothing')
+    t.isTrue(s.arena.IsMeleeWeapon(s.match_().ladder[1]) == true, 'rung 1 is not melee')
+
+    s.kill(1, 3)
+    s.revive(1)
+    t.equals(s.row(1).tier, 3, 'a melee kill did not cost the victim a tier')
+
+    -- AND NOW A GUN. Player 3 is promoted onto rung 2 by that kill, which is
+    -- a firearm, so the next one spares.
+    t.equals(s.row(3).tier, 2, 'the melee kill did not promote the killer')
+    t.isTrue(s.arena.IsMeleeWeapon(s.match_().ladder[2]) ~= true, 'rung 2 is melee, so this proves nothing')
+
+    s.kill(1, 3)
+    s.revive(1)
+    t.equals(s.row(1).tier, 3, 'a GUN kill took a tier -- only melee should')
+end)
+
+t.test('and the killer is read off the rung they KILLED from, not the one they won', function()
+    -- THE ORDERING LANDMINE. The killer is promoted twelve lines into
+    -- OnDeath; the victim's demotion is decided at the bottom of the same
+    -- function. Read killer.tier there and you get the rung they moved ONTO
+    -- -- and since melee is rung 1 and only rung 1, EVERY melee killer has
+    -- already stepped onto a sidearm by then. The rule would spare every
+    -- single kill and look like it was simply switched off.
+    --
+    -- This is that exact kill: a melee-rung killer whose own promotion
+    -- happens in the same call.
+    local s = newServer()
+    s.play(4)
+
+    for _ = 1, 2 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, 3, 'the victim did not climb, so a lost tier would not show')
+    t.equals(s.row(3).tier, 1, 'the killer is not on the melee rung')
+
+    s.kill(1, 3)
+    s.revive(1)
+
+    t.equals(s.row(3).tier, 2, 'the killer was not promoted by that kill')
+    t.equals(s.row(1).tier, 2,
+        'the victim kept their tier -- the rule read the rung the killer was promoted ONTO')
+end)
+
+t.test('SECURITY: a death with NO killer still costs a tier', function()
+    -- SILENCE MUST NOT BE A DODGE, and this is the whole reason the rule is
+    -- written as "a gun spares you" rather than "melee takes it".
+    --
+    -- Written the other way round, a client that simply stops sending
+    -- reportDeath is booked by the arena's own dead sweep as
+    -- OnDeath(src, nil, true): no killer, so no melee to find, so no tier.
+    -- A ladder spends no lives, and `serverSaw` skips the unwitnessed price.
+    -- That is total, permanent, unrate-limited tier immunity for free, on
+    -- every death, by sending nothing at all.
+    local s = newServer()
+    s.play(4)
+
+    for _ = 1, 3 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, 4, 'the climb did not happen')
+
+    -- Nobody named: a fall, a drowning, or a client that said nothing.
+    s.kill(1, nil)
+    s.revive(1)
+    t.equals(s.row(1).tier, 3, 'a death with no killer was FREE -- silence is a dodge')
+
+    -- Naming yourself is the same thing wearing a hat: rosterKiller refuses
+    -- it, so nothing was positively seen and nothing is spared.
+    s.kill(1, 1)
+    s.revive(1)
+    t.equals(s.row(1).tier, 2, 'naming yourself as your own killer dodged the tier')
+end)
+
+t.test('CONTROL: with the rule OFF every death costs a tier, as it always did', function()
+    -- The switch really switches. Without this the rule could be hard-wired
+    -- on and nothing here would notice.
+    local s = newServer(function(config)
+        config.Modes.gungame.demoteOnMeleeOnly = false
+    end)
+    s.play(4)
+
+    for _ = 1, 3 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, 4, 'the climb did not happen')
+
+    -- A GUN KILL, which the rule would have spared. trade(victim, killer),
+    -- so this is player 3 killing player 2 and climbing off it.
+    s.trade(2, 3)
+    t.isTrue(s.row(3).tier >= 2, 'player 3 is not on a firearm rung, so this proves nothing')
+    t.isTrue(s.arena.IsMeleeWeapon(s.match_().ladder[s.row(3).tier]) ~= true,
+        'player 3 is still on melee, so this proves nothing')
+
+    s.kill(1, 3)
+    s.revive(1)
+    t.equals(s.row(1).tier, 3, 'with the rule off a gun kill must still cost a tier')
 end)
 
 os.exit(t.summary())

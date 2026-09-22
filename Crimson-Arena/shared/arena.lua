@@ -3687,6 +3687,18 @@ function Arena.ValidateConfig()
                         :format(mode.key))
                 end
 
+                -- A NON-BOOLEAN HERE READS AS ON, WHICH IS THE WRONG WAY
+                -- TO BE WRONG. demoteOnMeleeOnly is read `~= false` because
+                -- it ships ON, so an operator who writes the string "false"
+                -- -- or `0`, which is TRUE in Lua -- gets the rule left on
+                -- while believing they switched it off, and every gun kill
+                -- goes on sparing a tier. The one value that turns it off is
+                -- the boolean false.
+                if raw.demoteOnMeleeOnly ~= nil and type(raw.demoteOnMeleeOnly) ~= 'boolean' then
+                    complain(('Config.Modes["%s"].demoteOnMeleeOnly is a %s, not true or false -- it is being read as ON, so a gun kill still spares the victim a tier. Write the bare word false to turn it off.')
+                        :format(mode.key, type(raw.demoteOnMeleeOnly)))
+                end
+
                 if raw.maxTiersPerVictim ~= nil then
                     local cap = Arena.ToInt(raw.maxTiersPerVictim)
                     if cap == nil then

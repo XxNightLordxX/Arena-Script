@@ -178,6 +178,17 @@ local function newArena(control)
             for _ in pairs(stored) do n = n + 1 end
             return n
         end,
+        --- Answers exactly ONE held write, the oldest, and leaves the rest.
+        ---
+        --- Needed to let a single statement land while its siblings are still
+        --- outstanding, which is the only way to ask whether the all-clear
+        --- waits for the whole queue or just for the one being answered.
+        releaseOne = function()
+            if #heldWrites == 0 then return false end
+            local answer = table.remove(heldWrites, 1)
+            answer()
+            return true
+        end,
         --- Answers every write that was held, oldest first.
         releaseWrites = function()
             local pending = heldWrites
@@ -493,6 +504,58 @@ t.test('DEFECT: and a landing DELETE does NOT clear it while an INSERT is still 
         'a landing DELETE issued the all-clear while a debt was still queued and had never '
         .. 'reached the database -- the money screen promises durability for a debt only '
         .. 'memory is holding')
+end)
+
+t.test('and with TWO drops queued the all-clear waits for the LAST one, not the first', function()
+    -- THE PROPERTY THE REORDER COULD HAVE BROKEN. Moving unpaidWrote below
+    -- the dequeue makes the all-clear see the queue WITHOUT the drop being
+    -- answered -- which is the point. The risk is that it now sees an EMPTY
+    -- queue too early: with several drops outstanding, the first one to land
+    -- must not speak for the ones still waiting.
+    --
+    -- Two debts on different ledger keys give two independent drops, and
+    -- SweepUnpaid replays them one at a time.
+    local s = opened({ failWrites = false })
+
+    -- Two debts that really reach the table, on different keys.
+    s.fileDebt(700, 'm1', 'cash')
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    t.equals(s.rows(), 2, 'both seed debts did not land, so this proves nothing')
+
+    -- Both DELETEs refused: the player is paid, both rows stay, latch on.
+    s.control.failWrites = true
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the refused DELETEs were never reported')
+    t.equals(s.rows(), 2, 'the fixture deleted rows it was told to refuse')
+    s.forget()
+
+    -- Everything granted. Let the FIRST drop land on its own, by holding the
+    -- writes and releasing exactly one.
+    s.control.failWrites = false
+    s.control.holdWrites = true
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.control.holdWrites = false
+
+    local answered = s.releaseOne()
+    s.step(3)
+    t.isTrue(answered, 'no drop was sent at all, so this proves nothing')
+    t.equals(s.rows(), 1, 'one drop should have landed and exactly one row should be left')
+
+    t.equals(s.says(ALL_CLEAR), 0,
+        'the FIRST of two queued deletes issued the all-clear while the second was still '
+        .. 'outstanding -- the money screen promises durability with a statement still unsent')
+
+    -- Now the second.
+    s.releaseWrites()
+    s.step(3)
+    s.control.offline = false
+
+    t.equals(s.rows(), 0, 'the second drop never landed, so this proves nothing')
+    t.equals(s.says(ALL_CLEAR), 1,
+        'both deletes landed and the money screen is still reporting writes as refused')
 end)
 
 t.test('CONTROL: a ledger with nothing queued carries no qualifier at all', function()

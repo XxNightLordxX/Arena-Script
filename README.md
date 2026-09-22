@@ -175,8 +175,9 @@ help-call alert at all.
 `sc-ambulance` has no arena integration of its own, and its person-down handler calls
 `sc-dispatch`'s *server* export — already past the client check above — so a fully
 configured `sc-dispatch` still lets arena deaths reach EMS — and on the shipped config that
-handler is the *only* one of the two that fires. Its calls are at least withdrawn a beat later
-by the retract layer. The three `ambulanceAlert` sites are dormant today, and the day a setting
+handler is the *only* one of the two that fires. Its calls are at least withdrawn by the
+retract layer's sweep when the fighter is revived -- `emsdown_<id>_<time>` is one of the
+shipped shapes -- so they land on a medic's screen and then clear, rather than never landing. The three `ambulanceAlert` sites are dormant today, and the day a setting
 changes they go straight to every on-duty medic with no call id and nothing to withdraw. Two
 lines at the top of two handlers fix both.
 

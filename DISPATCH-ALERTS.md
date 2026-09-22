@@ -147,7 +147,7 @@ the same mechanism, and the difference matters if you change a setting:
 
 | Path | Fires as shipped? | With no paste |
 |---|---|---|
-| `hospital:server:EMSDownAlert` (2 sites) | **Yes — this is the live one.** | The call reaches `AddNotification`, which announces the whole payload on `sc-dispatch:server:witnessForward` before it writes a row. Crimson-Arena's retract layer listens on exactly that event and the payload carries `caller_source`, so the call is **withdrawn about a quarter of a second later**. A medic on duty at that instant still sees it flash; nothing persists. |
+| `hospital:server:EMSDownAlert` (2 sites) | **Yes — this is the live one.** | The call reaches `AddNotification`, which files it under `emsdown_<serverId>_<os.time()>`. That shape is one of Crimson-Arena's shipped `idTemplates`, so the retract sweep rebuilds exactly that id and the call is **withdrawn** — but **at the revive**, not instantly, so it sits on a medic's screen for the length of the down. The instant route exists and **ships off**: `AddNotification` also announces the whole payload on `sc-dispatch:server:witnessForward` before it writes a row, and Crimson-Arena will withdraw off that announcement within `delayMs` **if you set `Config.Dispatch.custom.retract.filedEvent` to it**. It ships empty on purpose — with `Config.Security.ServerOnlyDispatches` false, any client can send that announcement a `unique_id` and a `caller_source` that do not belong together, which would withdraw a stranger's emergency call. Set `ServerOnlyDispatches = true` first, then fill the event in. |
 | `hospital:server:ambulanceAlert` (3 sites) | No, not as shipped. Live if `MDTIntegration.Enabled` or `DisableDefaultAlerts` is turned off, or `sc-dispatch` stops. | Goes **straight** to every on-duty medic — the handler loops them and `TriggerClientEvent`s each one. No `sc-dispatch` call, no call id, **nothing to withdraw**. |
 
 So: paste **2** stops what is happening today. Paste **1** costs nothing now and
@@ -189,8 +189,8 @@ RegisterNetEvent('hospital:server:ambulanceAlert', function(text)
 ### 2. `hospital:server:EMSDownAlert` — around line 271
 
 **The one that fires today.** Covers both `EMSDownAlert` sites — the
-server-export path above, whose calls are currently withdrawn a beat after they
-are raised rather than never raised. Paste **after** `local src = source`,
+server-export path above, whose calls are currently withdrawn at the revive
+rather than never raised. Paste **after** `local src = source`,
 **before** the `Config.MDTIntegration` check:
 
 ```lua

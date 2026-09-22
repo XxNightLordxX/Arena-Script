@@ -1583,9 +1583,12 @@ end
 --- are. Same text, same order, same source -- only the way out is new.
 ---
 --- Why the operator needs it at all: the retract layer clears an EMS call
---- AFTER it is filed, so the alert still lands on a medic's screen for the
---- second or two before it goes. This report is the only thing that names
---- WHICH of their scripts still needs the state-bag line pasted into it.
+--- AFTER it is filed, so the alert still lands on a medic's screen before it
+--- goes -- and on the shipped config it goes when the template sweep reaches
+--- it at the revive, not a beat later, because the announcement route
+--- (`Config.Dispatch.custom.retract.filedEvent`) ships empty. This report is
+--- the only thing that names WHICH of their scripts still needs the
+--- state-bag line pasted into it.
 --- @return string[]
 --- One line saying what the edge listener is doing, if anything.
 ---
@@ -1791,12 +1794,25 @@ end
 --- is a CLIENT check -- it runs on the player's own machine before an alert
 --- is raised -- so a call arriving at its server export has already gone
 --- round it, and turning that integration on does not touch this path. BUT
---- the call does not stand: AddNotification announces the whole payload on
---- `sc-dispatch:server:witnessForward` before it writes a row, the retract
---- layer in this file is listening on exactly that event, and the payload
---- sc-ambulance builds carries `caller_source`. So this one is raised and
---- then WITHDRAWN a quarter of a second later. A medic on duty at that
---- instant still sees it flash; nothing persists.
+--- the call does not stand: sc-dispatch files person-down calls under
+--- `emsdown_<serverId>_<os.time()>`, `emsdown_%d_%d` is one of the shipped
+--- `idTemplates`, and the sweep in this file rebuilds exactly that id from
+--- the arena's own record of who went down and when. So this one is raised
+--- and then WITHDRAWN.
+---
+--- AT THE REVIVE, THOUGH -- NOT IN A QUARTER OF A SECOND, and this paragraph
+--- said the second thing until the announcement route was switched off. That
+--- route is the fast one: AddNotification announces the whole payload on
+--- `sc-dispatch:server:witnessForward` BEFORE it writes a row, and the
+--- retract layer here withdraws off that announcement within `delayMs`. It
+--- SHIPS OFF -- `Config.Dispatch.custom.retract.filedEvent` is empty --
+--- because sc-dispatch's stock config accepts alert payloads from any
+--- client -- its own `Security.ServerOnlyDispatches` ships false -- and in
+--- one of those payloads the call id and the subject are two fields nothing
+--- ties together. With it off the call stands on a medic's
+--- screen for the length of the down instead of flashing for 250ms; the
+--- sweep still clears it. Fill `filedEvent` in, and only once your dispatch
+--- script refuses client payloads, to have the fast one back.
 ---
 --- ambulanceAlert never touches sc-dispatch at all -- the handler loops the
 --- on-duty medics and TriggerClientEvents each of them directly. There is no
@@ -3013,8 +3029,20 @@ end
 --- will be filed under, the jobs it is going to, and the player it is
 --- about. Any resource on the server may listen.
 ---
---- So this listens. No shapes, no clock slack, no window: the exact id and
---- the exact job list, taken from the call itself rather than rebuilt.
+--- So this listens -- ONCE AN OPERATOR ASKS IT TO. No shapes, no clock
+--- slack, no window: the exact id and the exact job list, taken from the
+--- call itself rather than rebuilt.
+---
+--- AND IT SHIPS OFF, which is the first thing to know about it.
+--- `Config.Dispatch.custom.retract.filedEvent` is empty on the stock config,
+--- so on a stock install nothing below is ever registered and the template
+--- sweep is the only route in service. The reason is the paragraph inside
+--- the subject gate further down: the id and the subject arrive as two
+--- fields of the SAME payload with nothing tying them together, so this is
+--- only ever as trustworthy as the dispatch script's own event surface --
+--- and sc-dispatch ships its own `Security.ServerOnlyDispatches` false,
+--- which leaves its announcement reachable from any client. Name the event
+--- once yours refuses client payloads.
 ---
 --- WHICH ROUTES IT ACTUALLY COVERS, because "all of them" is not true and
 --- the difference matters. Every route into that function is announced, yes

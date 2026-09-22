@@ -252,6 +252,36 @@ if unlisted:
 else:
     note.append('%d files in html/, all shipped by the manifest' % len(on_disk))
 
+# AND THE SAME QUESTION FOR THE LUA, WHICH ONLY html/ WAS EVER ASKED.
+#
+# The check above it walks the manifest and asks whether each file exists.
+# That direction catches a rename. It cannot catch the other one: a .lua file
+# ON DISK that the manifest does not list is never loaded by FXServer, so it
+# is dead code that reads as live -- every function in it defined nowhere,
+# every handler in it attached to nothing, and no error on any console saying
+# so. Two spec censuses build their file list off the manifest, so a dropped
+# entry quietly shrinks what they guard as well.
+#
+# fxmanifest.lua itself is excluded because it is the thing being read, and
+# tests/ never was inside the resource.
+lua_on_disk = set()
+for folder in ('client', 'server', 'shared'):
+    for dirpath, _, names in os.walk(os.path.join(ROOT, folder)):
+        for name in names:
+            if name.endswith('.lua'):
+                lua_on_disk.add(os.path.relpath(os.path.join(dirpath, name), ROOT))
+for name in os.listdir(ROOT):
+    if name.endswith('.lua') and name != 'fxmanifest.lua':
+        lua_on_disk.add(name)
+
+orphans = sorted(f for f in lua_on_disk if f not in listed)
+if orphans:
+    fail.append('%d .lua file(s) on disk that no realm in fxmanifest.lua loads, so nothing in '
+                'them runs: %s' % (len(orphans), ', '.join(orphans)))
+else:
+    note.append('%d .lua files on disk, every one loaded by a realm in the manifest'
+                % len(lua_on_disk))
+
 # -------------------------------------------------------- config.lua line map
 # The map at the top of config.lua sends a non-coder to a line number. A stale
 # one sends them to the wrong setting, which is worse than having no map.

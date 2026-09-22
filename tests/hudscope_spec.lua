@@ -226,6 +226,28 @@ t.test('and NO client file registers a second one, which the count above cannot 
     local manifest = Sandbox.readDeclarations('../Crimson-Arena/fxmanifest.lua')
     local files = Sandbox.realmScripts(manifest, 'client')
 
+    -- AND THE LIST IS CROSS-CHECKED AGAINST THE DISK, which is what the floor
+    -- below cannot do. friendlyfireends_spec's twin of this census already
+    -- does it; this one had only the floor, and a floor has SLACK -- ten
+    -- client-realm files against `>= 8` means two could go missing and this
+    -- census would shrink, pass, and go on reporting that exactly one file
+    -- registers the handler. The number is not the guard; the list is.
+    local seen = {}
+    for _, name in ipairs(files) do seen[name] = true end
+
+    local onDisk = io.popen('ls ../Crimson-Arena/client/*.lua ../Crimson-Arena/shared/*.lua '
+        .. '../Crimson-Arena/shared/compat/*.lua 2>/dev/null')
+    if onDisk then
+        for line in onDisk:lines() do
+            local name = line:gsub('^%.%./Crimson%-Arena/', '')
+            t.isTrue(seen[name] == true,
+                name .. ' is on disk and not in the client-realm list this census scans -- '
+                .. 'either the manifest no longer loads it, or the manifest read has come '
+                .. 'unstuck. Either way a second matchHud handler in it would go unreported')
+        end
+        onDisk:close()
+    end
+
     t.isTrue(#files >= 8,
         ('only %d client-realm file(s) came back from the manifest -- the read has come unstuck '
             .. 'and this census is covering almost nothing'):format(#files))

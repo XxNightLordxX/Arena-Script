@@ -531,7 +531,7 @@ listed; the source documents them where they are.
 | `Arena.ComputeSpectatorPayout(stake)` | What one winning spectator side-bet pays back, stake included. |
 | `Arena.CanStartMatch(match)` | Whether a lobby may start. |
 | `Arena.HasRoom(currentCount)` | Whether one more player will fit. |
-| `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. |
+| `Arena.ScheduleSpans()` | The opening-hours windows as sorted, disjoint spans of minutes; empty means always open. Returns a SECOND value: how many configured windows survived the validity test. Not `#spans` — spans are merged, so two touching windows are two windows and one span, and a wrap-around is one window and two spans. `/arenahours` reports the count. |
 | `Arena.ScheduleStatus(hour, minute)` | Whether the arena is open at that time, and when it next opens or shuts. |
 | `Arena.ClockText(minutes)` | Minutes since midnight as `HH:MM` -- the one place that formatting lives. |
 | `Arena.ScheduleLine()` | The whole schedule on one line, or nil when the arena keeps no hours. |

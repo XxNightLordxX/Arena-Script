@@ -645,13 +645,46 @@ local function hoursReport()
     -- gets a line of its own -- because at that point nothing else in the
     -- resource can see it either.
     local block = type(Config.Schedule) == 'table' and Config.Schedule.windows or nil
-    local written, present = 0, 0
+    local written = 0
+
+    -- AND WHAT THE LEFTOVER KEYS ACTUALLY ARE, which one subtraction could
+    -- not say. `present - written` counted the keys pairs sees and ipairs does
+    -- not, and calling every one of them a NAME got all three real shapes
+    -- wrong:
+    --
+    --   windows = { from = 0, to = 24 }     the braces forgotten -- the
+    --     likeliest form of this mistake. Two string keys, so it read "2
+    --     entries have a NAME ... with no `name =` in front". There is ONE
+    --     window, the keys are from and to, and there is no `name =` anywhere
+    --     in their file. The repair is braces.
+    --
+    --   windows = { [1] = w, [3] = w }      a hole in the list. Key 3 is an
+    --     INTEGER and ipairs stops at the gap. It read "1 entry has a NAME",
+    --     which is simply false.
+    --
+    --   windows = { w, note = 'x' }         a note somebody left in the
+    --     table. Told to rewrite it as { from = 5, to = 7 }, which is not
+    --     what it is.
+    --
+    -- Three different mistakes with three different repairs. DO NOT go back to
+    -- one subtraction and one sentence.
+    local strayNames, strayHoles = 0, 0
+    local bracesForgotten = false
     if type(block) == 'table' then
         for _ in ipairs(block) do written = written + 1 end
-        for _ in pairs(block) do present = present + 1 end
-    end
 
-    local unlisted = present - written
+        bracesForgotten = block.from ~= nil or block.to ~= nil
+
+        for key in pairs(block) do
+            if type(key) == 'number' then
+                if key < 1 or key > written or key % 1 ~= 0 then
+                    strayHoles = strayHoles + 1
+                end
+            else
+                strayNames = strayNames + 1
+            end
+        end
+    end
 
     if hours.line then
         say('  windows:           %s', hours.line)
@@ -669,9 +702,25 @@ local function hoursReport()
             -- read as `== true` everywhere in this resource, so those really
             -- are off -- but telling an operator their file says `false` when
             -- it says `1` sends them looking for a line that is not there.
+            -- AND IT DOES NOT SAY THEY ARE FINE, which it used to.
+            --
+            -- "Nothing is wrong with them" was a clean bill of health for
+            -- windows NOTHING HAS LOOKED AT. Arena.ScheduleSpans returns
+            -- before the validity test when the schedule is off, so `kept` is
+            -- forced to 0; and Arena.ValidateConfig's whole schedule block is
+            -- gated on `schedule.enabled == true`, so the startup console
+            -- names none of them either. MEASURED -- three unusable windows
+            -- (out of range, from == to, not a pair of hours) with the
+            -- schedule off: this report vouched for all three and the
+            -- validator complained about none.
+            --
+            -- An operator who then switches the schedule ON has been told in
+            -- advance there is nothing to find. This arm was inventing an
+            -- all-clear while the arm below carried the comment forbidding it.
             say('  windows:           (%d written, and NOT IN USE -- Config.Schedule.enabled is '
-                .. 'not true, so the arena is open at every hour. Nothing is wrong with them.)',
-                written)
+                .. 'not true, so the arena is open at every hour. NOTHING HAS CHECKED THEM '
+                .. 'either: switching the schedule on is what validates them, and may find '
+                .. 'faults.)', written)
         elseif kept > 0 then
             -- AND "ALL OF THEM" HAS TO MEAN ALL OF THEM.
             --
@@ -712,12 +761,25 @@ local function hoursReport()
     -- The operator wrote two windows, one is silently ignored by every part
     -- of this resource, and the report they would check reads perfectly
     -- healthy. A named entry has to be named wherever it appears.
-    if unlisted > 0 then
-        say('                     AND %d entr%s in Config.Schedule.windows %s a NAME rather '
-            .. 'than sitting in the list, so nothing in this resource reads %s at all. '
-            .. 'Write them as { from = 5, to = 7 }, with no `name =` in front.',
-            unlisted, unlisted == 1 and 'y' or 'ies',
-            unlisted == 1 and 'has' or 'have', unlisted == 1 and 'it' or 'them')
+    if bracesForgotten then
+        say('                     AND Config.Schedule.windows LOOKS LIKE ONE WINDOW rather than '
+            .. 'a list of them -- it has `from` and/or `to` directly on it, so nothing reads it. '
+            .. 'Wrap it: windows = { { from = 5, to = 7 } }.')
+    elseif strayNames > 0 then
+        say('                     AND %d entr%s in Config.Schedule.windows %s a NAME rather than '
+            .. 'a place in the list, so nothing in this resource reads %s. If %s meant to be a '
+            .. 'window, drop the name so it sits in the list; if not, nothing reads it either '
+            .. 'way.',
+            strayNames, strayNames == 1 and 'y' or 'ies',
+            strayNames == 1 and 'has' or 'have', strayNames == 1 and 'it' or 'them',
+            strayNames == 1 and 'it is' or 'they are')
+    end
+
+    if strayHoles > 0 then
+        say('                     AND %d window%s sit%s past a GAP in the list. The list is read '
+            .. 'with ipairs, which stops at the first missing number, so everything after the '
+            .. 'gap is invisible. Close the gap.',
+            strayHoles, strayHoles == 1 and '' or 's', strayHoles == 1 and 's' or '')
     end
 
     if hours.forced then

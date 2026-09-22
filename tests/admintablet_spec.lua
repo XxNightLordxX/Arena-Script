@@ -1561,6 +1561,130 @@ t.test('DEFECT: and windows left in a schedule that is switched OFF are not "thr
         .. 'goes and fixes four windows that are fine')
     t.contains(said, 'NOT IN USE',
         'the report did not name the reason the windows are doing nothing')
+    t.notContains(said, 'Nothing is wrong with them',
+        'the report vouched for windows nothing has looked at -- with the schedule off, '
+        .. 'ScheduleSpans returns before the validity test and ValidateConfig skips its whole '
+        .. 'schedule block, so this is a clean bill of health from nobody')
+    t.contains(said, 'NOTHING HAS CHECKED THEM',
+        'the operator was not told that switching the schedule on is what validates the windows')
+end)
+
+t.test('DEFECT: and the OFF arm does not vouch for windows that are actually broken', function()
+    -- THREE UNUSABLE WINDOWS, SCHEDULE OFF. Out of range, from == to, and not
+    -- a pair of hours at all. Nothing in the resource has looked at any of
+    -- them -- Arena.ScheduleSpans bails before the validity test when the
+    -- schedule is off, and Arena.ValidateConfig's entire schedule block is
+    -- gated on `enabled == true`, so the startup console names none of them.
+    -- The report used to end "Nothing is wrong with them".
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = false
+        config.Schedule.windows = { { from = 99, to = 100 }, { from = 5, to = 5 }, { open = 'x' } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '3 written', 'the windows were not counted, so this proves nothing')
+    t.notContains(said, 'Nothing is wrong with them',
+        'three unusable windows were given a clean bill of health by a screen that had not '
+        .. 'looked at them, and by a validator that had skipped them')
+end)
+
+t.test('DEFECT: windows written as ONE window rather than a list says so, and says braces', function()
+    -- THE LIKELIEST FORM OF THE MISTAKE, and the one the old single count got
+    -- most wrong: two string keys (`from` and `to`) were reported as "2
+    -- entries have a NAME ... with no `name =` in front". There is one window,
+    -- there is no `name =` in their file, and the repair is braces.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { from = 0, to = 24 }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'LOOKS LIKE ONE WINDOW', 'the shape was not recognised')
+    t.contains(said, '{ { from = 5, to = 7 } }', 'the report did not show the repair')
+    t.notContains(said, 'has a NAME', 'from and to were reported as names an operator had typed')
+    t.notContains(said, '2 entr', 'one window was counted as two entries')
+end)
+
+t.test('DEFECT: and a window past a GAP in the list is not called a name', function()
+    -- An INTEGER key past a hole. ipairs stops at the gap, so the window is
+    -- invisible -- but it has no name, and telling the operator to remove one
+    -- sends them looking for something that is not there.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { [1] = { from = 0, to = 24 }, [3] = { from = 9, to = 11 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'past a GAP', 'the gap was not named')
+    t.notContains(said, 'has a NAME', 'an integer key past a gap was reported as a name')
+end)
+
+t.test('and a note left in the table is not told to become a window', function()
+    -- `note = 'x'` is not a window and never will be. The old message told
+    -- the operator to write it as { from = 5, to = 7 }.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, note = 'x' }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'has a NAME rather than a place in the list', 'the stray key was not named')
+    t.contains(said, 'if not, nothing reads it either way',
+        'the report insisted the entry must be a window')
+end)
+
+t.test('DEFECT: a WRAP-AROUND window is one window, not the two spans it becomes', function()
+    -- THE HALF OF THE SECOND RETURN NOTHING COULD SEE. Arena.ScheduleSpans'
+    -- doc block justifies returning a count at all on two facts: two touching
+    -- windows are TWO windows but ONE span, and a wrap-around is ONE window
+    -- but TWO spans. Only the first was pinned -- every fixture that reached
+    -- the count happened to have accepted == the raw span count, so a version
+    -- that counted raw spans was invisible to all 129 spec files.
+    --
+    -- 22:00-03:00 crosses midnight, so ScheduleSpans appends { 22:00, 24:00 }
+    -- and { 00:00, 03:00 } for the single window the operator typed. Pair it
+    -- with a window that closes the day, so the coverage reaches 24 hours and
+    -- there is no printable range -- which is the only way the count reaches
+    -- the screen.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 22, to = 3 }, { from = 3, to = 22 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '2 of 2 good',
+        'two windows -- one of them a wrap-around, which becomes THREE raw spans between them '
+        .. '-- were not counted as two. A count of raw spans would read "3 of 2 good" here, '
+        .. 'which is the mutation no other test in this suite can see')
+    t.notContains(said, '3 of 2', 'the count is counting raw spans, not the windows written')
+end)
+
+t.test('DEFECT: the written==0 arm is chosen for written==0, not merely worded for it', function()
+    -- THE ARM ORDER WAS PINNED BY NOTHING. The only written==0 test left the
+    -- sandbox default of Schedule.enabled = false in place, so its config
+    -- satisfied BOTH the written==0 arm and the not-enabled arm -- and its
+    -- assertion, contains 'open at every hour', is a phrase both messages
+    -- carry. Swapping the two arms is a real behaviour change and the suite
+    -- stayed green.
+    --
+    -- This pins the choice: schedule ON, no windows, so only the written==0
+    -- arm can produce the reading.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = {}
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '(none -- open at every hour)',
+        'a schedule that is ON with no windows did not take the written==0 arm')
+    t.notContains(said, 'NOT IN USE',
+        'the not-enabled arm answered for a schedule that IS enabled')
 end)
 
 t.test('and a non-boolean `enabled` is not reported as the word false', function()
@@ -1606,7 +1730,7 @@ t.test('DEFECT: and a named window is named even when the range prints fine', fu
 
     t.contains(said, '05:00-07:00',
         'the good window stopped printing its range, so this is a different branch')
-    t.contains(said, 'rather than sitting in the list',
+    t.contains(said, 'rather than a place in the list',
         'a window nothing in this resource reads went unmentioned because a DIFFERENT window '
         .. 'happened to be printable -- the report looks healthy and the operator never learns')
 end)
@@ -1671,7 +1795,7 @@ t.test('DEFECT: and a window given a NAME is not counted as one the code can see
     t.notContains(said, '1 written',
         'a window nothing in this resource reads was counted as one the code can see, which '
         .. 'contradicts the startup console outright')
-    t.contains(said, 'rather than sitting in the list',
+    t.contains(said, 'rather than a place in the list',
         'the one mistake that is invisible to every other check went unnamed here too')
 end)
 

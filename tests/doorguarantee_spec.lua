@@ -3832,6 +3832,60 @@ t.test('CONTROL: and with no database at all an empty list IS reported as fact',
         'a server with no database was told to go and read a table it does not have')
 end)
 
+t.test('and that empty answer says WHY, because "none" only ever held for this run', function()
+    -- THE HALF THE `known` FLAG SETTLES IN CODE AND NEVER SHOWS ANYBODY.
+    --
+    -- jamListIsKnown answers `known` on the switched-off path because an
+    -- empty list really is the complete answer FOR THIS RUN. That is right,
+    -- and the control above is why: hedging it would put a permanent "not
+    -- read back yet" on the majority of installs. But the operator reading
+    -- the screen got a flat "no stash is being held back" out of it.
+    --
+    -- Nothing deletes crimson_arena_jammed_stash when the switch goes off --
+    -- the only DROP TABLE in the tree is in sql/uninstall.sql, which somebody
+    -- runs deliberately. So a server that ran with the database ON, held a
+    -- stash back, and then switched it off reads that flat sentence over a
+    -- stored list nobody will ever look at, while the door hands those
+    -- stashes out again: the same cost the oxmysql branch spells out at
+    -- length, on a path that said nothing at all.
+    --
+    -- NOT A HEDGE, which is the distinction that makes this safe to add. It
+    -- does not say "we cannot tell" -- with the switch off this run genuinely
+    -- holds nothing back, and the sentence still says so first. What follows
+    -- is what the switch MEANS, true on every such install, fresh or not.
+    local server = newServer({ 1, 2 })
+
+    local report = table.concat(server.ammo.JamReport(), '\n')
+
+    t.contains(report, 'no stash is being held back in this run',
+        'the report did not answer the question before qualifying it')
+    t.contains(report, 'Config.Database.enabled is off',
+        'the report never named the setting that makes the answer good for one uptime only')
+    t.contains(report, 'CAN BE HANDED OUT A SECOND TIME',
+        'the report named the setting without saying what it costs, which is the half an '
+        .. 'operator acts on')
+    t.notContains(report, 'NOT been read back',
+        'the switched-off path was given the unread-list hedge the control above forbids')
+
+    -- AND THE MIRROR, so this cannot be satisfied by a caveat on every list.
+    -- A database that is on and HAS been read back says none of it.
+    local healthy = newServer({ 1, 2 }, function(config)
+        config.Database.enabled = true
+    end, nil, { database = true, jamRows = {} })
+
+    healthy.startResource()
+    healthy.step(4)
+    local said = table.concat(healthy.ammo.JamReport(), '\n')
+
+    t.contains(said, 'no stash is being held back',
+        'a healthy database with an empty list did not report it as empty')
+    t.notContains(said, 'Config.Database.enabled is off',
+        'a server that IS persisting was told it is not')
+    t.notContains(said, 'CAN BE HANDED OUT A SECOND TIME',
+        'a list that was really read back carried the switched-off warning, which teaches an '
+        .. 'operator to read past the one line that matters')
+end)
+
 t.test('CONTROL: and a list read back from a healthy database carries no such caveat', function()
     -- A caveat on every list would teach the admin to ignore it.
     local server, matchId = liveMatch({ 1, 2 }, nil, function(config)

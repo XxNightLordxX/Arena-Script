@@ -6344,6 +6344,35 @@ function ArenaAmmo.JamReport()
                 .. 'crimson_arena_jammed_stash -- the real error is on oxmysql\'s console.'
             return lines
         end
+        -- AND ON A SERVER THAT PERSISTS NOTHING, "none" IS ONLY TRUE OF THIS
+        -- RUN, WHICH IS NOT WHAT AN OPERATOR READS IT AS.
+        --
+        -- jamListIsKnown answers `known` on the switched-off path because an
+        -- empty list really is the complete answer FOR THIS RUN, and hedging
+        -- it would put a permanent "not read back yet" on the majority of
+        -- installs. That reasoning is sound and is not changing; what it does
+        -- not do is reach the person reading the screen. Nothing deletes
+        -- crimson_arena_jammed_stash when the switch goes off, so a server
+        -- that ran with the database on, held a stash back and then switched
+        -- it off reads a flat "no stash is being held back" over a stored
+        -- list nobody will ever look at, with the door handing those stashes
+        -- out again -- the same cost the oxmysql branch above spells out, and
+        -- the one that branch is trusted for.
+        --
+        -- NOT A HEDGE. It is not "we cannot tell": with the switch off this
+        -- run genuinely holds nothing back, and the sentence says so first.
+        -- What follows is what the switch MEANS, which is true on every such
+        -- install, fresh or not -- the same thing OwedKitIsSaved says about
+        -- the kit slate and UnpaidIsSaved about the money one.
+        if Config.Database.enabled ~= true then
+            lines[1] = 'no stash is being held back in this run. Config.Database.enabled is off, '
+                .. 'so nothing is persisted and no hold survives a restart: any stash held back '
+                .. 'before one is unknown to this run and its contents CAN BE HANDED OUT A '
+                .. 'SECOND TIME. Turn the switch on and import sql/install.sql if holds are '
+                .. 'meant to outlive a restart.'
+            return lines
+        end
+
         lines[1] = 'no stash is being held back.'
         return lines
     end

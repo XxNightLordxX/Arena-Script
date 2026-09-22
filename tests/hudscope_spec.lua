@@ -270,20 +270,53 @@ t.test('and NO client file registers a second one, which the count above cannot 
     -- client-realm files against `>= 8` means two could go missing and this
     -- census would shrink, pass, and go on reporting that exactly one file
     -- registers the handler. The number is not the guard; the list is.
-    local seen = {}
-    for _, name in ipairs(files) do seen[name] = true end
+    --
+    -- IN TWO TIERS, BECAUSE `shared/` IS A FOLDER NAME AND NOT A REALM.
+    --
+    -- The first version of this demanded that every .lua under client/ AND
+    -- under shared/ be in the CLIENT realm list. That is true of client/ by
+    -- construction and simply false of shared/: what decides a file's realm
+    -- is which list in fxmanifest.lua names it, not which folder it sits in,
+    -- and a helper under shared/ named only in `server_scripts` is an
+    -- ordinary thing to write. MEASURED: adding one such file turned this
+    -- spec red while friendlyfireends_spec, boot_spec and
+    -- tools/verify_contracts.py all accepted the same tree -- a guard that
+    -- fails a legitimate repository is worse than no guard, because the fix
+    -- people reach for is to delete the guard.
+    --
+    -- So client/ is held to the CLIENT realm, which is the thing this census
+    -- is about, and shared/ is held only to being loaded by SOME realm --
+    -- which still catches a shared file dropped out of the manifest
+    -- altogether, the case the cross-check was added for.
+    local inClient, inAnyRealm = {}, {}
+    for _, name in ipairs(files) do inClient[name] = true; inAnyRealm[name] = true end
+    for _, name in ipairs(Sandbox.realmScripts(manifest, 'server')) do inAnyRealm[name] = true end
 
-    local onDisk = io.popen('ls ../Crimson-Arena/client/*.lua ../Crimson-Arena/shared/*.lua '
-        .. '../Crimson-Arena/shared/compat/*.lua 2>/dev/null')
-    if onDisk then
-        for line in onDisk:lines() do
-            local name = line:gsub('^%.%./Crimson%-Arena/', '')
-            t.isTrue(seen[name] == true,
-                name .. ' is on disk and not in the client-realm list this census scans -- '
-                .. 'either the manifest no longer loads it, or the manifest read has come '
-                .. 'unstuck. Either way a second matchHud handler in it would go unreported')
+    --- Every .lua on disk under one glob, as manifest-relative names.
+    --- @return string[]
+    local function onDisk(glob)
+        local pipe = io.popen('ls ' .. glob .. ' 2>/dev/null')
+        if not pipe then return {} end
+        local found = {}
+        for line in pipe:lines() do
+            found[#found + 1] = line:gsub('^%.%./Crimson%-Arena/', '')
         end
-        onDisk:close()
+        pipe:close()
+        return found
+    end
+
+    for _, name in ipairs(onDisk('../Crimson-Arena/client/*.lua')) do
+        t.isTrue(inClient[name] == true,
+            name .. ' is on disk under client/ and not in the client-realm list this census '
+            .. 'scans -- either the manifest no longer loads it, or the manifest read has come '
+            .. 'unstuck. Either way a second matchHud handler in it would go unreported')
+    end
+
+    for _, name in ipairs(onDisk('../Crimson-Arena/shared/*.lua ../Crimson-Arena/shared/compat/*.lua')) do
+        t.isTrue(inAnyRealm[name] == true,
+            name .. ' is on disk under shared/ and no realm in fxmanifest.lua loads it, so '
+            .. 'nothing in it runs -- and if it is meant to be client code, a second matchHud '
+            .. 'handler in it would go unreported')
     end
 
     t.isTrue(#files >= 8,

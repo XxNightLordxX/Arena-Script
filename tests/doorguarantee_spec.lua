@@ -3760,6 +3760,60 @@ t.test('DEFECT: with the database ON and oxmysql DOWN, an empty list is not repo
     t.contains(report, 'NOT been read back',
         'the report did not say the list is unread, so an admin is told there is nothing to '
         .. 'settle while the sweep is walking holds from before the restart')
+
+    -- AND IT MUST NOT PROMISE A HOLD THE DOOR NEVER MAKES. handBack's grace
+    -- is gated on ArenaDbReady, so with oxmysql not started it skips the wait
+    -- and hands back from the first sweep. The unread branch used to say "The
+    -- door is holding hand-backs for up to 60 seconds" in exactly this state.
+    t.notContains(report, 'door is holding hand-backs',
+        'the report promised a 60-second hold on the one path where the door never waits at '
+        .. 'all -- the admin believes nothing is moving while the sweep hands stashes out')
+    t.contains(report, 'is NOT waiting for it',
+        'the report did not say the door is going ahead without the list')
+end)
+
+t.test('and a hold made THIS RUN is still marked on the tablet with the list unread', function()
+    -- THE CONSEQUENCE OF THAT FLAG NOBODY TRACED. IsJammed's and
+    -- JammedStashes' second return feeds jamsKnown(), and the tablet ANDed it
+    -- into every per-row hold mark: `entry.jammed === true &&
+    -- admin.jamsKnown === true`. That was harmless while the flag was only
+    -- false for the first seconds after a start, because jammedStash is empty
+    -- then and entry.jammed was false anyway.
+    --
+    -- Making the flag answer false for a LONG-LIVED state -- the database
+    -- switched on with oxmysql not running -- broke that: holds this run made
+    -- are in memory, the door is refusing them, and every one of their marks
+    -- was un-drawn while the hand-back button came back for a stash the
+    -- server will refuse. An unread list can only make us MISS a hold, never
+    -- invent one, so the FIRST return is authoritative on its own.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = false })
+
+    server.startResource()
+    server.step(2)
+    server.stashItem('crimson_arena_CID1', 'phone', 9)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+    server.advanceClock(61)
+    server.ammo.Reclaim(1, 'match.ended')
+    server.step(8)
+
+    local jammed, known = server.ammo.IsJammed('crimson_arena_CID1')
+    t.isTrue(jammed,
+        'no hold was made this run, so this proves nothing about drawing one')
+    t.isFalse(known,
+        'the list was reported as complete while oxmysql is down, which is the other defect')
+
+    -- The tablet must be able to draw this. It reads the FIRST return through
+    -- stashHeldBack; the AND on the second return is what the app.js note now
+    -- forbids.
+    local app = assert(io.open('../Crimson-Arena/html/app.js', 'r'))
+    local text = app:read('a')
+    app:close()
+    t.isNil(text:find('entry.jammed === true && admin.jamsKnown === true', 1, true),
+        'the tablet still ANDs a live hold mark against the list-complete flag, so a stash the '
+        .. 'door is refusing right now is drawn as free and its hand-back button is offered')
 end)
 
 t.test('CONTROL: and with no database at all an empty list IS reported as fact', function()

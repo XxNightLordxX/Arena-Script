@@ -4892,7 +4892,21 @@
                a hand-back button on the one stash the door is certain to
                refuse. Unread means the mark is not drawn either way -- the
                line above the list is what says the screen cannot tell yet. */
-            return entry.jammed === true && admin.jamsKnown === true;
+            /* A POSITIVE HOLD IS ALWAYS KNOWLEDGE, and this used to be
+               ANDed with jamsKnown. That was harmless while jamsKnown was
+               only false for the first seconds after a start -- jammedStash
+               is empty then, so entry.jammed was false anyway and the AND
+               changed nothing. It stopped being harmless when jamsKnown
+               started answering false for a LONG-LIVED state: the database
+               switched on with oxmysql not running. There, holds this run
+               made are sitting in memory and the door is refusing them, and
+               the AND un-drew every one of their marks while re-enabling a
+               hand-back button the server will refuse.
+               An unread list can only make us MISS a hold, never invent one,
+               so a mark is safe to draw on its own. jamsKnown still gates the
+               line above the list, which is where "we cannot tell about the
+               ones NOT marked" belongs. */
+            return entry.jammed === true;
         }
 
         function returnButton(entry, className) {
@@ -4993,15 +5007,28 @@
                held-back stash is the only kind that needs a person, and an
                operator scanning a long list for a word at the end of a row
                will not find it. */
-            var heldFact = heldCount > 0
-                ? ' ' + heldCount + ' of them ' + (heldCount === 1 ? 'is' : 'are')
-                  + ' HELD BACK and will not be handed over until somebody opens '
-                  + (heldCount === 1 ? 'it' : 'them') + ' and clears the hold.'
-                /* AND THE THIRD ANSWER AGAIN: "none are held back" and "we
-                   have not been able to ask" are different, and only one of
-                   them means there is nothing to do. */
-                : (admin.jamsKnown ? '' : ' Whether any are held back is not known yet — '
-                    + 'the door has not been able to read that list back from the database.');
+            /* THE COUNT AND THE DOUBT ARE ADDITIVE, and this was a ternary.
+               "N are held back" and "we could not read the list" used to be
+               mutually exclusive, which was harmless while an unread list
+               forced heldCount to 0 -- the doubt always showed. Once a hold
+               the server reports is marked on its own, a single held stash
+               suppressed the doubt about every OTHER row, on the one screen
+               an admin uses to decide there is nothing left to settle.
+
+               AND THE THIRD ANSWER STILL MATTERS: "none are held back" and
+               "we have not been able to ask" are different, and only one of
+               them means there is nothing to do. */
+            var heldFact = '';
+            if (heldCount > 0) {
+                heldFact += ' ' + heldCount + ' of them ' + (heldCount === 1 ? 'is' : 'are')
+                    + ' HELD BACK and will not be handed over until somebody opens '
+                    + (heldCount === 1 ? 'it' : 'them') + ' and clears the hold.';
+            }
+            if (!admin.jamsKnown) {
+                heldFact += ' Whether any ' + (heldCount > 0 ? 'OTHERS are' : 'are')
+                    + ' held back is not known yet — the door has not been able to read that '
+                    + 'list back from the database.';
+            }
 
             stashLine.textContent = owed.length === 0 ? ''
                 : plural(owed.length, 'stash', 'stashes') + ' holding somebody\'s belongings'

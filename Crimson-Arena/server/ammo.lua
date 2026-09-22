@@ -6175,11 +6175,25 @@ keepStashesAlive()
 --- Both read `jamsLoaded or not ArenaDbReady('the jam list')`, and
 --- ArenaDbReady answers false for TWO completely different facts:
 ---
----   Config.Database.enabled ~= true   nothing was EVER persisted, so an
----                                     empty list is a complete answer and
----                                     hedging it would put a permanent
----                                     "not read back yet" on the majority
----                                     of installs.
+---   Config.Database.enabled ~= true   NOTHING IS BEING persisted, so an
+---                                     empty list is the complete answer for
+---                                     THIS RUN, and hedging it would put a
+---                                     permanent "not read back yet" on the
+---                                     majority of installs.
+---
+---                                     NOT "nothing was ever persisted",
+---                                     which is a claim about history this
+---                                     flag cannot support: rows in
+---                                     crimson_arena_jammed_stash survive the
+---                                     switch being turned off. A server that
+---                                     ran with the database on, accumulated
+---                                     holds, and then switched it off has a
+---                                     stored list nobody will read -- and
+---                                     nothing here can tell that apart from a
+---                                     server that never had one. What the
+---                                     report says on this path is true of the
+---                                     run it is describing; turning the
+---                                     switch back on is what reads the list.
 ---   enabled, but oxmysql NOT started  the table exists, may well hold holds
 ---                                     from before this restart, and this
 ---                                     run has not read a byte of it.
@@ -6302,6 +6316,24 @@ function ArenaAmmo.JamReport()
                     .. 'contents CAN BE HANDED OUT A SECOND TIME. This is not something to leave '
                     .. 'until morning. The database user needs SELECT on '
                     .. 'crimson_arena_jammed_stash -- the real error is on oxmysql\'s console.'
+                return lines
+            end
+
+            -- AND THE DOOR IS ONLY HOLDING IF IT CAN SEE A DATABASE TO WAIT
+            -- FOR. handBack's grace is gated on ArenaDbReady, so with oxmysql
+            -- not started it skips the wait entirely and hands back from the
+            -- first sweep. This branch promised a 60-second hold in exactly
+            -- that state, which is the one place it never happens -- and the
+            -- admin reading it believes nothing is moving while the sweep is
+            -- already handing stashes out.
+            if not ArenaDbReady('the jam list') then
+                lines[1] = 'the jam list has NOT been read back from the database, and the door '
+                    .. 'is NOT waiting for it -- oxmysql is not running, so there is nothing to '
+                    .. 'wait on. Hand-backs are going ahead with no list, so any stash held back '
+                    .. 'before this restart is unknown to this run and its contents CAN BE '
+                    .. 'HANDED OUT A SECOND TIME. Start oxmysql, or set '
+                    .. 'Config.Database.enabled = false if this server is not meant to persist '
+                    .. 'anything.'
                 return lines
             end
 

@@ -1108,19 +1108,58 @@ test('and the row says so, rather than leaving it to be pressed to find out', ()
         'the line above the list does not name it either: ' + line);
 });
 
-test('and an UNREAD hold list marks nothing, and says that instead', () => {
-    /* An unread list answers "not held back" for every stash on earth.
-       Drawing that as fact is how the screen would put a hand-back button on
-       the one stash the door is certain to refuse. */
+test('an UNREAD hold list still says so above the list', () => {
+    /* An unread list answers "not held back" for every stash on earth, and
+       drawing THAT as fact is how the screen would put a hand-back button on
+       a stash the door is certain to refuse. The hedge above the list is
+       where that belongs. */
     const panel = withHeldBack(false);
-
-    const rows = stashRows(panel);
-    assert.ok(!rows[1].give.disabled,
-        'a hold list nobody has read yet was drawn as if it had been');
 
     const line = panel.text('admin-stash-line');
     assert.ok(/not known yet/i.test(line),
         'the screen claimed to know, while the list was unread: ' + line);
+});
+
+test('but a hold the server DOES report is marked even so', () => {
+    /* THIS TEST USED TO ASSERT THE OPPOSITE, and the behaviour it pinned was
+       a deliberate decision made under an assumption that later stopped
+       holding.
+
+       The per-row mark was `entry.jammed === true && admin.jamsKnown ===
+       true`. jamsKnown was false only for the first seconds after a start,
+       while the read was in flight -- and jammedStash is empty then, so
+       entry.jammed was false anyway and the AND changed nothing.
+
+       Then jamsKnown started answering false for a LONG-LIVED state: the
+       database switched ON with oxmysql not running. There, holds this run
+       made are sitting in memory, the door is refusing them, and the AND
+       un-drew every one of their marks and handed the hand-back button back
+       for a stash the server will refuse.
+
+       The old rationale only ever argued the NEGATIVE direction -- an unread
+       list must not be drawn as "free". It never argued this one. An unread
+       list can only make the screen MISS a hold, never invent one, so a
+       positive is knowledge on its own, and the hedge above the list carries
+       the doubt about everything NOT marked. */
+    const panel = withHeldBack(false);
+
+    const rows = stashRows(panel);
+    assert.ok(rows[1].give.disabled,
+        'a stash the server reports as held back was drawn as free because the LIST was '
+        + 'incomplete, and its hand-back button was offered -- the server will refuse it');
+
+    const line = panel.text('admin-stash-line');
+    assert.ok(/not known yet/i.test(line),
+        'the doubt about the unmarked rows stopped being stated: ' + line);
+
+    /* AND THE DOUBT IS ABOUT THE OTHERS, not about the one that is marked.
+       With a hold already named on the line, "whether any are held back is
+       not known" reads as doubt about the hold the screen has just asserted.
+       The two facts sit in one sentence, so which rows each covers has to be
+       said. */
+    assert.ok(/OTHERS are held back is not known/i.test(line),
+        'the line casts its doubt over the hold it just reported, instead of over the rows it '
+        + 'could not check: ' + line);
 });
 
 test('THE REQUEST: the opened stash carries Clear the hold, under its contents', () => {

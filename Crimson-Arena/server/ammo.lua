@@ -2239,6 +2239,68 @@ local function restore(src, record)
                 tostring(src))
             wiped = false
         end
+
+        -- AND THE SAME PROOF THE ENTRY TAKES, because a clear that is not
+        -- REFUSED is not a clear that HAPPENED.
+        --
+        -- oxDid reads nil as success, and ox_inventory answers nil for an
+        -- inventory it cannot resolve -- so the wholesale clear can do
+        -- NOTHING AT ALL and still take the branch above. stow() was taught
+        -- this fifteen hundred lines up ("DO NOT go back to trusting the
+        -- answer to a clear") and reads the pockets back; the exit was left
+        -- on the weaker test.
+        --
+        -- WHY clearReallyLanded IS NOT THAT TEST. It asks whether the
+        -- character the kit was issued to is still standing on this server
+        -- id, which catches the disconnect case it was written for and says
+        -- YES to the one here: the player never left, ox simply did not
+        -- clear. MEASURED against a clear that answers nil with the player
+        -- still connected -- they walked out holding their own belongings
+        -- AND the arena's armour and bandages, `wiped` said true, so the
+        -- issued rows were STRUCK OFF and nothing could ever take the kit
+        -- back. The log line said "kit returned".
+        --
+        -- WHAT MAY LEGITIMATELY BE LEFT is exactly `keep`, and nothing else:
+        -- the player's own belongings are still in the stash at this point
+        -- and go back in handBack below, so anything outside that list is
+        -- the clear not having run. untouchable folds `neverStash` into
+        -- `neverDestroy` before returning this, so an item the door left in
+        -- their pockets on the way in is in here too and does not read as a
+        -- failure.
+        --
+        -- AN UNREADABLE INVENTORY TAKES THE SAME PATH, and towards safety:
+        -- `wiped = false` keeps the record and chases the kit by the serial
+        -- each piece was issued with, instead of forgetting it was ever
+        -- issued. A chase that finds nothing costs nothing; forgetting is
+        -- the one that cannot be undone.
+        if wiped then
+            local keepMap = {}
+            for _, name in ipairs(keep) do keepMap[name] = true end
+
+            local after = slotMap(ox, src)
+            local left = nil
+            if after ~= nil then
+                for _, has in pairs(after) do
+                    if not keepMap[has.name] then
+                        left = has.name
+                        break
+                    end
+                end
+            end
+
+            if after == nil or left ~= nil then
+                ArenaLog('door: ox_inventory did not refuse the clear of %s\'s kit and %s -- '
+                    .. 'which is what it does for an inventory it cannot resolve: it answers '
+                    .. 'nothing and nothing happens. Treating the kit as STILL ON THEM: their '
+                    .. 'own is being returned on top of it, and the arena kit is being taken '
+                    .. 'back one weapon at a time, by the serial each was issued with.',
+                    tostring(src),
+                    after == nil and 'their pockets can no longer be read at all'
+                        or ('they are STILL carrying ' .. tostring(left)))
+                wiped = false
+            end
+        end
+
         record.cleared = true
 
         -- AND WHETHER IT ACTUALLY WIPED, kept on the record. `cleared` says

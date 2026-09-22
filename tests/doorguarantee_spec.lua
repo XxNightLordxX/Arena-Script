@@ -93,6 +93,16 @@ local function newServer(ids, mutate, extra, opts)
     local buckets = {}
 
     --- Inventories that refuse everything offered to them.
+    --- Inventories whose ClearInventory does NOTHING and answers NOTHING,
+    --- which is what ox_inventory does for one it cannot resolve. Not the
+    --- same as refusing: `oxDid` reads a refusal as false and a nil as
+    --- SUCCESS, so this is the shape that reads as a clean clear.
+    local deafClears = {}
+    --- Inventories ox_inventory cannot resolve AT ALL: reads answer nothing
+    --- as well as clears. This is the shape a real unresolvable inventory
+    --- takes -- the half-deaf one above is the harder case, not the
+    --- ordinary one.
+    local unresolvable = {}
     local refusingAdds = {}
 
     --- Inventories that ACCEPT everything and answer nothing.
@@ -265,6 +275,7 @@ local function newServer(ids, mutate, extra, opts)
             -- A CONTAINER NOBODY HAS WOKEN IS NOT READABLE, and that is not
             -- the same answer as an empty one. ox_inventory resolves an id
             -- that is not a registered stash to nothing at all.
+            if unresolvable[id] then return nil end
             if containerKeys[id] and not livingContainers[id] then return nil end
             if forgotten[id] then return out end
             for _, item in ipairs(bucket(id)) do
@@ -354,6 +365,10 @@ local function newServer(ids, mutate, extra, opts)
         --- the arena looking at every item they owned. WHAT THE CLIENT WAS
         --- TOLD IS NOW RECORDED, because it is the only half that was wrong.
         ClearInventory = function(_self, id, keep)
+            -- `if not inv then return end` -- ox_inventory resolves an
+            -- inventory it does not hold to nothing and returns before
+            -- touching a single slot, answering nil either way.
+            if deafClears[id] or unresolvable[id] then return end
             local from = type(id) == 'number' and (inv[id] or {}) or (stashes[id] or {})
 
             -- `if not inv or not next(inv.items) then return end`
@@ -701,6 +716,15 @@ local function newServer(ids, mutate, extra, opts)
     function server.wipe(src)
         inv[src] = {}
     end
+
+    --- ox_inventory stops resolving this inventory: every clear against it
+    --- does nothing and answers nothing, while the player stays connected.
+    function server.deafenClears(id, on) deafClears[id] = on ~= false or nil end
+
+    --- ox_inventory cannot resolve this inventory at all: reads answer
+    --- nothing and clears do nothing, which is what a player whose
+    --- inventory is not loaded really looks like.
+    function server.unresolve(id, on) unresolvable[id] = on ~= false or nil end
 
     --- An admin emptying a stash by hand, which is what the jam message tells
     --- them to do before clearing it.
@@ -1247,6 +1271,105 @@ t.test('and two rounds in a row do not stack two kits on them', function()
 
     t.equals(server.carrying(1), INTACT,
         ('after two rounds player 1 is carrying %s'):format(server.carrying(1)))
+end)
+
+t.test('SECURITY: a clear that answers NOTHING does not hand them the arena kit', function()
+    -- oxDid READS NIL AS SUCCESS, AND THE EXIT BELIEVED IT.
+    --
+    -- ox_inventory answers nil for an inventory it cannot resolve: nothing is
+    -- cleared and nothing is said. The exit called that a wipe, handed their
+    -- own belongings back ON TOP of the kit still in their pockets, and --
+    -- because clearReallyLanded only asks whether the character who was
+    -- issued the kit is still standing on this server id, which they are --
+    -- struck the issued rows off. Nothing could ever take the kit back.
+    --
+    -- A FREE KIT EVERY ROUND, in silence: the log line said "kit returned".
+    --
+    -- stow() was hardened against the identical answer fifteen hundred lines
+    -- earlier and reads the pockets back. This is that same proof, at the
+    -- other door.
+    local server = newServer({ 1, 2 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the host could not open a lobby')
+
+    local weapon = firstArmedWeapon(server.env.Config)
+    t.isNotNil(weapon, 'no shipped weapon takes ammunition, so this proves nothing')
+
+    server.fire('joinMatch', 2, { matchId = match.id })
+    for _, src in ipairs({ 1, 2 }) do
+        server.fire('setLoadout', src, { weapons = { { key = weapon.key, ammo = 60 } }, armor = 0 })
+        server.fire('setReady', src, { ready = true })
+    end
+    server.step(6)
+
+    -- THE KIT IS REALLY ON THEM, or the exit below is clearing nothing and
+    -- this test passes for the wrong reason.
+    t.isFalse(server.carrying(1) == INTACT,
+        'the door issued player 1 nothing, so there is no kit for the exit to lose')
+
+    -- ox stops resolving player 1's inventory. They stay connected, under the
+    -- same citizenid -- which is the whole of what clearReallyLanded checks.
+    server.deafenClears(1)
+
+    server.match.End(match.id, 'match.ended')
+    server.step(6)
+
+    t.equals(server.carrying(1), INTACT,
+        ('player 1 walked out of a deaf clear carrying %s -- their own belongings AND the '
+            .. 'arena kit'):format(server.carrying(1)))
+    t.contains(server.log(), 'did not refuse the clear',
+        'the kit was taken back but nothing said the clear had not run')
+
+    -- AND THE OTHER PLAYER IS THE CONTROL: an ordinary clear in the same
+    -- round is not reported as a failed one. Without this the check could
+    -- fire on every clean exit -- which is its own defect, and a worse one:
+    -- it would leave a debt on every round that could never clear.
+    t.equals(server.carrying(2), INTACT, 'the ordinary exit stopped working')
+    local said = select(2, server.log():gsub('did not refuse the clear', ''))
+    t.equals(said, 1,
+        ('%d clears were reported as not having run; only player 1\'s did not'):format(said))
+end)
+
+t.test('and an inventory ox cannot read at all is not written off either', function()
+    -- THE OTHER HALF OF THE SAME PROOF, and the shape a real unresolvable
+    -- inventory takes: ox_inventory answers nothing to the READ as well as
+    -- to the clear. The test above is the harder case -- pockets that can
+    -- still be read while the clear does nothing.
+    --
+    -- Reading an unreadable inventory as "empty, so the clear worked" would
+    -- be the same free kit by a different route, so it takes the same branch:
+    -- the kit is not written off and the record is kept for the chase.
+    local server = newServer({ 1, 2 })
+    server.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 })
+    local match = server.lobby.All()[1]
+    t.isNotNil(match, 'the host could not open a lobby')
+
+    local weapon = firstArmedWeapon(server.env.Config)
+    server.fire('joinMatch', 2, { matchId = match.id })
+    for _, src in ipairs({ 1, 2 }) do
+        server.fire('setLoadout', src, { weapons = { { key = weapon.key, ammo = 60 } }, armor = 0 })
+        server.fire('setReady', src, { ready = true })
+    end
+    server.step(6)
+
+    t.isTrue(isHolding(server.ammo, 1),
+        'the door issued player 1 nothing, so there is no kit for the exit to lose')
+
+    server.unresolve(1)
+
+    server.match.End(match.id, 'match.ended')
+    server.step(6)
+
+    t.contains(server.log(), 'pockets can no longer be read at all',
+        'an inventory that could not be read was taken as proof the clear had worked')
+
+    -- AND PLAYER 2 IS THE CONTROL: an inventory ox can read is not reported
+    -- as unreadable.
+    local said = select(2, server.log():gsub('pockets can no longer be read at all', ''))
+    t.equals(said, 1,
+        ('%d exits were reported unreadable; only player 1\'s was'):format(said))
+    t.equals(server.carrying(2), INTACT, 'the ordinary exit stopped working')
 end)
 
 t.test('and the match stops being owed anything once everyone is out', function()

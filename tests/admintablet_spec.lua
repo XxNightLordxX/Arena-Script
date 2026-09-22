@@ -1581,6 +1581,36 @@ t.test('and a non-boolean `enabled` is not reported as the word false', function
         'the report told the operator their file says false when it says 1')
 end)
 
+t.test('DEFECT: and a named window is named even when the range prints fine', function()
+    -- THE FIX FOR THE NAMED WINDOW WAS ITSELF INCOMPLETE, and incomplete in
+    -- the direction that matters most.
+    --
+    -- The count and the warning sat inside the `else` of `if hours.line`, so
+    -- they only ran when there was NO printable range. Whenever a good window
+    -- existed alongside the named one -- which is the likely way to end up
+    -- with one, editing an existing schedule -- the report took the other arm
+    -- and said nothing at all:
+    --
+    --   windows = { { from = 5, to = 7 }, evening = { from = 20, to = 22 } }
+    --     "windows:  05:00-07:00"      and not one word about the evening.
+    --
+    -- Two windows written, one silently unread by every part of this
+    -- resource, and the screen the operator would check to find out reads
+    -- perfectly healthy. That is worse than the contradiction it replaced.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, evening = { from = 20, to = 22 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '05:00-07:00',
+        'the good window stopped printing its range, so this is a different branch')
+    t.contains(said, 'rather than sitting in the list',
+        'a window nothing in this resource reads went unmentioned because a DIFFERENT window '
+        .. 'happened to be printable -- the report looks healthy and the operator never learns')
+end)
+
 t.test('CONTROL: and a schedule that is ON with windows that work prints the range', function()
     -- Without this the two above are satisfied by a report that never says
     -- "none usable" about anything, including the case it was written for.

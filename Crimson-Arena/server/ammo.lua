@@ -51,6 +51,53 @@ local probedAt = {}
 --- parked duplicate and a handed-out one.
 local jammedStash = {}
 
+--- Jams whose row the database never took, so a later pass can send it again.
+---
+--- ArenaDb THROWS AWAY A STATEMENT IT CANNOT SEND. There is no queue behind
+--- it, and the jam list had nothing standing in for one: a hold made while
+--- oxmysql was down, or refused once by a database that was otherwise fine,
+--- printed its warning and was then never tried again for the life of the
+--- process. The warning said to settle the stash by hand before restarting,
+--- which is an instruction an operator reads at three in the morning and
+--- mostly does not -- and the cost is the one JamReport already spells out, a
+--- stash whose contents CAN BE HANDED OUT A SECOND TIME after the restart.
+--- Both warnings now say the statement is kept and re-sent, because it is.
+---
+--- The outstanding-kit slate has had this since the outage replay went in;
+--- see replayPending, whose comment says why it is only correct because it
+--- asks MEMORY what the row should say rather than remembering which
+--- statement was dropped. A jam is the easiest possible case of that:
+--- `jammedStash[stash]` is the whole answer, INSERT IGNORE and DELETE are
+--- both idempotent, and re-sending either costs one statement.
+---
+--- SEPARATE FROM pendingKeys ON PURPOSE. That set is keyed by citizen id and
+--- gated on `kitWriteRefused and not kitWriteLanded` -- a judgement about the
+--- kit slate that has no business deciding whether a jam is re-sent. Keeping
+--- them apart is also what keeps this out of the kit replay's counters.
+--- @type table<string, boolean>
+local pendingJams = {}
+
+--- The cap, and it REFUSES A NEW ENTRY rather than making room, for the same
+--- reason markPending does: everything already in here is a hold the database
+--- has not taken, so evicting one to admit another loses just as much and does
+--- it to the older one. This is a per-stash set and a stash is per-player, so
+--- reaching it at all means the database has been down for a long time.
+local PENDING_JAM_LIMIT = 256
+
+--- @param stash string
+local function dropUnsentJam(stash) pendingJams[stash] = nil end
+
+--- @param stash string
+local function keepUnsentJam(stash)
+    if pendingJams[stash] ~= nil then return end
+
+    local held = 0
+    for _ in pairs(pendingJams) do held = held + 1 end
+    if held >= PENDING_JAM_LIMIT then return end
+
+    pendingJams[stash] = true
+end
+
 --- Whether the jam list has been read back from the database yet, and whether
 --- a read is in flight. Both matter to handBack: before the read lands, this
 --- process cannot tell a clean stash from a jammed one.
@@ -125,14 +172,70 @@ local function rememberJam(stash)
     jammedStash[stash] = true
 
     ArenaDb('the jam list', JAM_WRITE_SQL, { stash }, function(answer)
-        if answer ~= nil then return end
+        if answer ~= nil then
+            dropUnsentJam(stash)
+            return
+        end
+
+        -- KEPT FOR A LATER PASS rather than warned about and forgotten. See
+        -- pendingJams: the warning below is still said, because an operator
+        -- whose database never comes back needs to know, but it is no longer
+        -- the only thing that happens.
+        keepUnsentJam(stash)
+
         if not ArenaDbReady('the jam list') then return end
 
         ArenaLog('door: stash %s is held back for this run, but the jam could NOT be written to '
-            .. 'the database -- a restart will forget it and the sweep will walk that stash again. '
-            .. 'Settle it by hand before restarting, or give the database user INSERT on '
-            .. 'crimson_arena_jammed_stash. The real error is on oxmysql\'s console.', tostring(stash))
+            .. 'the database -- it is kept in memory and sent again on every sweep, so a restart '
+            .. 'BEFORE one of those lands still forgets it and the sweep will walk that stash '
+            .. 'again. Give the database user INSERT on crimson_arena_jammed_stash, or settle the '
+            .. 'stash by hand if it is not coming back. The real error is on oxmysql\'s console.',
+            tostring(stash))
     end)
+end
+
+--- Sends the jam rows the database never took, again.
+---
+--- ASKS MEMORY WHAT THE ROW SHOULD SAY, and that is the whole of why it is
+--- safe to run on every sweep. It does not remember WHICH statement was
+--- dropped -- it looks the stash up in `jammedStash` and sends the row that
+--- matches the answer now. A hold that has since been settled replays as the
+--- DELETE, not as the INSERT that was originally lost; a stash jammed again
+--- after a settlement replays as the INSERT. Both statements are idempotent,
+--- so a replay that repeats costs one query and changes nothing.
+---
+--- DISPATCHED FROM A LIST, NEVER FROM INSIDE THE pairs LOOP. oxmysql can
+--- answer on the line that sends, and the callback takes its stash out of the
+--- table being walked. replayPending says the same thing about the same trap.
+---
+--- QUIET WHEN IT FAILS AND LOUD WHEN IT LANDS. The write that was dropped
+--- already warned, in full, with the grant to fix it; repeating that on every
+--- sweep is how an operator learns to ignore the console. A row that finally
+--- reaches the table is the line worth printing, because it is the one that
+--- says the thing they were told to do by hand no longer needs doing.
+--- @return integer sent
+local function replayJams()
+    if next(pendingJams) == nil then return 0 end
+    if not ArenaDbReady('the jam list') then return 0 end
+
+    local flat = {}
+    for stash in pairs(pendingJams) do flat[#flat + 1] = stash end
+
+    for _, stash in ipairs(flat) do
+        local held = jammedStash[stash] == true
+
+        ArenaDb('the jam list', held and JAM_WRITE_SQL or JAM_DELETE_SQL, { stash }, function(answer)
+            if answer == nil then return end
+
+            dropUnsentJam(stash)
+            ArenaLog('door: the database has now taken the record that stash %s %s. It was '
+                .. 'written in memory when the statement was first refused and has been re-sent; '
+                .. 'a restart no longer forgets it.',
+                tostring(stash), held and 'is held back' or 'is settled')
+        end)
+    end
+
+    return #flat
 end
 
 --- Characters the empty-read warning has already been said for.
@@ -5702,6 +5805,10 @@ function ArenaAmmo.Issue(src, matchId, loadout)
     -- place a debtor is certain to be standing. DO NOT tie the ledger's own
     -- upkeep to a stash setting.
     replayPending()
+    -- AND THE JAM ROWS THE DATABASE NEVER TOOK, for the same reason and in
+    -- the same order: LoadJams below is a photograph of the table, so a hold
+    -- still queued has to be sent before it is taken.
+    replayJams()
     ArenaAmmo.LoadOwedKit()
     ArenaAmmo.LoadJams()
     retryPendingClears()
@@ -6527,12 +6634,25 @@ function ArenaAmmo.Unjam(stash)
     -- off it for ever, and the operator would run this command again after
     -- every restart wondering why it did not take.
     ArenaDb('the jam list', JAM_DELETE_SQL, { stash }, function(answer)
-        if answer ~= nil then return end
+        if answer ~= nil then
+            dropUnsentJam(stash)
+            return
+        end
+
+        -- THE SETTLEMENT IS KEPT TOO, AND IT IS THE HALF THAT BITES HARDER.
+        -- A lost INSERT forgets a hold; a lost DELETE keeps one for ever, so
+        -- the operator settles the stash, restarts, and the door holds it
+        -- back again. The replay resolves against `jammedStash`, which by
+        -- this line no longer has it -- so it re-sends exactly this DELETE.
+        keepUnsentJam(stash)
+
         if not ArenaDbReady('the jam list') then return end
 
         ArenaLog('door: stash %s was cleared for this run, but the row could NOT be deleted from '
-            .. 'the database -- the next start will hold it back again. Give the database user '
-            .. 'DELETE on crimson_arena_jammed_stash and run this again.', stash)
+            .. 'the database -- it is kept in memory and sent again on every sweep, so a start '
+            .. 'BEFORE one of those lands holds it back again. Give the database user DELETE on '
+            .. 'crimson_arena_jammed_stash; you no longer have to run this command a second '
+            .. 'time.', stash)
     end)
     ArenaLog('door: stash %s is no longer held back. The door will put belongings in it and hand '
         .. 'them out of it again.', stash)
@@ -7028,6 +7148,10 @@ function ArenaAmmo.SweepReturns()
     -- below is a photograph of the table and a settlement still queued is an
     -- open debt in it. See replayPending. DO NOT reorder these two.
     replayPending()
+    -- AND THE JAM ROWS THE DATABASE NEVER TOOK, for the same reason and in
+    -- the same order: LoadJams below is a photograph of the table, so a hold
+    -- still queued has to be sent before it is taken.
+    replayJams()
     ArenaAmmo.LoadOwedKit()
     ArenaAmmo.LoadJams()
     retryPendingClears()

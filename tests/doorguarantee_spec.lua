@@ -193,6 +193,16 @@ local function newServer(ids, mutate, extra, opts)
     --- oxmysql, when a test asks for one. `opts.dbFails` models the case an
     --- operator actually hits: the database is connected and every statement
     --- is refused -- a read-only user, a missing table, a full disk.
+    --- THE JAM TABLE AS A TABLE, not as a fixed answer to a SELECT.
+    ---
+    --- `opts.jamRows` said what the table held when the process started and
+    --- nothing could change it afterwards, so a jam WRITE landed nowhere a
+    --- test could look -- which is why a jam that never reached the database
+    --- could not be told from one that did. Seeded from the same option, so
+    --- every test that only reads it behaves exactly as before.
+    local jamOnDisk = {}
+    for _, stash in ipairs(opts.jamRows or {}) do jamOnDisk[stash] = true end
+
     local oxmysql = {
         query = function(_self, sql, params, cb)
             queries[#queries + 1] = sql
@@ -216,9 +226,24 @@ local function newServer(ids, mutate, extra, opts)
                 and sql:find('SELECT', 1, true)
             then
                 local rows = {}
-                for _, stash in ipairs(opts.jamRows) do rows[#rows + 1] = { stash = stash } end
+                for stash in pairs(jamOnDisk) do rows[#rows + 1] = { stash = stash } end
+                table.sort(rows, function(a, b) return a.stash < b.stash end)
                 if cb then cb(rows) end
                 return rows
+            end
+
+            -- AND A JAM WRITE THAT LANDS REALLY CHANGES THE TABLE. A refused
+            -- one must not: that is the difference the replay exists to
+            -- close, so a double that applied both could not fail on it.
+            if not opts.dbFails and not opts.failWrites
+                and sql:find('crimson_arena_jammed_stash', 1, true)
+                and params and params[1] ~= nil
+            then
+                if sql:find('DELETE', 1, true) then
+                    jamOnDisk[params[1]] = nil
+                elseif sql:find('INSERT', 1, true) then
+                    jamOnDisk[params[1]] = true
+                end
             end
 
             -- `opts.dbFails and nil or {}` COULD NEVER BE nil, which made
@@ -622,6 +647,22 @@ local function newServer(ids, mutate, extra, opts)
     function server.queries() return table.concat(queries, '\n') end
     --- Moves the server's clock forward, in seconds.
     function server.advanceClock(seconds) clockSkew = clockSkew + seconds end
+
+    --- The jam table as the DATABASE holds it, sorted, so it can be compared
+    --- against what memory says rather than against a hand-written string.
+    function server.jamRowsOnDisk()
+        local out = {}
+        for stash in pairs(jamOnDisk) do out[#out + 1] = stash end
+        table.sort(out)
+        return #out == 0 and '(none)' or table.concat(out, ',')
+    end
+
+    --- The database user is granted the writes it was missing, mid-run. This
+    --- is the half an outage really has: it ends.
+    function server.healWrites() opts.failWrites = nil end
+
+    --- And it starts. Used to lose a settlement rather than a hold.
+    function server.breakWrites() opts.failWrites = true end
 
     --- Every table named in a statement that is NOT this resource's own.
     function server.foreignTables()
@@ -4296,6 +4337,117 @@ t.test('CONTROL: and with the database healthy neither line appears', function()
     local report = table.concat(server.ammo.JamReport(), '\n')
     t.isNil(report:find('NOT been read back', 1, true),
         'a list that was read back was reported as unread')
+end)
+
+t.test('a jam made while the database refuses writes is SENT AGAIN once it stops', function()
+    -- ArenaDb THROWS AWAY A STATEMENT IT CANNOT SEND, and the jam list had
+    -- nothing standing in for a queue. The hold worked for the run, the
+    -- warning above was printed, and the row was never tried again -- so the
+    -- restart forgot it, the sweep walked that stash, and its contents could
+    -- be handed out a SECOND time. JamReport already spells out that cost.
+    --
+    -- The outstanding-kit slate has had a replay since the outage work; this
+    -- is the same repair for the other table, resolved the same way -- against
+    -- MEMORY, not against a record of which statement was dropped.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {}, failWrites = true })
+
+    server.startResource()
+    server.step(2)
+
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    -- THE JAM REALLY HAPPENED AND THE ROW REALLY DID NOT LAND, or the replay
+    -- below is re-sending nothing and this passes for the wrong reason.
+    t.contains(server.log(), 'touching that stash no further', 'the fixture did not jam anything')
+    t.equals(server.jamRowsOnDisk(), '(none)',
+        'a refused write reached the table, so the outage is not being modelled')
+
+    server.healWrites()
+    server.ammo.SweepReturns()
+    server.step(4)
+
+    t.equals(server.jamRowsOnDisk(), 'crimson_arena_CID1',
+        'the jam was never sent again, so a restart still forgets it')
+    t.contains(server.log(), 'has been re-sent',
+        'the row landed but nothing told the operator it no longer needs settling by hand')
+
+    -- AND ONCE. A replay that does not take its stash back out of the pending
+    -- set re-sends it on every sweep for the life of the process -- the exact
+    -- console-flooding replayPending refuses -- and says so every time.
+    server.ammo.SweepReturns()
+    server.ammo.SweepReturns()
+    server.step(4)
+    local said = select(2, server.log():gsub('has been re%-sent', ''))
+    t.equals(said, 1,
+        ('the jam was re-sent on %d sweeps; a row the database has taken is not pending'):format(said))
+end)
+
+t.test('and a SETTLEMENT lost the same way is sent again too', function()
+    -- THE HALF THAT BITES HARDER. A lost INSERT forgets a hold; a lost DELETE
+    -- keeps one FOR EVER -- the operator settles the stash, restarts, and the
+    -- door holds it back again, so they run /arenaunjam after every restart
+    -- wondering why it will not take.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {} })
+
+    server.startResource()
+    server.step(2)
+
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.jamRowsOnDisk(), 'crimson_arena_CID1',
+        'the healthy database did not take the jam, so there is no row to settle')
+
+    -- The database loses its writes, and a human settles the stash.
+    server.breakWrites()
+    t.isTrue(server.ammo.Unjam('crimson_arena_CID1'), 'the stash was not held back to begin with')
+    server.step(2)
+
+    t.equals(server.jamRowsOnDisk(), 'crimson_arena_CID1',
+        'the refused DELETE removed the row anyway, so the outage is not being modelled')
+
+    server.healWrites()
+    server.ammo.SweepReturns()
+    server.step(4)
+
+    -- RESOLVED AGAINST MEMORY: the replay does not remember that a DELETE was
+    -- dropped, it asks whether the stash is held back NOW. It is not, so what
+    -- goes out is the DELETE.
+    t.equals(server.jamRowsOnDisk(), '(none)',
+        'the settlement was never sent again, so the next start holds the stash back again')
+end)
+
+t.test('CONTROL: a healthy database is not replayed into', function()
+    -- The replay must be driven by a write that did NOT land. If it re-sent
+    -- on every sweep regardless, it would put the whole jam list on oxmysql's
+    -- console for the life of the process -- which is the exact mistake
+    -- replayPending documents and refuses.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+    end, { database = true, jamRows = {} })
+
+    server.startResource()
+    server.step(2)
+
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.jamRowsOnDisk(), 'crimson_arena_CID1', 'the jam never reached the table')
+
+    server.ammo.SweepReturns()
+    server.ammo.SweepReturns()
+    server.step(4)
+
+    t.isNil(server.log():find('has been re-sent', 1, true),
+        'a row that landed first time was re-sent anyway')
 end)
 
 os.exit(t.summary())

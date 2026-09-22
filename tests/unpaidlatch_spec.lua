@@ -78,7 +78,17 @@ local function newArena(control)
         -- makes this fault invisible from Lua -- and the answer is where the
         -- refusal shows up.
         local function answer()
-            if control.failWrites then
+            -- PER STATEMENT KIND, because the two are granted separately and
+            -- refuse asymmetrically. `failWrites` refuses both, as before;
+            -- `failInserts` and `failDeletes` model GRANT SELECT, DELETE and
+            -- GRANT SELECT, INSERT -- and equally any INSERT-specific refusal
+            -- (a constraint, a deadlock, a row too long) on a server that
+            -- then settles a debt.
+            local isDelete = flat:find('^DELETE') ~= nil
+            if control.failWrites
+                or (isDelete and control.failDeletes)
+                or ((not isDelete) and control.failInserts)
+            then
                 if cb then cb(nil) end
                 return
             end
@@ -556,6 +566,217 @@ t.test('and with TWO drops queued the all-clear waits for the LAST one, not the 
     t.equals(s.rows(), 0, 'the second drop never landed, so this proves nothing')
     t.equals(s.says(ALL_CLEAR), 1,
         'both deletes landed and the money screen is still reporting writes as refused')
+end)
+
+t.test('DEFECT: a landing DELETE does NOT clear a refusal the INSERT is still raising', function()
+    -- THE FALSE ALL-CLEAR THE QUEUE-IDLE GATE LET THROUGH, on the exact grant
+    -- this whole layer exists for.
+    --
+    -- The two kinds record refusals ASYMMETRICALLY. A refused DELETE sits in
+    -- pendingDrops before it is ever sent, so it keeps the queue non-idle. A
+    -- refused INSERT is never queued at all: ArenaDb returns TRUE when
+    -- oxmysql TOOK the statement, and the refusal arrives later as a nil
+    -- answer -- so pendingAddCount stays 0 and the queue reads idle.
+    --
+    -- So on GRANT SELECT, DELETE with no INSERT: an insert is refused, the
+    -- operator settles a debt, that delete lands, the queue reads idle, and
+    -- the money screen announces the ledger is being written again while
+    -- every insert is still being refused. Worse than the stuck latch it
+    -- replaced -- a stuck warning is annoying, this one is believed.
+    local s = opened({ failWrites = false })
+
+    -- A debt that really reaches the table, while the INSERT still works.
+    s.fileDebt(700, 'm1', 'cash')
+    s.step(3)
+    t.equals(s.rows(), 1, 'the seed debt never landed, so this proves nothing')
+
+    -- Now the INSERT is refused. Nothing is queued -- that is the whole point.
+    s.control.failInserts = true
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the refused INSERT was never reported')
+    t.equals(s.betting.PendingUnpaidWrites(), 0,
+        'the refused INSERT was queued, so the queue would have covered this and the test '
+        .. 'proves nothing about the refusal being tracked per kind')
+    s.forget()
+
+    -- And a DELETE lands: the operator settles the seed debt.
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.rows(), 0, 'the DELETE did not land, so this proves nothing')
+
+    t.equals(s.says(ALL_CLEAR), 0,
+        'a landing DELETE announced the ledger was being written again while every INSERT was '
+        .. 'still refused -- the operator is told the money is safe on the one setup where a '
+        .. 'restart forgets every debt filed since')
+end)
+
+t.test('and it DOES clear once the INSERT lands too, which is the other half', function()
+    -- A rule that never clears is the stuck latch again. Both kinds have to
+    -- be answerable, and the INSERT is the one that was refused here.
+    local s = opened({ failWrites = false })
+
+    s.fileDebt(700, 'm1', 'cash')
+    s.step(3)
+
+    s.control.failInserts = true
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the refused INSERT was never reported')
+
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.says(ALL_CLEAR), 0, 'the DELETE cleared it, so this is the other test')
+    s.forget()
+
+    -- The operator runs GRANT INSERT.
+    s.control.failInserts = false
+    s.fileDebt(300, 'm3', 'cash')
+    s.step(3)
+
+    t.equals(s.says(ALL_CLEAR), 1,
+        'the INSERT the operator had just granted landed and the money screen went on '
+        .. 'reporting writes as refused')
+end)
+
+t.test('and with BOTH kinds refused, the one that recovers does not speak for the other', function()
+    -- THE ONE MUTATION NOTHING CAUGHT. Deleting `if anyUnpaidRefusal() then
+    -- return end` left every other test green, because no test had both kinds
+    -- refused at once -- and in the other direction the queue check shadows
+    -- it (a refused DELETE is queued, so a landing INSERT stops at the queue
+    -- test before ever reaching this one).
+    --
+    -- The direction that needs it: both refused, then the operator grants
+    -- DELETE and not INSERT. The queued delete replays, lands, empties the
+    -- queue -- and the insert is still refused. Nothing but this line is
+    -- standing between the operator and "the ledger is being written again".
+    local s = opened({ failWrites = false })
+
+    -- A row in the table, while both statements still work.
+    s.fileDebt(700, 'm1', 'cash')
+    s.step(3)
+    t.equals(s.rows(), 1, 'the seed debt never landed, so this proves nothing')
+
+    -- Everything refused. The INSERT latches its kind and queues nothing;
+    -- the DELETE latches its kind and stays queued.
+    s.control.failWrites = true
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.says(REFUSED), 2,
+        'both kinds should have been reported once each -- if only one line was printed the '
+        .. 'refusals are not being tracked per kind and this test proves nothing')
+    s.forget()
+
+    -- GRANT DELETE, and only DELETE.
+    s.control.failWrites = false
+    s.control.failInserts = true
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.step(5)
+    s.control.offline = false
+
+    t.equals(s.rows(), 0, 'the queued DELETE never landed, so this proves nothing')
+    t.equals(s.betting.PendingUnpaidWrites(), 0, 'something is still queued, so the queue '
+        .. 'check would cover this and the test proves nothing about the per-kind rule')
+
+    t.equals(s.says(ALL_CLEAR), 0,
+        'the DELETE recovered and announced the whole ledger safe while the INSERT was still '
+        .. 'refused -- one statement kind vouching for the other, which is the defect the '
+        .. 'per-kind memory exists to prevent')
+end)
+
+t.test('and the refusal NAMES which statement was refused, so the grant is actionable', function()
+    -- One boolean could only say "a write was refused". A user with INSERT
+    -- and no DELETE and a user with DELETE and no INSERT are different faults
+    -- with different costs -- a lost DELETE pays a debt twice, a lost INSERT
+    -- forgets one -- and the operator can only act on the one they are told.
+    local insertOnly = opened({ failWrites = false })
+    insertOnly.control.failInserts = true
+    insertOnly.fileDebt(700, 'm1', 'cash')
+    insertOnly.step(3)
+    t.contains(insertOnly.log(), 'the INSERT was refused',
+        'a refused INSERT did not say so, so the operator cannot tell which grant is missing')
+
+    local deleteOnly = opened({ failWrites = false })
+    deleteOnly.fileDebt(700, 'm1', 'cash')
+    deleteOnly.step(3)
+    deleteOnly.control.failDeletes = true
+    deleteOnly.betting.PayOutstanding(1)
+    deleteOnly.step(3)
+    t.contains(deleteOnly.log(), 'the DELETE was refused',
+        'a refused DELETE did not say so -- the costlier of the two faults, and the one that '
+        .. 'pays a debt twice per restart')
+end)
+
+t.test('a drop answered TWICE does not drive the queue count below zero', function()
+    -- THE GUARD NOTHING PINNED, and it is the only thing between this ledger
+    -- and a latch that can never be cleared again.
+    --
+    -- replayDrops re-sends every key in pendingDrops on each sweep -- every
+    -- Config.Betting.refundRetrySeconds, shipped at 30 -- and keeps no record
+    -- of what is in flight. So a DELETE whose answer takes longer than one
+    -- sweep interval, which is the database-under-stress case, is sent twice
+    -- and answered twice. Without the `keys[key] ~= nil` test the second
+    -- answer decrements pendingDropCount again, taking it NEGATIVE -- and
+    -- unpaidQueueIdle asks `pendingDropCount == 0`, which a negative number
+    -- never satisfies. The warning then sticks for the rest of the process no
+    -- matter what the operator fixes, which is the exact failure the re-arm
+    -- was written to remove.
+    local s = opened({ failWrites = false })
+
+    s.fileDebt(700, 'm1', 'cash')
+    s.step(3)
+    t.equals(s.rows(), 1, 'the seed debt never landed, so this proves nothing')
+
+    -- The DELETE is refused, so it stays queued and latches its kind.
+    s.control.failDeletes = true
+    s.betting.PayOutstanding(1)
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the refused DELETE was never reported')
+    s.forget()
+
+    -- Granted, but the answers are held -- so two sweeps send the SAME drop
+    -- twice before either is answered.
+    s.control.failDeletes = false
+    s.control.holdWrites = true
+    s.control.offline = true
+    s.betting.SweepUnpaid()
+    s.betting.SweepUnpaid()
+    s.control.holdWrites = false
+
+    -- Both answers arrive for the one key.
+    s.releaseWrites()
+    s.step(5)
+    s.control.offline = false
+
+    t.equals(s.rows(), 0, 'the drop never landed, so this proves nothing')
+
+    -- THE CONSEQUENCE HAS TO BE OBSERVED AFTER THE CORRUPTION, NOT DURING IT.
+    -- Asserting the all-clear here proves nothing: the FIRST of the two
+    -- answers sees a count of 0 and announces quite legitimately, and only
+    -- the SECOND takes it to -1. Measured -- with the guard removed this test
+    -- passed until the check below was added.
+    --
+    -- So: put the ledger through a whole fresh refusal-and-recovery cycle. A
+    -- negative count makes unpaidQueueIdle answer false for the rest of the
+    -- process, so the all-clear can never be issued again by anything.
+    s.forget()
+
+    s.control.failInserts = true
+    s.fileDebt(400, 'm2', 'bank')
+    s.step(3)
+    t.equals(s.says(REFUSED), 1, 'the second refusal never latched, so this proves nothing')
+
+    s.control.failInserts = false
+    s.fileDebt(300, 'm3', 'cash')
+    s.step(3)
+
+    t.equals(s.says(ALL_CLEAR), 1,
+        'a drop answered twice left the queue count below zero, so the queue reads permanently '
+        .. 'non-idle and the write-refused warning can never be cleared again for the life of '
+        .. 'the process, whatever the operator fixes')
 end)
 
 t.test('CONTROL: a ledger with nothing queued carries no qualifier at all', function()

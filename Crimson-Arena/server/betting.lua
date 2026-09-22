@@ -554,7 +554,34 @@ local UNPAID_RETRY_MS = 30000
 
 local unpaidLoaded = false
 local unpaidReading = false
-local unpaidWriteRefused = false
+--- WHICH KIND OF WRITE HAS BEEN REFUSED, not whether one has.
+---
+--- THIS WAS A SINGLE BOOLEAN AND THE TWO KINDS RECORD REFUSALS
+--- ASYMMETRICALLY, which is what made a queue-idle proxy the wrong gate for
+--- the all-clear:
+---
+---   a refused DELETE is in `pendingDrops` before it is ever sent, so it
+---     keeps the queue non-idle and the proxy held;
+---   a refused INSERT is NEVER queued -- ArenaDb returns TRUE when oxmysql
+---     took the statement, and the refusal arrives later as a nil answer --
+---     so pendingAddCount stays 0 and the queue reads idle.
+---
+--- MEASURED on GRANT SELECT, DELETE with no INSERT: an INSERT is refused, the
+--- operator pays a debt, that DELETE lands, the queue reads idle, and the
+--- money screen announces "the unpaid ledger is being written to the database
+--- again" while every INSERT is still being refused. That is the false
+--- all-clear this whole layer exists to prevent, and it is worse than the
+--- stuck latch it replaced.
+---
+--- So the refusal is remembered PER KIND and the all-clear is owed only when
+--- NEITHER kind is refused. DO NOT collapse this back into one boolean.
+local unpaidRefused = { add = false, drop = false }
+
+--- Whether either kind of write is currently refused.
+--- @return boolean
+local function anyUnpaidRefusal()
+    return unpaidRefused.add or unpaidRefused.drop
+end
 
 --- Whether NOTHING is queued in either write direction. Filled far below,
 --- beside the drop queue, once both counters exist.
@@ -582,7 +609,9 @@ local unpaidSchemaConfirmed = false
 --- own console and the pcall inside ArenaDb never sees a thing. The operator
 --- has to be told here or not at all. DO NOT report a read as proof of a
 --- write.
-local function unpaidWrote(answer)
+--- @param answer any -- oxmysql's answer, or nil when it never landed
+--- @param kind string -- 'add' or 'drop', the statement this answers for
+local function unpaidWrote(answer, kind)
     -- A WRITE THAT LANDS CLEARS THE ACCUSATION, which it never did.
     --
     -- This latched for the life of the process. So an operator who did
@@ -615,15 +644,30 @@ local function unpaidWrote(answer)
         -- So the all-clear waits until nothing is queued in either
         -- direction, which is the only cheap statement that is true of BOTH
         -- kinds at once.
-        if unpaidWriteRefused and unpaidQueueIdle and unpaidQueueIdle() then
-            unpaidWriteRefused = false
-            ArenaLog('betting: the unpaid ledger is being written to the database again -- '
-                .. 'whatever was refusing those writes has been fixed.')
-        end
+        -- THIS KIND HAS LANDED. Anything else still refused keeps the
+        -- warning up, and anything still QUEUED is a statement the database
+        -- has never seen at all -- a debt filed during an outage lives in
+        -- memory alone, and announcing the ledger safe while one is
+        -- outstanding is the same lie in a third costume.
+        if not unpaidRefused[kind] then return end
+
+        -- THE QUEUE IS TESTED BEFORE THE FLAG IS CLEARED, and the first
+        -- version of this cleared first. With two drops outstanding the FIRST
+        -- to land cleared the flag and then returned because the queue was
+        -- not idle -- so the second landing found nothing left to clear and
+        -- the all-clear was never issued at all. Clearing is the last thing
+        -- that happens before the line is printed, never before.
+        if unpaidQueueIdle and not unpaidQueueIdle() then return end
+
+        unpaidRefused[kind] = false
+        if anyUnpaidRefusal() then return end
+
+        ArenaLog('betting: the unpaid ledger is being written to the database again -- '
+            .. 'whatever was refusing those writes has been fixed.')
         return
     end
 
-    if unpaidWriteRefused then return end
+    if unpaidRefused[kind] then return end
 
     -- A NIL ANSWER IS ONLY A REFUSAL WHEN THERE WAS SOMETHING TO REFUSE IT.
     -- ArenaDb calls back with nil on every path that does not reach oxmysql
@@ -632,11 +676,16 @@ local function unpaidWrote(answer)
     -- run after an outage that has since ended. DO NOT drop this test.
     if not ArenaDbReady(UNPAID_SUBJECT) then return end
 
-    unpaidWriteRefused = true
-    ArenaLog('betting: money the arena owes players could NOT be written to the database. The table '
-        .. 'can be read but not changed, which is almost always a database user with SELECT and no '
-        .. 'INSERT or DELETE. The ledger still works for this run and a restart forgets it. The '
-        .. 'real error is on oxmysql\'s console, not this one.')
+    unpaidRefused[kind] = true
+    -- AND IT NAMES THE STATEMENT, because that is which grant is missing.
+    -- Said once per kind rather than once overall: a user with INSERT and no
+    -- DELETE and a user with DELETE and no INSERT are different faults with
+    -- different costs, and the operator can only act on the one they are told.
+    ArenaLog('betting: money the arena owes players could NOT be written to the database -- the '
+        .. '%s was refused. The table can be read but not changed, which is almost always a '
+        .. 'database user with SELECT and no INSERT or DELETE. The ledger still works for this '
+        .. 'run and a restart forgets it. The real error is on oxmysql\'s console, not this one.',
+        kind == 'drop' and 'DELETE' or 'INSERT')
 end
 
 --- `account` and `reason` joined by a character neither can contain.
@@ -794,7 +843,7 @@ local function sendAdd(citizenid, key, name, account, reason, added)
     -- THE DIRECTION IT FAILS IN IS THE RIGHT ONE, and is this file's own
     -- stated rule: a lost DELETE pays a debt twice, a lost INSERT forgets
     -- one. If the DELETE can never land, the debt stays in memory for the
-    -- run, the operator already has `unpaidWriteRefused` shouting at them,
+    -- run, the operator already has `unpaidRefused` shouting at them,
     -- and nobody is paid anything twice.
     --
     -- DO NOT "fix" this by cancelling the pending DROP instead. The row it
@@ -817,7 +866,7 @@ local function sendAdd(citizenid, key, name, account, reason, added)
             Arena.IsKey(account) and account or '',
             Arena.IsKey(reason) and reason or '',
             added,
-        }, unpaidWrote)
+        }, function(answer) unpaidWrote(answer, 'add') end)
     end)
     if not ok then
         if not mirrorThrew then
@@ -932,7 +981,7 @@ local function sendDrop(citizenid, key)
             -- THE REFUSAL IS REPORTED HERE AND NOT BELOW, because this branch
             -- returns and nothing after the return would ever see a nil.
             if answer == nil then
-                unpaidWrote(nil)
+                unpaidWrote(nil, 'drop')
                 return
             end
 
@@ -960,7 +1009,7 @@ local function sendDrop(citizenid, key)
             -- It is also the safer order if unpaidWrote ever throws: the drop
             -- is already off the queue rather than stuck on it. DO NOT move
             -- this back above the dequeue.
-            unpaidWrote(answer)
+            unpaidWrote(answer, 'drop')
         end)
     end)
 
@@ -1231,7 +1280,7 @@ end
 --- @return boolean
 function ArenaBetting.UnpaidIsSaved()
     return unpaidSchemaConfirmed
-        and not unpaidWriteRefused
+        and not anyUnpaidRefusal()
         and ArenaDbReady(UNPAID_SUBJECT)
 end
 

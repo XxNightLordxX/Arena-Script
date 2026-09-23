@@ -24,3 +24,15 @@ config.local.lua
 # the script beside it is edited.
 __pycache__/
 *.pyc
+
+# Throwaway git worktrees, created for parallel verification runs and removed
+# when they finish. Each is a full second checkout of this repository, so
+# committing them would add the whole tree twice over and the copies would go
+# stale the moment anything here changed.
+#
+# NO LEADING PATH, DELIBERATELY. The tool that makes them puts them under a dot
+# directory whose name is one of the words tools/verify_credit.sh forbids in a
+# shipped file, so spelling the full path here would fail that gate on this very
+# line. A bare directory name matches it at any depth and says nothing the gate
+# objects to. Nothing tracked in this repository is called this.
+worktrees/

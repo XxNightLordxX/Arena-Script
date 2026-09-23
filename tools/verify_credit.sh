@@ -35,7 +35,14 @@ say() { printf '%s\n' "$*"; }
 scrub() { sed "s|$BRANCH||g"; }
 
 say "== 1. working tree =="
-hits=$(grep -rniE "$PAT" --exclude-dir=.git --exclude=verify_credit.sh . 2>/dev/null | scrub | grep -iE "$PAT")
+# THE SCAN READS FILENAMES TOO, which is why a throwaway checkout has to be
+# skipped rather than tolerated. Parallel verification runs drop a full second
+# copy of this repository in a directory whose PATH contains one of the words
+# above, so every file inside it matched on its path alone no matter what it
+# said -- and the copy is the same tree this scan has already read. Skipping a
+# directory by that name hides nothing real: nothing tracked here is called it,
+# and a scan of the genuine file still catches anything a copy would have.
+hits=$(grep -rniE "$PAT" --exclude-dir=.git --exclude-dir=worktrees --exclude=verify_credit.sh . 2>/dev/null | scrub | grep -iE "$PAT")
 if [ -n "$hits" ]; then say "FAIL - shipped files mention somebody else:"; say "$hits"; fail=1
 else say "PASS - no file credits anyone but the owner"; fi
 

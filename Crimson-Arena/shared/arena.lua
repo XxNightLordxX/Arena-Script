@@ -344,6 +344,15 @@ function Arena.GetEnabledModes()
                 teams = mode.teams == true,
                 icon = mode.icon,
                 roundTimeSeconds = Arena.RoundSecondsFor(key),
+                -- WHAT A DEATH COSTS, because the panel was telling players
+                -- the wrong thing. It said "every death costs you one" in the
+                -- loadout screen, which stopped being true the moment
+                -- demoteOnMeleeOnly shipped ON -- a death only takes a tier
+                -- now if the server did not see the killer on a firearm rung.
+                -- The panel cannot read Config.Modes, so a sentence about a
+                -- setting it was never sent is a sentence that goes stale on
+                -- the next change. It is sent.
+                demoteOnMeleeOnly = mode.demoteOnMeleeOnly ~= false,
                 tiers = (function()
                     if not Arena.PlaysLadder(key) then return nil end
                     return #Arena.LadderTiersFor(key)

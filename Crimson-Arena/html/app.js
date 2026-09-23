@@ -593,8 +593,12 @@
         if (modeIssuesLoadout(mode)) {
             var text = String(mode.label || 'This mode') + ' hands out its own weapons: a '
                 + ladderRungs(matchById(playerMatchId()), mode) + '-tier ladder, drawn fresh every round, so there is '
-                + 'nothing to pick here. Every kill climbs a tier and every death costs you '
-                + 'one, and everybody starts the round on the same rung.';
+                + 'nothing to pick here. Every kill climbs a tier, and everybody starts the '
+                + 'round on the same rung. '
+                + (mode.demoteOnMeleeOnly
+                    ? 'A death costs you a tier unless the fighter who killed you was holding '
+                        + 'a gun, so only a melee kill takes one off you.'
+                    : 'Every death costs you a tier, whatever killed you.');
 
             var kit = startingKitText(mode);
             if (kit !== '') text += ' Everyone is issued ' + kit + ' at the start of every round.';

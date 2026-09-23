@@ -3998,4 +3998,37 @@ t.test('and an unknown cause is printed raw rather than guessed at', function()
         'an unrecognised cause was not reported at all')
 end)
 
+t.test('THE PANEL IS TOLD what a death costs, so its wording cannot go stale', function()
+    -- IT ALREADY HAD. html/app.js told every player in the loadout screen
+    -- "every death costs you one", which stopped being true the moment
+    -- demoteOnMeleeOnly shipped ON. The panel cannot read Config.Modes, so a
+    -- sentence about a setting it was never sent is a sentence nothing can
+    -- keep honest -- and nothing did: no test in this suite looked at it.
+    --
+    -- SENT AS A BOOLEAN THAT TRACKS THE SETTING. If the field ever stops
+    -- being sent the panel reads undefined, which is falsy, and silently
+    -- prints the OLD wording again -- the exact failure this is here to
+    -- catch, and the reason this asserts the false case too.
+    local on = newServer()
+    on.play(4)
+    local function modeRow(s)
+        for _, mode in ipairs(s.arena.GetEnabledModes()) do
+            if mode.key == 'gungame' then return mode end
+        end
+        return nil
+    end
+
+    local shipped = modeRow(on)
+    t.isNotNil(shipped, 'the gun game mode is not in the panel list at all')
+    t.equals(shipped.demoteOnMeleeOnly, true,
+        'the shipped rule is ON but the panel was not told, so it prints the old wording')
+
+    local off = newServer(function(config)
+        config.Modes.gungame.demoteOnMeleeOnly = false
+    end)
+    off.play(4)
+    t.equals(modeRow(off).demoteOnMeleeOnly, false,
+        'the rule was switched OFF and the panel was still told it was on')
+end)
+
 os.exit(t.summary())

@@ -234,6 +234,11 @@ end
 --- builds an EMPTY map in here and answers nil to everything, and a test that
 --- needs a reported cause to RESOLVE to a weapon cannot get one. Checked
 --- against the published hashes below before anything leans on it.
+local function Arena_ToInt(v)
+    if type(v) ~= 'number' then return nil end
+    return math.tointeger(v) or math.floor(v)
+end
+
 local function joaat(text)
     local hash = 0
     local lower = tostring(text):lower()
@@ -4361,6 +4366,140 @@ t.test('and the exit takes the blade back with the rung', function()
     end
     t.equals(#left, 0,
         ('the exit left %d arena weapon(s) on them: %s'):format(#left, table.concat(left, ',')))
+end)
+
+--[[
+    POWERGAMING THE CAUSE OF DEATH.
+
+    The cause hash is not a server fact. EXPLOITS-YOUR-CALL.md decision 1 says
+    the dying client reports its own death, and nothing corroborates it -- so
+    causeHash arrives from the one player in the fight who most wants it to say
+    something else, and the melee-only demotion rule now READS it.
+
+    The rule's own comment claims a lying client "falls straight back to the
+    rung test above -- the server-only rule, which is the safe floor and cannot
+    be dodged". That claim had nothing behind it. These tests are that
+    something, and they are written to BREAK it rather than to agree with it.
+
+    THE ONE PROPERTY THAT MATTERS: the cause can only ever cost the reporter.
+    There must be no spelling of it that buys them a tier, saves them a tier
+    the server-side rung would have taken, or reaches the killer at all.
+]]
+
+t.test('EXPLOIT: a victim who lies "it was a gun" is demoted anyway when the rung is melee',
+function()
+    -- THE FLOOR. The rung the killer actually stands on is a server fact and
+    -- is tested first; the reported cause can only ever REVOKE the sparing,
+    -- never grant it. A client claiming a rifle while its killer is holding
+    -- the tier-1 bat must lose the tier all the same.
+    local s = newServer()
+    s.play(4)
+
+    -- the killer stays on tier 1, which the ladder draws melee-first
+    local killerRung = s.match_().ladder[s.row(3).tier]
+    t.isTrue(s.arena.IsMeleeWeapon(killerRung) == true,
+        'the killer is not on a melee rung, so this proves nothing')
+
+    for _ = 1, 3 do s.trade(4, 1) end
+    local before = s.row(1).tier
+
+    -- the biggest lie available: name a gun the ladder itself drew
+    local gun
+    for tier = 2, #s.match_().ladder do
+        local rung = s.match_().ladder[tier]
+        if s.arena.IsMeleeWeapon(rung) ~= true then gun = rung break end
+    end
+    t.isNotNil(gun, 'the ladder drew no gun at all, so this proves nothing')
+
+    s.match.OnDeath(1, 3, nil, nil, s.hashOf(gun.weapon))
+    s.revive(1)
+    t.equals(s.row(1).tier, before - 1,
+        'a client talked its way out of a melee demotion -- the floor is not a floor')
+end)
+
+t.test('EXPLOIT: and saying NOTHING at all does not dodge it either', function()
+    -- The cheapest attack there is: omit the field. nil must land on the same
+    -- floor as a lie.
+    local s = newServer()
+    s.play(4)
+    for _ = 1, 3 do s.trade(4, 1) end
+    local before = s.row(1).tier
+
+    s.match.OnDeath(1, 3, nil, nil, nil)
+    s.revive(1)
+    t.equals(s.row(1).tier, before - 1, 'omitting the cause dodged the melee demotion')
+end)
+
+t.test('EXPLOIT: no spelling of the cause can BUY a tier or spare one the rung would take',
+function()
+    -- Swept rather than argued. Every shape a modified client can put on the
+    -- wire, against a killer on a melee rung: the answer must be the same
+    -- single tier lost, every time, and never a gain.
+    local causes = {
+        nil, 0, -1, 1.5, 2725352035, -1569615261, 2725352035.0,
+        424242, 4294967296, -4294967296, math.maxinteger, math.mininteger,
+        'WEAPON_UNARMED', 'WEAPON_RIFLE', '2725352035', '', true, false, {}, {1,2},
+    }
+    -- `nil` in a table literal does not survive, so the count is taken from a
+    -- list that names it explicitly.
+    local shapes = { n = 20 }
+    for index = 1, shapes.n do
+        local s = newServer()
+        s.play(4)
+        local killerRung = s.match_().ladder[s.row(3).tier]
+        t.isTrue(s.arena.IsMeleeWeapon(killerRung) == true,
+            'the killer is not on a melee rung, so this proves nothing')
+
+        for _ = 1, 3 do s.trade(4, 1) end
+        local before = s.row(1).tier
+        local killerTierBefore = s.row(3).tier
+        local killerKillsBefore = s.row(3).kills or 0
+
+        local ok = pcall(function() s.match.OnDeath(1, 3, nil, nil, causes[index]) end)
+        t.isTrue(ok, ('cause shape #%d crashed OnDeath -- a client can kill the match'):format(index))
+        s.revive(1)
+
+        t.equals(s.row(1).tier, before - 1,
+            ('cause shape #%d changed the demotion the rung had already decided'):format(index))
+        t.isTrue(s.row(1).tier < before,
+            ('cause shape #%d bought the victim a tier'):format(index))
+
+        -- AND IT NEVER REACHES THE KILLER. The rule is about the victim's tier
+        -- and nothing else; a melee kill must not cost the fighter who made it.
+        t.equals(s.row(3).tier, killerTierBefore + 1,
+            ('cause shape #%d cost or gave the killer a tier'):format(index))
+        t.equals(s.row(3).kills or 0, killerKillsBefore + 1,
+            ('cause shape #%d changed the killer\'s kill count'):format(index))
+    end
+end)
+
+t.test('EXPLOIT: fists cannot push anybody below the bottom rung', function()
+    -- A fighter already on tier 1 who is punched to death must stay on tier 1.
+    -- An off-by-one here is a tier 0 lookup into the ladder and a nil rung.
+    local s = newServer()
+    s.play(4)
+    t.equals(s.row(1).tier, 1, 'the fixture did not start this fighter at the bottom')
+
+    for _ = 1, 3 do
+        s.match.OnDeath(1, 3, nil, nil, s.hashOf('WEAPON_UNARMED'))
+        s.revive(1)
+    end
+
+    t.equals(s.row(1).tier, 1, 'repeated fist kills pushed a fighter below the bottom rung')
+    t.isNotNil(s.match_().ladder[s.row(1).tier], 'the tier no longer names a rung')
+
+    -- AND NO DEBT WAS BANKED, which is the half the tier number cannot show.
+    -- tierScore floors at zero, so the tier reads 1 whether or not tiersLost
+    -- was charged -- and a charge made here is a debt the fighter has to climb
+    -- back out of before their first promotion counts. Measured: with the
+    -- `tierScore(player) > 0` guard removed, three punches bank three.
+    t.equals(Arena_ToInt(s.row(1).tiersLost) or 0, 0,
+        'a fighter with no tier to lose was charged one for being punched')
+
+    -- and the next kill they make still moves them, rather than paying off a
+    -- debt that should never have existed
+    s.trade(4, 1)
+    t.equals(s.row(1).tier, 2, 'the first real promotion after the punches did not land')
 end)
 
 os.exit(t.summary())

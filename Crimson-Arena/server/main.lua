@@ -492,9 +492,11 @@ onClient('crimson_arena:server:reportDeath', RATE.death, function(src, data)
     -- obtain any other way -- weaponDamageEvent does not carry it, melee
     -- frequently does not raise one, and there is no server native.
     --
-    -- SO IT IS RECORDED, NEVER OBEYED. ArenaMatch.OnDeath writes it to the
-    -- log and the roster row and nothing reads it to decide a tier, a life
-    -- or a score. The rule about `why` above is the same rule: a client may
+    -- SO IT IS REPORTED, NEVER OBEYED. ArenaMatch.OnDeath prints it on the
+    -- TEAMKILL line and uses it for ONE decision -- revoking a sparing the
+    -- killer's rung would otherwise have earned, which can only ever cost
+    -- the client that sent it a tier. It is written to no roster row and no
+    -- admin screen reads it. The rule about `why` above is the same rule: a client may
     -- tell this server what happened to IT, and may not tell this server
     -- what to do about it. An integer or nothing, like every other field
     -- that crosses this line.

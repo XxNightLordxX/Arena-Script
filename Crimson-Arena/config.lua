@@ -890,19 +890,19 @@ Config.Modes = {
         -- Config.Loadouts.supplies.items -- so an operator who renamed the
         -- bandage item once does not have to rename it again here.
         --
-        -- Bandages every time, armour a quarter of the time. The bandages
-        -- are the reason a good player can keep a run going without leaving
-        -- the fight, and the armour is the reason they still have to think
-        -- about it: 25 means one kill in four, on average, and not one in
-        -- four exactly -- it is a roll per kill.
-        --
         -- `chance` is a percentage. Leave it out and the supply is given on
         -- every kill; set it to 0 and it is never given at all. An entry
         -- naming a supply this server has switched off is skipped.
         --
-        -- THESE ARE ONLY PAID ON A KILL THAT COUNTED FOR THE LADDER, which
-        -- is what stops an accomplice being farmed for bandages after
-        -- `maxTiersPerVictim` below has stopped paying tiers.
+        -- THESE ARE ONLY PAID ON A KILL THAT COUNTED FOR THE LADDER. That is
+        -- a real gate, but note what it is NOT: `maxTiersPerVictim` ships 0,
+        -- which means NO CAP, so farming one accomplice goes on paying both
+        -- the tier and the supplies for as long as they keep dying. Set that
+        -- number above zero if you want the farm to stop paying.
+        --
+        -- The block below this one is the live description of what is paid;
+        -- an older copy of it stood here and still said the plate was a 25%
+        -- roll, which stopped being true when the roll was removed.
         -- HOW MANY ROUNDS A TIER WEAPON IS HANDED.
         --
         -- A LADDER RE-ARMS YOU, AND THAT IS THE POINT OF THE MODE. Without a

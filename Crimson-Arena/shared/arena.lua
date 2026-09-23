@@ -189,10 +189,16 @@ local weaponHashSource, weaponHashIndex = nil, nil
 ---
 --- BOTH SIGNS OF THE SAME HASH ARE INDEXED, and that is not belt-and-braces.
 --- GetHashKey hands back a SIGNED 32-bit integer in FiveM's Lua while
---- GetPedCauseOfDeath reports the UNSIGNED one -- WEAPON_PISTOL is
---- -1569615261 from one and 2725352035 from the other -- so a map built from
---- one answers nothing at all to the other. The caller has no way to know
---- which spelling it is holding, so both are keys.
+--- GetPedCauseOfDeath reports the UNSIGNED one, so a map built from one
+--- answers nothing at all to the other. The caller has no way to know which
+--- spelling it is holding, so both are keys.
+---
+--- WEAPON_BAT IS 2508868239 UNSIGNED AND -1786099057 SIGNED. The example
+--- here used to name WEAPON_PISTOL, which is the one weapon that cannot make
+--- the point: its hash is 0x1B06D571, the high bit is CLEAR, and the two
+--- spellings are the SAME number. Only hashes with the top bit set split at
+--- all -- so an example has to be one of those, or a maintainer who checks
+--- it finds it false and deletes the indexing below.
 ---
 --- NIL IS AN ORDINARY ANSWER, not a failure: a fall, a drowning, a vehicle,
 --- fire, and every weapon an operator has switched off or never listed all
@@ -3769,6 +3775,29 @@ function Arena.ValidateConfig()
                 if raw.demoteOnMeleeOnly ~= nil and type(raw.demoteOnMeleeOnly) ~= 'boolean' then
                     complain(('Config.Modes["%s"].demoteOnMeleeOnly is a %s, not true or false -- it is being read as ON, so a gun kill still spares the victim a tier. Write the bare word false to turn it off.')
                         :format(mode.key, type(raw.demoteOnMeleeOnly)))
+                end
+
+                -- A BLADE LIST THAT IS NOT A LIST, OR NAMES NOTHING REAL,
+                -- IS SILENT FROM BOTH ENDS WITHOUT THIS. server/match.lua
+                -- degrades any non-table to {} and only logs when the list
+                -- is NON-empty -- so a string, a number, or a misspelt key
+                -- means "no blade this round" with nothing said anywhere.
+                -- It was the only switch added beside demoteOnMeleeOnly with
+                -- no entry here.
+                if raw.permanentBlade ~= nil then
+                    if type(raw.permanentBlade) ~= 'table' then
+                        complain(('Config.Modes["%s"].permanentBlade is a %s, not a list of weapon keys -- it is being read as empty, so nobody is handed a blade beside their rung.')
+                            :format(mode.key, type(raw.permanentBlade)))
+                    else
+                        local usable = 0
+                        for _, key in ipairs(raw.permanentBlade) do
+                            if Arena.GetWeaponByKey(key) then usable = usable + 1 end
+                        end
+                        if #raw.permanentBlade > 0 and usable == 0 then
+                            complain(('Config.Modes["%s"].permanentBlade names %d key(s) and not one of them is an enabled weapon, so nobody is handed a blade beside their rung.')
+                                :format(mode.key, #raw.permanentBlade))
+                        end
+                    end
                 end
 
                 if raw.maxTiersPerVictim ~= nil then

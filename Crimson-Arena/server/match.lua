@@ -2330,6 +2330,24 @@ function ArenaMatch.Start(matchId)
 
     match.ladder = nil
 
+    -- AND THE BLADE THAT WAS CHOSEN AGAINST IT. bladeOf caches its answer on
+    -- the match, and the whole point of that answer is "a weapon THIS
+    -- ROUND'S ladder did not draw" -- so a blade kept across a redraw is
+    -- chosen against a ladder that no longer exists. Round two can then draw
+    -- the very weapon the cache is still handing out, and SwapWeapon sweeps
+    -- every drawn rung off a climber on each tier change: the blade is
+    -- deleted by the first promotion, silently, for that round only.
+    --
+    -- MEASURED over 200 seeds on the shipped config: 14 second rounds drew a
+    -- ladder containing the blade round one had chosen. It also latches the
+    -- other way -- a round with no usable blade left the whole lobby without
+    -- one for every round after it.
+    --
+    -- `false` IS A REAL ANSWER HERE, not absence: bladeOf writes it to mean
+    -- "asked and there is none", so nil is the only value that means "not
+    -- asked yet". DO NOT write `false`.
+    match.blade = nil
+
     -- Last round's leavers must not score for this one.
     match.departedKills = nil
 
@@ -2429,11 +2447,17 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- "nothing ever demotes". Every melee killer is promoted onto a sidearm
     -- before the question is asked.
     --
-    -- THE RAW RUNG, NOT THE ISSUED ENTRY. `Arena.ResolveWeaponEntry` does
-    -- not carry `category` through, so killer.loadout.weapons[1].category is
-    -- always nil and every kill would read as a gun kill. `ladderOf` holds
-    -- the config.weapons.lua tables themselves, which is what
-    -- Arena.IsMeleeWeapon is written against.
+    -- THE RAW RUNG, NOT THE ISSUED ENTRY, and the failure mode is the
+    -- opposite of the obvious one. An earlier version of this note said the
+    -- issued entry would make every kill read as a GUN kill. It is the other
+    -- way round, and it was measured: Arena.ResolveWeaponEntry drops
+    -- `category` AND rewrites `ammo` from a table to a number, so
+    -- Arena.IsMeleeWeapon's `type(ammo) == 'table'` guard fails, its maximum
+    -- falls to 0, and `maximum <= 1` answers TRUE. An issued PISTOL reads as
+    -- melee. Fed the issued entry this rule would spare NOTHING and look
+    -- permanently switched on. `ladderOf` holds the config.weapons.lua
+    -- tables themselves, which is what Arena.IsMeleeWeapon is written
+    -- against.
     --
     -- A DEATH WITH NO KILLER LEAVES THIS FALSE, and that is the whole shape
     -- of the rule below: nothing was positively seen, so nothing is spared.
@@ -2442,6 +2466,35 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     if playingLadder and killer ~= nil then
         local rung = ladder[Arena.ClampInt(killer.tier, 1, #ladder) or 1]
         killedWithAGun = rung ~= nil and Arena.IsMeleeWeapon(rung) ~= true
+
+        -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
+        --
+        -- THESE TWO FEATURES CANCELLED EACH OTHER OUT. `permanentBlade` hands
+        -- every climber a blade at EVERY rung, so a melee kill is available
+        -- all the way up the ladder -- and the test above asks only what the
+        -- killer's RUNG is. A fighter standing on rung 4 who knifes somebody
+        -- was read as "killed with a gun" and the victim was SPARED. MEASURED
+        -- exactly that way: killer on rung 4, blade in hand, victim's rung
+        -- unchanged. Melee demoted nobody above rung 1, which is the whole of
+        -- what the rule was for.
+        --
+        -- THE CLIENT'S REPORT MAY ONLY EVER MAKE THIS WORSE FOR THE CLIENT
+        -- THAT SENT IT, and that is what makes trusting it here safe when
+        -- trusting it anywhere else would not be. The dying player reports
+        -- what killed them; naming a blade REVOKES a sparing and costs them a
+        -- tier. A client that lies, or says nothing at all, falls straight
+        -- back to the rung test above -- the server-only rule, which is the
+        -- safe floor and cannot be dodged. So the worst a cheat achieves is
+        -- exactly what it had before this line existed, and an honest client
+        -- gets the rule the operator actually asked for.
+        --
+        -- A CAUSE THE CATALOGUE DOES NOT KNOW CHANGES NOTHING. Fists, a fall,
+        -- a car and every switched-off weapon resolve to nil, and nil must
+        -- not read as melee -- see Arena.WeaponByHash, which says so.
+        if killedWithAGun then
+            local used = Arena.WeaponByHash(causeHash)
+            if used ~= nil and Arena.IsMeleeWeapon(used) then killedWithAGun = false end
+        end
     end
 
     if killer then

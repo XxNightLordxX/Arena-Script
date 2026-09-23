@@ -219,6 +219,30 @@ local function sevenTiers(config)
     config.Modes.gungame.maxTiersPerVictim = 2
 end
 
+--- GTA's joaat, for real. The sandbox ships `joaat` as the IDENTITY (see
+--- fixtures/world.lua), which cannot produce a number -- so Arena.WeaponByHash
+--- builds an EMPTY map in here and answers nil to everything, and a test that
+--- needs a reported cause to RESOLVE to a weapon cannot get one. Checked
+--- against the published hashes below before anything leans on it.
+local function joaat(text)
+    local hash = 0
+    local lower = tostring(text):lower()
+    for index = 1, #lower do
+        hash = (hash + string.byte(lower, index)) & 0xFFFFFFFF
+        hash = (hash + (hash << 10)) & 0xFFFFFFFF
+        hash = hash ~ (hash >> 6)
+    end
+    hash = (hash + (hash << 3)) & 0xFFFFFFFF
+    hash = hash ~ (hash >> 11)
+    return (hash + (hash << 15)) & 0xFFFFFFFF
+end
+
+t.test('the fixture hashes the way the game does, before anything leans on it', function()
+    t.equals(joaat('WEAPON_PISTOL'), 0x1B06D571, 'joaat is wrong, so every cause below is wrong')
+    t.equals(joaat('WEAPON_KNIFE'), 0x99B507EA, 'joaat is wrong, so every cause below is wrong')
+    t.equals(joaat('WEAPON_UNARMED'), 0xA2719263, 'joaat is wrong, so every cause below is wrong')
+end)
+
 local function newServer(mutate, seed, opts)
     opts = opts or {}
     local players = {}
@@ -262,6 +286,9 @@ local function newServer(mutate, seed, opts)
         AddEventHandler = function() end,
         RegisterCommand = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- THE REAL HASHER, because Arena.WeaponByHash needs one that returns
+        -- a number and the sandbox's `joaat` is the identity.
+        GetHashKey = joaat,
         GetGameTimer = function() clock = clock + 60000; return clock end,
         GetPlayerName = function(src)
             local record = qbx.players[src]
@@ -342,6 +369,10 @@ local function newServer(mutate, seed, opts)
     local server = { env = env, config = env.Config, ox = ox, console = console,
         lobby = env.ArenaLobby, match = env.ArenaMatch, arena = env.Arena,
         ammo = env.ArenaAmmo }
+
+    --- The hash the game would report for this weapon, from the same hasher
+    --- the resource itself is given above.
+    function server.hashOf(weaponName) return joaat(weaponName) end
     local matchId
 
     function server.fire(event, src, data)
@@ -4029,6 +4060,139 @@ t.test('THE PANEL IS TOLD what a death costs, so its wording cannot go stale', f
     off.play(4)
     t.equals(modeRow(off).demoteOnMeleeOnly, false,
         'the rule was switched OFF and the panel was still told it was on')
+end)
+
+t.test('THE COLLISION: a blade kill takes a tier even from a gun rung', function()
+    -- TWO OF THIS SESSION'S OWN FEATURES CANCELLED EACH OTHER OUT.
+    -- permanentBlade hands every climber a blade at EVERY rung, so melee is
+    -- available all the way up -- and the sparing test asked only what the
+    -- killer's RUNG was. A fighter on rung 4 who knifed somebody read as
+    -- "killed with a gun" and the victim kept their tier. Melee demoted
+    -- nobody above rung 1, which is the entire point of the rule.
+    local s = newServer()
+    s.play(4)
+    local blade = s.match_().blade
+    t.isNotNil(blade, 'no blade this round, so this proves nothing')
+
+    for _ = 1, 3 do s.trade(2, 3) end            -- killer climbs onto a gun
+    local kt = s.row(3).tier
+    t.isTrue(s.arena.IsMeleeWeapon(s.match_().ladder[kt]) ~= true,
+        'the killer is still on a melee rung, so this proves nothing')
+    t.equals(s.ox.count(3, blade.weapon), 1, 'the killer is not carrying the blade')
+
+    for _ = 1, 3 do s.trade(4, 1) end            -- victim gets tiers to lose
+    local before = s.row(1).tier
+
+    -- THE CAUSE REPORTED IS THE BLADE. Everything else is identical to a
+    -- gun kill from the same fighter.
+    s.match.OnDeath(1, 3, nil, nil, s.hashOf(blade.weapon))
+    s.revive(1)
+    t.equals(s.row(1).tier, before - 1,
+        'a knife kill from a gun rung did not cost a tier -- the blade defeats the rule')
+end)
+
+t.test('and a GUN kill from that same fighter still spares, which is the control', function()
+    local s = newServer()
+    s.play(4)
+    for _ = 1, 3 do s.trade(2, 3) end
+    for _ = 1, 3 do s.trade(4, 1) end
+    local before = s.row(1).tier
+
+    local rung = s.match_().ladder[s.row(3).tier]
+    s.match.OnDeath(1, 3, nil, nil, s.hashOf(rung.weapon))
+    s.revive(1)
+    t.equals(s.row(1).tier, before, 'a gun kill took a tier -- only melee should')
+end)
+
+t.test('and a cause the catalogue does not know never revokes the sparing', function()
+    -- Fists, a fall, a car, a switched-off weapon. nil is an ordinary answer
+    -- from WeaponByHash and must not be read as melee.
+    local s = newServer()
+    s.play(4)
+    for _ = 1, 3 do s.trade(2, 3) end
+    for _ = 1, 3 do s.trade(4, 1) end
+    local before = s.row(1).tier
+
+    s.match.OnDeath(1, 3, nil, nil, 424242)
+    s.revive(1)
+    t.equals(s.row(1).tier, before,
+        'an unrecognised cause was read as melee and took a tier')
+end)
+
+t.test('THE BLADE IS RE-CHOSEN when the ladder is redrawn, not kept from last round', function()
+    -- bladeOf caches its answer on the match, and that answer means "a weapon
+    -- THIS ROUND'S ladder did not draw". Kept across a redraw it is chosen
+    -- against a ladder that no longer exists -- so round two can draw the very
+    -- weapon the cache is still handing out, and SwapWeapon sweeps every drawn
+    -- rung off a climber on each tier change: the blade is deleted by the
+    -- first promotion, silently, for that round only.
+    -- FORCED TO A COIN FLIP RATHER THAN LEFT TO THE SHIPPED ODDS. On the
+    -- shipped pools the clash is about one second round in fourteen, so a
+    -- twelve-attempt loop sees none most runs and the bug walks straight
+    -- through it -- measured: the first version of this test passed with the
+    -- fix REMOVED. With a two-weapon melee pool and both of them named as
+    -- blade candidates, round one takes one and blades the other, and round
+    -- two draws the cached blade half the time: 12 attempts miss it once in
+    -- 4096.
+    local clashes, latched = 0, 0
+    for attempt = 1, 12 do
+        local s = newServer(function(config)
+            config.Modes.gungame.gunGameClasses[1].weapons = { 'knife', 'switchblade' }
+            config.Modes.gungame.permanentBlade = { 'knife', 'switchblade' }
+        end, attempt * 613)
+        s.play(2)
+        local first = s.match_().blade
+
+        local id = s.matchId()
+        s.lobby.Get(id).state = 'lobby'
+        for _, src in ipairs({ 1, 2 }) do s.row(src).ready = true end
+        s.match.Start(id)
+        s.settle(1)
+
+        local second = s.match_().blade
+        if second ~= nil then
+            for _, rung in ipairs(s.match_().ladder) do
+                if rung.weapon == second.weapon then clashes = clashes + 1 break end
+            end
+        elseif first ~= nil then
+            latched = latched + 1
+        end
+    end
+
+    t.equals(clashes, 0,
+        ('%d of 12 second rounds handed out a blade that round two had DRAWN -- the first '
+            .. 'promotion deletes it'):format(clashes))
+    t.equals(latched, 0,
+        ('%d of 12 second rounds had no blade at all after round one had one -- the "none" '
+            .. 'verdict latched for the lobby'):format(latched))
+end)
+
+t.test('and a broken permanentBlade is COMPLAINED about, not swallowed', function()
+    -- IT WAS THE ONLY NEW SWITCH WITH NO VALIDATOR. server/match.lua
+    -- degrades any non-table to {} and only logs when the list is non-empty,
+    -- so a string, a number or a misspelt key meant "no blade this round"
+    -- with nothing said by the validator OR the console.
+    local function complaintsFor(value)
+        local s = newServer(function(config) config.Modes.gungame.permanentBlade = value end)
+        local said = {}
+        for _, line in ipairs(s.arena.ValidateConfig() or {}) do
+            if tostring(line):find('permanentBlade', 1, true) then said[#said + 1] = line end
+        end
+        return table.concat(said, '\n')
+    end
+
+    t.contains(complaintsFor('knife'), 'permanentBlade',
+        'a string where a list belongs was accepted in silence')
+    t.contains(complaintsFor(7), 'permanentBlade',
+        'a number where a list belongs was accepted in silence')
+    t.contains(complaintsFor({ 'nope', 'alsonope' }), 'permanentBlade',
+        'a list naming no real weapon was accepted in silence')
+
+    -- AND THE CONTROLS, or the complaint is just noise on every server.
+    t.equals(complaintsFor({ 'knife', 'switchblade' }), '',
+        'a perfectly good list was complained about')
+    t.equals(complaintsFor({}), '',
+        'an empty list is how you turn it OFF and must not complain')
 end)
 
 os.exit(t.summary())

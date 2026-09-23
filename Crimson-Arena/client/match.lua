@@ -1093,11 +1093,13 @@ local function handleDeath(ped, attacker)
     -- why melee between team-mates is refused by nothing), it is not on the
     -- roster, and there is no server native for it. It is here or nowhere.
     --
-    -- AND IT IS A CLIENT'S WORD, WHICH IS WHY NOTHING IS DECIDED ON IT
-    -- ALONE. server/main.lua sanitises it to an integer or nothing, and
-    -- server/match.lua RECORDS it -- the log, the admin screen -- rather
-    -- than letting it move a tier, a life or a score. A dying client has an
-    -- interest in every one of those and none in the log.
+    -- AND IT IS A CLIENT'S WORD, WHICH IS WHY IT MAY ONLY EVER MAKE THINGS
+    -- WORSE FOR THE CLIENT THAT SENT IT. server/main.lua sanitises it to an
+    -- integer or nothing; server/match.lua prints it on the TEAMKILL line
+    -- and uses it for ONE decision -- naming a blade REVOKES a sparing the
+    -- killer's rung would otherwise have earned, which costs the reporter a
+    -- tier. Lying, or saying nothing, falls back to the server-only rule. No
+    -- admin screen reads it and no roster row carries it.
     local cause = type(GetPedCauseOfDeath) == 'function' and GetPedCauseOfDeath(ped) or nil
 
     -- DO NOT put this back behind Config.Debug. THE REPORT this whole change

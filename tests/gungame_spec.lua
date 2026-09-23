@@ -4000,13 +4000,49 @@ t.test('and it survives Config.Debug being switched off', function()
         'Config.Debug = false did not silence the debug lines, so this proves nothing')
 end)
 
-t.test('CONTROL: an ENEMY kill says nothing, and friendly fire ON says nothing', function()
-    -- Two ways this line could be noise instead of a signal.
+t.test('CONTROL: only a real team-kill trips it, not every refused claim', function()
+    -- THESE TWO CONTROLS USED TO PROVE NOTHING, and mutation is what showed
+    -- it: all three guards in the block could be deleted with the whole file
+    -- green. The reason is that an ENEMY kill and a friendly-fire-ON kill
+    -- are ACCEPTED by resolveKiller, so they never reach the refused-claim
+    -- branch this line lives in -- whatever the guards say. They are kept
+    -- because they are still true, and joined below by claims that really
+    -- do reach it.
     local enemy = teamedServer()
     sidesFor(enemy)
     enemy.match.OnDeath(1, 2, nil, nil, 987654321)
     t.isNil(consoleOf(enemy):find('TEAMKILL:', 1, true),
         'an ordinary kill on the other side was reported as a team-kill')
+
+    -- NAMING YOURSELF REACHES THE BRANCH AND IS NOT A TEAM-KILL. rosterKiller
+    -- refuses a self-named killer, and this block used to re-derive the
+    -- accused without that guard -- printing "Fighter 1 was killed by their
+    -- own team-mate Fighter 1".
+    local self_ = teamedServer()
+    sidesFor(self_)
+    self_.match.OnDeath(1, 1, nil, nil, 987654321)
+    t.isNil(consoleOf(self_):find('TEAMKILL:', 1, true),
+        'a player who named themselves was reported as their own team-killer')
+
+    -- AN ELIMINATED TEAM-MATE REACHES IT TOO, and the refusal there is about
+    -- being out of the round, not about friendly fire.
+    local out = teamedServer()
+    sidesFor(out)
+    -- BOTH FIELDS: Arena.IsEliminated is `alive ~= true AND lives <= 0`, so
+    -- setting only the lives leaves them very much in the round.
+    out.match_().players[3].lives = 0
+    out.match_().players[3].alive = false
+    out.match.OnDeath(1, 3, nil, nil, 987654321)
+    t.isNil(consoleOf(out):find('TEAMKILL:', 1, true),
+        'a claim refused because the accused is OUT was blamed on friendly fire')
+
+    -- AND THE REAL ONE STILL FIRES, or the guards above have simply switched
+    -- the feature off.
+    local real = teamedServer()
+    sidesFor(real)
+    real.match.OnDeath(1, 3, nil, nil, 987654321)
+    t.contains(consoleOf(real), 'TEAMKILL:',
+        'a genuine team-mate kill stopped being reported')
 
     local allowed = newServer(function(config)
         config.Modes.gungame.teams = true

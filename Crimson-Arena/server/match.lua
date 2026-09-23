@@ -2544,10 +2544,34 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
         -- this catalogue does not carry -- a fall, a car, fire, a weapon the
         -- operator switched off -- is printed as the raw number rather than
         -- guessed at.
-        local accused = match.players[killerSrc]
+        -- EVERY OTHER REASON rosterKiller REFUSES IS EXCLUDED FIRST, or this
+        -- line blames friendly fire for refusals that had nothing to do with
+        -- it. rosterKiller turns a claim down for four reasons: the claim
+        -- names the victim themselves, it names nobody on the roster, it
+        -- names a team-mate with friendly fire off, or it names somebody who
+        -- is eliminated or has left the arena. Only the third is a team-kill.
+        --
+        -- THE SELF-NAMED CASE WAS REACHING IT AND PRINTING NONSENSE:
+        -- "Fighter 1 was killed by their own team-mate Fighter 1". Measured.
+        -- rosterKiller has a self-guard and this block re-derived the accused
+        -- without one, so a client naming itself produced an accusation
+        -- against the person it was about.
+        -- TWO OF THE FIVE TESTS BELOW CANNOT BE MADE TO FAIL, and that is
+        -- worth writing down rather than discovering again. Once the other
+        -- three have excluded self, nobody, and out-of-the-round, the ONLY
+        -- refusal rosterKiller has left is the team-mate one -- so
+        -- `accused.team == player.team` and `friendlyFire ~= true` are
+        -- already implied by having reached this line, and deleting either
+        -- leaves the whole suite green. They stay because they are correct,
+        -- they cost nothing, and they are what makes this block still right
+        -- if rosterKiller ever grows a fifth reason. takeWeaponBack carries
+        -- the same note about the same kind of guard. DO NOT read the
+        -- absence of a failing test as permission to delete them.
+        local accused = killerSrc ~= id and match.players[killerSrc] or nil
         if accused ~= nil and Arena.ModeUsesTeams(match.modeKey)
             and Arena.IsKey(accused.team) and accused.team == player.team
             and Config.Teams.friendlyFire ~= true
+            and accused.leftArena ~= true and not Arena.IsEliminated(accused)
         then
             local weapon = Arena.WeaponByHash(causeHash)
             ArenaLog('TEAMKILL: %s was killed by their own team-mate %s with %s in match %s. '

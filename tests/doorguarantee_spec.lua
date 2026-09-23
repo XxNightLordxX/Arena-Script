@@ -4386,6 +4386,49 @@ t.test('a jam made while the database refuses writes is SENT AGAIN once it stops
         ('the jam was re-sent on %d sweeps; a row the database has taken is not pending'):format(said))
 end)
 
+t.test('and THE DOOR replays it too, which is the only replay a server with no sweep has',
+function()
+    -- NOT A SECOND COPY OF THE TEST ABOVE. `returnRetrySeconds = 0` switches
+    -- the sweep thread off entirely -- config says that number turns the stash
+    -- retry off, and an operator setting it means exactly that -- so on such a
+    -- server SweepReturns is never called by anything and the replay it holds
+    -- is unreachable. ArenaAmmo.Issue carries its own call for that case, with
+    -- a comment saying so, and NOTHING REACHED IT: deleting the line left all
+    -- 129 spec files green, measured.
+    --
+    -- The door is the right place for it because a fighter queueing for another
+    -- round is standing there by definition, so the jam is re-sent the next
+    -- time anybody is issued a loadout.
+    local server, matchId = liveMatch({ 1, 2 }, nil, function(config)
+        config.Database.enabled = true
+        config.Loadouts.inventory.returnRetrySeconds = 0      -- no sweep exists
+    end, { database = true, jamRows = {}, failWrites = true })
+
+    server.startResource()
+    server.step(2)
+
+    server.stashItem('crimson_arena_CID1', 'phone', 1)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    -- THE OUTAGE REALLY HAPPENED, or the replay below re-sends nothing and this
+    -- passes for the wrong reason -- the trap the sweep test names above.
+    t.contains(server.log(), 'touching that stash no further', 'the fixture did not jam anything')
+    t.equals(server.jamRowsOnDisk(), '(none)',
+        'a refused write reached the table, so the outage is not being modelled')
+
+    server.healWrites()
+
+    -- AND THE SWEEP IS NEVER CALLED. The only thing that runs is the door.
+    server.ammo.Issue(1, matchId, { weapons = {}, armor = 0, health = 200 })
+    server.step(4)
+
+    t.equals(server.jamRowsOnDisk(), 'crimson_arena_CID1',
+        'the door did not re-send the jam, so a server with no sweep forgets it for ever')
+    t.contains(server.log(), 'has been re-sent',
+        'the row landed but nothing told the operator it no longer needs settling by hand')
+end)
+
 t.test('and a SETTLEMENT lost the same way is sent again too', function()
     -- THE HALF THAT BITES HARDER. A lost INSERT forgets a hold; a lost DELETE
     -- keeps one FOR EVER -- the operator settles the stash, restarts, and the

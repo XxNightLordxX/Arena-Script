@@ -431,7 +431,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 106 functions
+#### `shared/arena.lua` — 107 functions
 
 | Function | What it does |
 |---|---|
@@ -444,6 +444,7 @@ listed; the source documents them where they are.
 | `Arena.Count(tbl)` | How many entries a table holds, including string keys. |
 | `Arena.GetEnabledWeapons()` | Every weapon an operator has left switched on, in config order. |
 | `Arena.WeaponByHash(hash)` | The catalogue weapon a death's cause-of-death hash names, or nil. The dying client reads `GetPedCauseOfDeath` and reports the hash; there is no server native for it and `weaponDamageEvent` does not carry it, so this is the only way the server can name what killed somebody. Indexes BOTH signs of every hash -- `GetHashKey` answers signed and `GetPedCauseOfDeath` unsigned, so a map built from one answers nothing to the other. nil is an ordinary answer: a fall, a vehicle, fire and every switched-off weapon all land there. |
+| `Arena.IsUnarmedHash(hash)` | Whether a cause-of-death hash is WEAPON_UNARMED -- fists. They can never be in the weapon catalogue, so `Arena.WeaponByHash` answers nil for them exactly as it does for a fall, and gun game's melee-only demotion rule read that nil as "not melee" and handed a punched fighter their tier back. A punch is melee and reports a hash of its own, so it is asked for by name. Checks BOTH signs of `0xA2719263`, whose top bit is set. The constant is written out rather than hashed because `GetHashKey` is absent in some realms this file loads in; `arena_spec` pins it against a real joaat. |
 | `Arena.GetWeaponByKey(key)` | The one weapon with this key, or nil. |
 | `Arena.GetEnabledTeams()` | Enabled teams, sorted by their `order` then key so every client renders the picker in the same sequence. |
 | `Arena.GetTeamByKey(key)` | One enabled team by key, or nil. |

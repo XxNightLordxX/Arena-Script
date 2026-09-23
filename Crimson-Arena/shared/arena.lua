@@ -248,6 +248,34 @@ function Arena.WeaponByHash(hash)
     return weaponHashIndex[wanted]
 end
 
+--- FISTS ARE MELEE AND THE CATALOGUE WILL NEVER HOLD THEM. WEAPON_UNARMED is
+--- not a weapon an operator can put in a loadout, so it is deliberately absent
+--- from config.weapons.lua and Arena.WeaponByHash answers nil for it -- the
+--- same nil it answers for a fall, a drowning and a car. Those are not melee
+--- and must never demote anybody; a punch is melee and must.
+---
+--- SO THE TWO CASES HAVE TO BE TOLD APART, and they can be: a fall reports
+--- WEAPON_FALL, a punch reports WEAPON_UNARMED, and the hashes differ. Reading
+--- nil as melee would have swept the falls in with the punches, which is why
+--- WeaponByHash's own note forbids it. This asks the narrower question instead.
+---
+--- THE CONSTANT IS WRITTEN OUT RATHER THAN HASHED. GetHashKey is not present
+--- in every realm this file loads in -- the specs have no natives at all -- and
+--- a fists rule that quietly stopped applying wherever the hasher was missing
+--- would be worse than no rule. arena_spec pins both spellings against a real
+--- joaat, so a wrong number here fails the suite rather than shipping.
+---
+--- BOTH SIGNS, for the reason WeaponByHash gives at length: GetHashKey hands
+--- back the signed 32-bit integer and GetPedCauseOfDeath reports the unsigned
+--- one. 0xA2719263 has its top bit SET, so the two spellings genuinely differ.
+--- @param hash any
+--- @return boolean
+function Arena.IsUnarmedHash(hash)
+    local wanted = Arena.ToInt(hash)
+    if wanted == nil then return false end
+    return wanted == 2725352035 or wanted == -1569615261
+end
+
 --- The one weapon with this key, or nil. Returns nil for a disabled weapon
 --- as well as an unknown one -- callers must not be able to tell the
 --- difference, or `enabled = false` would only be a UI hint.

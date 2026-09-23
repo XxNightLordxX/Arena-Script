@@ -96,8 +96,40 @@ if command -v lua5.4 >/dev/null 2>&1 && [ -d tests ]; then
         if (cd tests && timeout 120 lua5.4 "$(basename "$s")" >/dev/null 2>&1); then p=$((p+1))
         else f=$((f+1)); bad_specs="$bad_specs $(basename "$s")"; fi
     done
-    [ "$f" -eq 0 ] && ok "$p specs pass" || bad "$f of $((p+f)) specs fail:$bad_specs"
+    [ "$f" -eq 0 ] && ok "$p Lua specs pass" || bad "$f of $((p+f)) Lua specs fail:$bad_specs"
 else skip "spec suite not present (stripped for production -- this is normal)"; fi
+
+# THE PANEL SUITES ARE HALF THE TESTS AND THIS GATE USED TO SKIP THEM ALL.
+# The glob above is tests/*_spec.lua, which is 104 files; the other 25 are
+# tests/panel/*.test.js, run by node, and they are the ONLY tests that execute
+# html/app.js for real. Nothing here looked at them, so a panel suite could be
+# failing -- or deliberately broken, which is how this was found -- and this
+# script still printed READY. A release gate that greenlights a red tree is
+# worse than no gate, because it is believed.
+#
+# JUDGED THE SAME WAY tests/run.sh JUDGES THEM: exit code alone trusts the
+# suite to have remembered to set one, and run.sh's own comment records two
+# files that had drifted off that line. So the tally has to be printed AND
+# have to read zero failed.
+#
+# NODE ABSENT IS A SKIP, NOT A PASS, for the same reason the Lua branch skips
+# on a stripped tree -- but it must never read as though the suites ran.
+if [ -d tests/panel ] && command -v node >/dev/null 2>&1; then
+    pp=0; pf=0; bad_panel=""
+    for s in tests/panel/*.test.js; do
+        [ -e "$s" ] || continue
+        out=$(cd tests && timeout 120 node "panel/$(basename "$s")" 2>&1)
+        if [ $? -eq 0 ] && printf '%s' "$out" | grep -qE '^[0-9]+ passed, 0 failed$'; then
+            pp=$((pp+1))
+        else
+            pf=$((pf+1)); bad_panel="$bad_panel $(basename "$s")"
+        fi
+    done
+    if [ "$((pp+pf))" -eq 0 ]; then skip "tests/panel holds no .test.js files"
+    elif [ "$pf" -eq 0 ]; then ok "$pp panel suites pass"
+    else bad "$pf of $((pp+pf)) panel suites fail:$bad_panel"; fi
+elif [ -d tests/panel ]; then skip "node not installed -- the $(ls tests/panel/*.test.js 2>/dev/null | wc -l | tr -d ' ') panel suites did NOT run"
+else skip "tests/panel not present (stripped for production -- this is normal)"; fi
 
 head_ "7. every internal contract holds"
 if [ -f tools/verify_contracts.py ]; then

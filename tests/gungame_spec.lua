@@ -3978,6 +3978,29 @@ t.test('A TEAM-MATE KILL IS SAID OUT LOUD, with what did it', function()
     t.equals(match.players[3].kills or 0, 0, 'the team-mate kill was CREDITED, which it must not be')
 end)
 
+t.test('and a FIST teamkill is named as fists, not as a bare hash', function()
+    -- WeaponByHash answers nil for WEAPON_UNARMED -- it is not in the catalogue
+    -- and cannot be -- so this line reported the most ordinary melee teamkill
+    -- there is as 'cause hash 2725352035'. An operator reading the log should
+    -- not have to hash a string to find out somebody was punched.
+    local s = teamedServer()
+    sidesFor(s)
+
+    local match = s.match_()
+    t.equals(match.players[1].team, match.players[3].team, '1 and 3 are not on one side')
+
+    local fists = s.hashOf('WEAPON_UNARMED')
+    t.isNil(s.arena.WeaponByHash(fists),
+        'WEAPON_UNARMED is in the catalogue now -- this test is about the case where it is not')
+
+    s.match.OnDeath(1, 3, nil, nil, fists)
+
+    t.contains(consoleOf(s), 'TEAMKILL:', 'a team-mate kill was never reported at all')
+    t.contains(consoleOf(s), 'with fists', 'the punch was not named as fists')
+    t.isNil(consoleOf(s):find('cause hash', 1, true),
+        'the log fell back to the raw hash for a cause it can name')
+end)
+
 t.test('and it names the WEAPON when the catalogue knows the hash', function()
     -- BOTH SIGNS OF THE SAME HASH, because GetHashKey answers signed and
     -- GetPedCauseOfDeath reports unsigned, and a map built from one answers
@@ -4161,8 +4184,14 @@ t.test('and a GUN kill from that same fighter still spares, which is the control
 end)
 
 t.test('and a cause the catalogue does not know never revokes the sparing', function()
-    -- Fists, a fall, a car, a switched-off weapon. nil is an ordinary answer
-    -- from WeaponByHash and must not be read as melee.
+    -- A fall, a drowning, a car, a switched-off weapon. nil is an ordinary
+    -- answer from WeaponByHash and must not be read as melee.
+    --
+    -- THIS ONCE SAID "FISTS" AND THE NUMBER BELOW IS NOT A FIST. 424242 is
+    -- arbitrary garbage, so this test pins the garbage case and never once
+    -- exercised WEAPON_UNARMED -- which really did resolve to nil here, and
+    -- really did hand a punched fighter their tier back. Fists have their own
+    -- test now, two below, and they demote.
     local s = newServer()
     s.play(4)
     for _ = 1, 3 do s.trade(2, 3) end
@@ -4173,6 +4202,53 @@ t.test('and a cause the catalogue does not know never revokes the sparing', func
     s.revive(1)
     t.equals(s.row(1).tier, before,
         'an unrecognised cause was read as melee and took a tier')
+end)
+
+t.test('but FISTS revoke it, because a punch is melee and reports its own hash', function()
+    -- THE ONE NIL THAT IS STILL MELEE. WEAPON_UNARMED is not in the catalogue
+    -- and cannot be -- nobody picks fists in a loadout -- so WeaponByHash
+    -- answers nil for it exactly as it does for a fall. Measured before the
+    -- fix: a fighter on tier 4 beaten to death by a team-mate on a gun rung
+    -- came back still on tier 4, while the same kill with the blade cost one.
+    local s = newServer()
+    s.play(4)
+    for _ = 1, 3 do s.trade(2, 3) end
+    for _ = 1, 3 do s.trade(4, 1) end
+    local before = s.row(1).tier
+
+    local fists = s.hashOf('WEAPON_UNARMED')
+    t.isNil(s.arena.WeaponByHash(fists),
+        'WEAPON_UNARMED is in the catalogue now -- this test is about the case where it is not')
+
+    s.match.OnDeath(1, 3, nil, nil, fists)
+    s.revive(1)
+    t.equals(s.row(1).tier, before - 1,
+        'a fist kill did not cost a tier -- fists are melee')
+end)
+
+t.test('and the UNSIGNED spelling of the fists hash works too, which is what the engine sends',
+function()
+    -- GetPedCauseOfDeath reports unsigned; GetHashKey hands back signed.
+    -- 0xA2719263 has its top bit set, so the two spellings are different
+    -- numbers and a rule that knows only one of them is a rule that fires on
+    -- half the servers.
+    local unsigned = joaat('WEAPON_UNARMED')          -- the fixture masks to 32 bits
+    local signed = unsigned - 4294967296              -- the spelling GetHashKey hands back
+    t.isTrue(signed ~= unsigned, 'WEAPON_UNARMED does not split by sign -- pick another example')
+    t.equals(unsigned, 2725352035, 'the constant in Arena.IsUnarmedHash is the unsigned one')
+    t.equals(signed, -1569615261, 'the constant in Arena.IsUnarmedHash is the signed one')
+
+    for _, spelling in ipairs({ signed, unsigned }) do
+        local s = newServer()
+        s.play(4)
+        for _ = 1, 3 do s.trade(2, 3) end
+        for _ = 1, 3 do s.trade(4, 1) end
+        local before = s.row(1).tier
+        s.match.OnDeath(1, 3, nil, nil, spelling)
+        s.revive(1)
+        t.equals(s.row(1).tier, before - 1,
+            ('fists spelled %d did not cost a tier'):format(spelling))
+    end
 end)
 
 t.test('THE BLADE IS RE-CHOSEN when the ladder is redrawn, not kept from last round', function()

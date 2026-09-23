@@ -2488,12 +2488,21 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
         -- exactly what it had before this line existed, and an honest client
         -- gets the rule the operator actually asked for.
         --
-        -- A CAUSE THE CATALOGUE DOES NOT KNOW CHANGES NOTHING. Fists, a fall,
-        -- a car and every switched-off weapon resolve to nil, and nil must
-        -- not read as melee -- see Arena.WeaponByHash, which says so.
+        -- A CAUSE THE CATALOGUE DOES NOT KNOW CHANGES NOTHING. A fall, a
+        -- drowning, a car and every switched-off weapon resolve to nil, and nil
+        -- must not read as melee -- see Arena.WeaponByHash, which says so.
+        -- Dying to the map is not dying to a blade.
+        --
+        -- FISTS ARE THE ONE NIL THAT IS STILL MELEE. WEAPON_UNARMED can never
+        -- be in the catalogue -- it is not a weapon anybody picks -- so it
+        -- resolved to nil beside the falls, and that let a fighter beaten to
+        -- death keep the tier the same kill with a knife would have cost. A
+        -- punch is melee by any reading of the rule, and unlike a fall it
+        -- reports a hash of its own, so it is asked for by name.
         if killedWithAGun then
             local used = Arena.WeaponByHash(causeHash)
             if used ~= nil and Arena.IsMeleeWeapon(used) then killedWithAGun = false end
+            if Arena.IsUnarmedHash(causeHash) then killedWithAGun = false end
         end
     end
 
@@ -2573,13 +2582,22 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
             and Config.Teams.friendlyFire ~= true
             and accused.leftArena ~= true and not Arena.IsEliminated(accused)
         then
+            -- FISTS BY NAME RATHER THAN BY NUMBER. They are not in the
+            -- catalogue and never will be, so WeaponByHash answers nil and the
+            -- line below would otherwise report the most common melee teamkill
+            -- on the server as a bare 'cause hash 2725352035'. An operator
+            -- reading a teamkill log should not have to hash a string to find
+            -- out somebody was punched.
             local weapon = Arena.WeaponByHash(causeHash)
+            local usedLabel = weapon and weapon.label
+                or (Arena.IsUnarmedHash(causeHash) and 'fists')
+                or ('cause hash ' .. tostring(causeHash))
             ArenaLog('TEAMKILL: %s was killed by their own team-mate %s with %s in match %s. '
                 .. 'Friendly fire is off, so the kill was credited to nobody -- but the damage '
                 .. 'landed, which for melee is a hole this server cannot close: the engine does '
                 .. 'not raise weaponDamageEvent for it, so there is nothing to cancel.',
                 tostring(player.name or id), tostring(accused.name or killerSrc),
-                weapon and weapon.label or ('cause hash ' .. tostring(causeHash)),
+                usedLabel,
                 tostring(match.id))
         end
     end

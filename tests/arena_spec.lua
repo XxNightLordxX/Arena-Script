@@ -1760,4 +1760,48 @@ t.test('and the match plays to the host\'s number, falling back to the server\'s
     t.equals(arena.ScoreLimitFor(nil), 25, 'and so should nothing at all')
 end)
 
+--- The real joaat, so the constants below are checked against the hash the
+--- game actually computes rather than against themselves.
+local function joaat(text)
+    local hash = 0
+    local lower = tostring(text):lower()
+    for index = 1, #lower do
+        hash = (hash + string.byte(lower, index)) & 0xFFFFFFFF
+        hash = (hash + (hash << 10)) & 0xFFFFFFFF
+        hash = hash ~ (hash >> 6)
+    end
+    hash = (hash + (hash << 3)) & 0xFFFFFFFF
+    hash = hash ~ (hash >> 11)
+    return (hash + (hash << 15)) & 0xFFFFFFFF
+end
+
+t.test('Arena.IsUnarmedHash knows the real WEAPON_UNARMED hash, in both spellings', function()
+    -- THE CONSTANT IS WRITTEN OUT IN arena.lua RATHER THAN HASHED, because
+    -- GetHashKey is not present in every realm the file loads in and a fists
+    -- rule that silently stopped applying where the hasher was missing would
+    -- be worse than no rule at all. A written-out constant needs something to
+    -- check it, or a typo ships and nothing notices -- this is that check.
+    local unsigned = joaat('WEAPON_UNARMED')
+    t.equals(unsigned, 0xA2719263, 'the fixture hashes wrongly, so the rest of this proves nothing')
+
+    local signed = unsigned - 4294967296
+    t.isTrue(signed ~= unsigned,
+        'WEAPON_UNARMED does not split by sign -- it would be useless as this example')
+
+    t.isTrue(Arena.IsUnarmedHash(unsigned), 'the unsigned spelling was not recognised')
+    t.isTrue(Arena.IsUnarmedHash(signed), 'the signed spelling was not recognised')
+end)
+
+t.test('and it says no to everything else, including the things that are not weapons', function()
+    -- nil, a fall and a car must all come back false. Reading any of them as
+    -- fists would demote somebody who drowned.
+    t.isFalse(Arena.IsUnarmedHash(nil), 'nil was read as fists')
+    t.isFalse(Arena.IsUnarmedHash(0), 'zero was read as fists')
+    t.isFalse(Arena.IsUnarmedHash(424242), 'an arbitrary hash was read as fists')
+    t.isFalse(Arena.IsUnarmedHash('WEAPON_UNARMED'), 'the NAME is not the hash')
+    t.isFalse(Arena.IsUnarmedHash(joaat('WEAPON_FALL')), 'a fall was read as fists')
+    t.isFalse(Arena.IsUnarmedHash(joaat('WEAPON_KNIFE')), 'a knife was read as fists')
+    t.isFalse(Arena.IsUnarmedHash({}), 'a table was read as fists')
+end)
+
 os.exit(t.summary())

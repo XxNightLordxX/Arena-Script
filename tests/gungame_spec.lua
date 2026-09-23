@@ -4502,4 +4502,134 @@ t.test('EXPLOIT: fists cannot push anybody below the bottom rung', function()
     t.equals(s.row(1).tier, 2, 'the first real promotion after the punches did not land')
 end)
 
+--[[
+    THE TWO TEAMKILL GUARDS THAT WERE WRITTEN DOWN AS UNFAILABLE.
+
+    The comment above that block says `accused.team == player.team` and
+    `friendlyFire ~= true` "CANNOT BE MADE TO FAIL", on the reasoning that
+    rosterKiller refuses a claim for exactly four reasons and the other three
+    are already excluded by the time the line is reached.
+
+    THE ENUMERATION IS OF THE WRONG FUNCTION. OnDeath's killer comes from
+    resolveKiller, not rosterKiller, and resolveKiller refuses on TWO MORE
+    grounds of its own after rosterKiller has accepted: the kill-distance
+    ceiling and the out-of-fence check. Either of those can refuse a claim that
+    names a LIVE, PRESENT fighter -- so the accused can be an enemy, or a
+    team-mate on a server where friendly fire is ON, and both guards are the
+    only thing standing between that and a false accusation in the console.
+
+    Both tests below fail if their guard is deleted. The comment now says so.
+]]
+
+--- A team game that also reports positions, which teamedServer cannot do.
+local function teamedPlaces(mutate)
+    local places = {}
+    local s = newServer(function(config)
+        config.Modes.gungame.teams = true
+        config.Teams.friendlyFire = false
+        config.Match.maxKillDistance = 100.0
+        if mutate then mutate(config) end
+    end, nil, { positions = places })
+    s.play(4, nil, function()
+        for src = 1, 4 do
+            s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+    end)
+    return s, places
+end
+
+t.test('a kill refused for DISTANCE is not reported as a team-kill when friendly fire is ON',
+function()
+    -- friendlyFire ON, so a team-mate kill is not a team-kill at all. The claim
+    -- is still refused -- by the distance ceiling, which rosterKiller knows
+    -- nothing about -- and the block must stay silent. Delete
+    -- `Config.Teams.friendlyFire ~= true` and it accuses a team-mate on a
+    -- server whose operator switched friendly fire on deliberately.
+    local s, places = teamedPlaces(function(config) config.Teams.friendlyFire = true end)
+    local m = s.match_()
+    t.equals(m.players[1].team, m.players[3].team, '1 and 3 are not team-mates')
+    t.isTrue(s.config.Teams.friendlyFire == true, 'the fixture did not turn friendly fire on')
+
+    places[1] = { x = 0.0,    y = 0.0,    z = 30.0 }
+    places[3] = { x = 9000.0, y = 9000.0, z = 30.0 }
+
+    local before = m.players[3].kills or 0
+    s.match.OnDeath(1, 3, nil, nil, nil)
+
+    t.equals(m.players[3].kills or 0, before,
+        'the distance ceiling did not refuse the claim, so this proves nothing')
+    t.isNil(consoleOf(s):find('TEAMKILL', 1, true),
+        'a refusal that was NOT about friendly fire was reported as a team-kill')
+end)
+
+t.test('and a kill refused for DISTANCE that names an ENEMY is not reported as one either',
+function()
+    -- friendlyFire OFF this time, and the accused is on the OTHER side. Again
+    -- the refusal is the distance ceiling. Delete `accused.team == player.team`
+    -- and the console accuses an enemy of being the victim's own team-mate.
+    local s, places = teamedPlaces()
+    local m = s.match_()
+    t.isTrue(m.players[1].team ~= m.players[2].team, '1 and 2 are not on opposite sides')
+
+    places[1] = { x = 0.0,    y = 0.0,    z = 30.0 }
+    places[2] = { x = 9000.0, y = 9000.0, z = 30.0 }
+
+    local before = m.players[2].kills or 0
+    s.match.OnDeath(1, 2, nil, nil, nil)
+
+    t.equals(m.players[2].kills or 0, before,
+        'the distance ceiling did not refuse the claim, so this proves nothing')
+    t.isNil(consoleOf(s):find('TEAMKILL', 1, true),
+        'an ENEMY was accused of killing their own team-mate')
+end)
+
+t.test('the TEAMKILL line names the victim first and the killer second, not the other way round',
+function()
+    -- BOTH NAMES APPEARING IS NOT THE SAME AS BOTH NAMES BEING RIGHT. Every
+    -- assertion on this line checked only that each name was somewhere in the
+    -- string, so swapping the two arguments left the suite green while the
+    -- console blamed the victim for their own death.
+    local s = teamedServer()
+    sidesFor(s)
+    local m = s.match_()
+    t.equals(m.players[1].team, m.players[3].team, '1 and 3 are not team-mates')
+
+    s.match.OnDeath(1, 3, nil, nil, s.hashOf('WEAPON_UNARMED'))
+
+    local line = consoleOf(s):match('TEAMKILL[^\n]*')
+    t.isNotNil(line, 'no TEAMKILL line at all')
+
+    local victim = tostring(m.players[1].name)
+    local killer = tostring(m.players[3].name)
+    t.isTrue(victim ~= killer, 'both fighters have the same name, so order cannot be tested')
+
+    local atVictim = line:find(victim, 1, true)
+    local atKiller = line:find(killer, 1, true)
+    t.isNotNil(atVictim, 'the victim is not named')
+    t.isNotNil(atKiller, 'the killer is not named')
+    t.isTrue(atVictim < atKiller,
+        ('the line blames the wrong person -- it reads: %s'):format(line))
+end)
+
+t.test('demoteOnMeleeOnly DEFAULT: absent from config, the rule is still ON', function()
+    -- THE OWNER ASKED FOR IT ON BY DEFAULT. config.lua ships `true`, so every
+    -- other test in this file measures the shipped VALUE rather than the
+    -- DEFAULT -- and the default is what an operator who deletes the line gets.
+    -- It is read `~= false`, so nil means on; nothing pinned that.
+    local s = newServer(function(config) config.Modes.gungame.demoteOnMeleeOnly = nil end)
+    s.play(4)
+    t.isNil(s.config.Modes.gungame.demoteOnMeleeOnly, 'the fixture did not remove the line')
+
+    for _ = 1, 3 do s.trade(2, 3) end            -- killer up onto a gun rung
+    local rung = s.match_().ladder[s.row(3).tier]
+    t.isTrue(s.arena.IsMeleeWeapon(rung) ~= true, 'the killer is not on a gun rung')
+
+    for _ = 1, 3 do s.trade(4, 1) end            -- victim gets tiers to lose
+    local before = s.row(1).tier
+    s.match.OnDeath(1, 3, nil, nil, s.hashOf(rung.weapon))
+    s.revive(1)
+    t.equals(s.row(1).tier, before,
+        'with the line absent a GUN kill cost a tier -- the rule did not default ON')
+end)
+
 os.exit(t.summary())

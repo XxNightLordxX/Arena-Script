@@ -524,10 +524,23 @@ local function payKillReward(match, killer)
             local supply = Arena.SupplyByKey(entry.key)
 
             -- CLAMPED TO THE SUPPLY'S OWN `max`, exactly as a player's
-            -- request is by Arena.ResolveSupplies. Without it the picker and
-            -- the kill reward disagreed about how many of a supply a player
-            -- may hold: a reward of 99999 bandages against a configured
-            -- ceiling of 30 handed over 99999.
+            -- request is by Arena.ResolveSupplies: a reward of 99999 bandages
+            -- against a configured ceiling of 30 handed over 99999, and now
+            -- hands over 30.
+            --
+            -- PER PAYMENT, NOT PER HOLDING, AND THE DIFFERENCE IS NOT
+            -- COSMETIC. This note used to say the clamp settled "how many of a
+            -- supply a player may hold". It does not, and cannot: `paid` is
+            -- local to one call, so nothing here reads what the fighter is
+            -- already carrying. MEASURED on the shipped reward against a
+            -- bandage ceiling of 30: 5 -> 15 -> 25 -> 35 -> 45 -> 55 over five
+            -- kills.
+            --
+            -- THAT IS THE INTENDED ANSWER, not an oversight to tighten. The
+            -- mode promises ten bandages for every kill; clamping to the
+            -- holding would pay a fighter already on 30 nothing for their next
+            -- one and quietly break the promise config.lua makes. What this
+            -- line is for is a single absurd reward value, and it stops one.
             local room = supply
                 and math.max(0, Arena.SupplyMax(supply) - (paid[supply.key] or 0))
                 or 0
@@ -2565,17 +2578,31 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
         -- rosterKiller has a self-guard and this block re-derived the accused
         -- without one, so a client naming itself produced an accusation
         -- against the person it was about.
-        -- TWO OF THE FIVE TESTS BELOW CANNOT BE MADE TO FAIL, and that is
-        -- worth writing down rather than discovering again. Once the other
-        -- three have excluded self, nobody, and out-of-the-round, the ONLY
-        -- refusal rosterKiller has left is the team-mate one -- so
-        -- `accused.team == player.team` and `friendlyFire ~= true` are
-        -- already implied by having reached this line, and deleting either
-        -- leaves the whole suite green. They stay because they are correct,
-        -- they cost nothing, and they are what makes this block still right
-        -- if rosterKiller ever grows a fifth reason. takeWeaponBack carries
-        -- the same note about the same kind of guard. DO NOT read the
-        -- absence of a failing test as permission to delete them.
+        -- THIS NOTE USED TO SAY TWO OF THE GUARDS BELOW COULD NOT BE MADE TO
+        -- FAIL. IT WAS WRONG, AND WRONG IN THE DIRECTION THAT COSTS SOMETHING:
+        -- it told the next engineer that `accused.team == player.team` and
+        -- `friendlyFire ~= true` were kept out of tidiness, when each is the
+        -- only thing standing between a refusal and a false accusation in the
+        -- console.
+        --
+        -- IT ENUMERATED THE WRONG FUNCTION. The four reasons listed above are
+        -- rosterKiller's, but `killer` up in OnDeath comes from resolveKiller,
+        -- which refuses on TWO MORE grounds of its own AFTER rosterKiller has
+        -- accepted: the kill-distance ceiling and the out-of-fence check.
+        -- Both refuse claims that name a live, present fighter -- an enemy, or
+        -- a team-mate on a server whose operator turned friendly fire ON --
+        -- and neither has anything to do with friendly fire.
+        --
+        -- SO BOTH GUARDS ARE REACHABLE, AND THERE ARE NOW TESTS THAT FAIL
+        -- WITHOUT THEM. Measured: delete the friendly-fire guard and a
+        -- distance-refused team-mate kill is announced as a team-kill on a
+        -- server whose friendly fire is ON; delete the same-team guard and a
+        -- distance-refused ENEMY is announced as the victim's own team-mate.
+        -- One failing test each, named for what they print.
+        --
+        -- takeWeaponBack carries a note of the same shape about the same kind
+        -- of guard. Given this one was wrong, do not trust that one either
+        -- until somebody has tried to break it the way these two were broken.
         local accused = killerSrc ~= id and match.players[killerSrc] or nil
         if accused ~= nil and Arena.ModeUsesTeams(match.modeKey)
             and Arena.IsKey(accused.team) and accused.team == player.team

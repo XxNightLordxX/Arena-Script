@@ -729,7 +729,7 @@ listed; the source documents them where they are.
 | `ArenaMatch.UnplaceAuto(match)` | Puts back the sides `Begin` handed to players who never picked one, for an exit back to the lobby that lives outside this file -- the host's Stop The Countdown. Answers whether it moved anybody. |
 | `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players are held for -- it re-checks the roster every second and drops the room back to the lobby the moment it no longer qualifies, which is why `ArenaLobby.MayLeave` refuses a voluntary leave for its whole length. A disconnect is never refused. |
 | `ArenaMatch.Start(matchId)` | Teleports everybody in, hands out the loadouts, and starts the frozen countdown that ends with weapons live. |
-| `ArenaMatch.OnDeath(src, killerSrc)` | One player died. |
+| `ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)` | One player died. `serverSaw` marks a death the dead-sweep found rather than the client reporting; `why` is for the log alone; `causeHash` is the weapon hash the dying client read off its own ped -- the only way the server can name what killed somebody, used to print the TEAMKILL line and to revoke a sparing the killer's rung would otherwise have earned. |
 | `ArenaMatch.End(matchId, reasonKey, winners)` | Ends a round that was actually fought: decides the winners, settles the money, records it, and sends everybody home with a result. |
 | `ArenaMatch.Abort(matchId, reasonKey)` | The refund-everything path: a resource stop, an admin force-stop, a lobby that emptied out, a round that could not start. |
 | `ArenaMatch.RemovePlayer(src, reasonKey)` | One player out, mid-round: they left, they were dropped, or an admin pulled them. |

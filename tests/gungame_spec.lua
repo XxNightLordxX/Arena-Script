@@ -25,17 +25,27 @@
     a promotion that does not reach a real inventory is a promotion that
     changed nothing a player can hold.
 
-    FORTY-FOUR TESTS, on deliberately different parts of it:
+    ON DELIBERATELY DIFFERENT PARTS OF IT. No count is given here on
+    purpose: the last one said FORTY-FOUR and the file had grown past a
+    hundred, and a number in a header is a number nothing keeps honest.
 
       THE DRAW         one weapon per tier, melee first, stable all round,
                        different between rounds, and short pools survived.
       CLIMBING         score to tier derived rather than counted, the top
                        tier, and no free re-issue for standing still.
-      FALLING          every death costs a tier whoever caused it, the floor
-                       at tier 1, and that kills are never edited.
-      THE CAP          one victim cannot be farmed for a whole ladder.
-      THE REWARD       bandages every kill, armour on a roll, and neither
-                       paid for an uncredited one.
+      FALLING          what a death costs -- which is NO LONGER "a tier
+                       whoever caused it". With demoteOnMeleeOnly, which
+                       ships ON, a death costs a tier unless the server saw
+                       the killer holding a gun; the tests that need the old
+                       rule pin the switch off and say so.
+      THE BLADE        a blade at every rung, never one this round drew, and
+                       re-armed after a death that empties the pockets.
+      THE CAP          one victim cannot be farmed for a whole ladder --
+                       though maxTiersPerVictim ships 0, which is NO CAP, so
+                       those tests pin their own number.
+      THE REWARD       ten bandages and a plate on EVERY credited kill (the
+                       plate stopped being a roll), and neither paid for an
+                       uncredited one.
       THE ROUND        the mode's own clock, no eliminations, the tier on
                        the wire, and who the clock crowns.
 ]]
@@ -3727,14 +3737,24 @@ t.test('THE BLADE: it is carried at every rung, not just the melee one', functio
 
     -- AND NEITHER MUST DYING. ox_inventory empties a dead fighter onto the
     -- floor, so the blade has to be re-armed with the rung on respawn.
-    s.kill(1, 2)
-    s.revive(1)
+    --
+    -- THIS HALF USED TO PROVE NOTHING. It was `kill` then `revive`, and
+    -- neither touches ox_inventory: `kill` is OnDeath and `revive` sets
+    -- `alive = true`. The pockets were never emptied, so "the blade is still
+    -- there" was true before the respawn ran and would have stayed true with
+    -- the re-arm deleted. The drop has to be modelled, and the REAL respawn
+    -- thread has to be the thing that puts it back -- `revive` short-circuits
+    -- scheduleRespawn's `if entry.alive then return end` on its first line.
+    s.env.exports.ox_inventory:ClearInventory(1)
+    t.equals(s.ox.count(1, blade.weapon), 0, 'the drop was not modelled, so this proves nothing')
+
+    s.dieAndRespawn(1, 2)
+    t.equals(s.row(1).alive, true, 'the scheduled respawn never ran')
     t.equals(s.ox.count(1, blade.weapon), 1, 'the blade did not come back after a death')
 
     -- EXACTLY ONE, EVERY TIME. A re-issue that does not take the old row back
     -- hands out a second copy per respawn, which is a free weapon per life.
-    s.kill(1, 2)
-    s.revive(1)
+    s.dieAndRespawn(1, 2)
     t.equals(s.ox.count(1, blade.weapon), 1, 'a respawn handed out a SECOND blade')
 end)
 
@@ -4229,6 +4249,42 @@ t.test('and a broken permanentBlade is COMPLAINED about, not swallowed', functio
         'a perfectly good list was complained about')
     t.equals(complaintsFor({}), '',
         'an empty list is how you turn it OFF and must not complain')
+end)
+
+t.test('and the exit takes the blade back with the rung', function()
+    -- CLAIMED AS MEASURED IN 013dcfc AND PINNED BY NOTHING. The blade is an
+    -- arena-issued weapon like any rung, so the exit has to reclaim it --
+    -- and if it does not, every round hands every fighter a free blade to
+    -- walk out with. It was driven by hand when the feature went in; a
+    -- thing that is only ever driven by hand is a thing that regresses.
+    local s = newServer()
+    s.play(4)
+
+    local blade = s.match_().blade
+    t.isNotNil(blade, 'no blade this round, so this proves nothing')
+
+    -- Climb once so they are holding a rung AND the blade, which is the
+    -- state the exit actually meets.
+    s.trade(2, 1)
+    local rungs = {}
+    for _, rung in ipairs(s.match_().ladder) do rungs[#rungs + 1] = rung.weapon end
+    t.equals(s.ox.count(1, blade.weapon), 1, 'they are not carrying the blade before the exit')
+
+    local matchId = s.matchId()
+    s.match.End(matchId, 'match.ended')
+    s.settle(4)
+
+    t.equals(s.ox.count(1, blade.weapon), 0,
+        'the exit left the arena blade in their pockets -- a free weapon every round')
+
+    -- AND THE RUNG WITH IT, so this cannot pass by the exit having taken
+    -- everything indiscriminately while the blade was never issued at all.
+    local left = {}
+    for _, name in ipairs(rungs) do
+        if s.ox.count(1, name) > 0 then left[#left + 1] = name end
+    end
+    t.equals(#left, 0,
+        ('the exit left %d arena weapon(s) on them: %s'):format(#left, table.concat(left, ',')))
 end)
 
 os.exit(t.summary())

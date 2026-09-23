@@ -2349,7 +2349,7 @@ local function restore(src, record)
         -- oxDid reads nil as success, and ox_inventory answers nil for an
         -- inventory it cannot resolve -- so the wholesale clear can do
         -- NOTHING AT ALL and still take the branch above. stow() was taught
-        -- this fifteen hundred lines up ("DO NOT go back to trusting the
+        -- this four hundred lines up ("DO NOT go back to trusting the
         -- answer to a clear") and reads the pockets back; the exit was left
         -- on the weaker test.
         --

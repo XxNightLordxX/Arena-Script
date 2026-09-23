@@ -59,14 +59,40 @@ python3 -c "import json,sys;json.load(open('$R/locales/en.json'))" 2>/dev/null \
 head_ "4. the production strip changes no behaviour"
 # Strip a COPY and compare compiled instructions with line numbers removed. A
 # comment cannot change them; a character of real code always does.
+# EVERY .lua FILE, NOT JUST ammo.lua. This gate checked exactly one of the
+# twenty and its heading spoke for the strip as a whole -- so a strip_prod.py
+# change that mangled a construct ammo.lua happens not to use would have been
+# reported as "the production strip changes no behaviour" and shipped. The same
+# blind spot the panel suites had in gate 6, in a second costume: a gate is
+# only worth what it actually looks at.
+#
+# Measured when this was widened: twenty files, ~65,000 instructions, zero
+# differing. The narrow version was not hiding a live bug -- it was one file
+# away from being unable to see one.
+#
+# WHY md5 OF THE OPCODE COLUMN. `luac5.4 -l -p` prints the line number beside
+# every instruction, and stripping comments moves every line. Cutting the
+# opcode name out of each row compares what the VM will do and ignores where it
+# was written, which is the whole question this gate asks.
 if command -v luac5.4 >/dev/null 2>&1; then
     T=$(mktemp -d); cp -r $R "$T/r" 2>/dev/null
-    if python3 tools/strip_prod.py --header "Crimson Arena" "$T/r/server/ammo.lua" >/dev/null 2>&1; then
-        a=$(luac5.4 -l -p $R/server/ammo.lua 2>/dev/null | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)
-        b=$(luac5.4 -l -p "$T/r/server/ammo.lua" 2>/dev/null | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)
-        [ "$a" = "$b" ] && ok "stripping ammo.lua changes no instruction" || bad "the strip CHANGED ammo.lua's behaviour"
-        luac5.4 -p "$T/r/server/ammo.lua" >/dev/null 2>&1 && ok "stripped file still parses" || bad "stripped file does not parse"
-    else skip "strip_prod.py did not run"; fi
+    sp=0; sf=0; sbad=""; unparsed=""
+    while IFS= read -r f; do
+        rel=${f#$R/}
+        python3 tools/strip_prod.py --header "Crimson Arena" "$T/r/$rel" >/dev/null 2>&1 || {
+            sf=$((sf+1)); sbad="$sbad $rel(strip failed)"; continue; }
+        a=$(luac5.4 -l -p "$f" 2>/dev/null | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)
+        b=$(luac5.4 -l -p "$T/r/$rel" 2>/dev/null | grep -oP '^\t\d+\t\[\d+\]\t\K\S+' | md5sum)
+        if [ "$a" = "$b" ]; then sp=$((sp+1)); else sf=$((sf+1)); sbad="$sbad $rel"; fi
+        luac5.4 -p "$T/r/$rel" >/dev/null 2>&1 || unparsed="$unparsed $rel"
+    done < <(find $R -name '*.lua' -not -path '*/tests/*' | sort)
+
+    if [ "$((sp+sf))" -eq 0 ]; then skip "no .lua files to strip"
+    elif [ "$sf" -eq 0 ]; then ok "stripping all $sp .lua file(s) changes no instruction"
+    else bad "the strip CHANGED behaviour in $sf of $((sp+sf)) file(s):$sbad"; fi
+
+    [ -z "$unparsed" ] && ok "every stripped file still parses" \
+        || bad "stripped file(s) do not parse:$unparsed"
     rm -rf "$T"
 else skip "luac5.4 not installed"; fi
 

@@ -331,6 +331,13 @@ local COMMAND_HELP = {
         name = 'arenaconsole',
         help = 'Print every arena report to the server console. (admin)',
     },
+    {
+        -- NO `params`, AND NOT ADMIN. Anybody in a match may use it, which is
+        -- the point of it: the panel's Leave button is the ordinary way out,
+        -- and this is the way out when the panel will not open.
+        name = 'arenaleave',
+        help = 'Leave the arena you are in, at any time.',
+    },
 }
 
 --- Raises every suggestion once.

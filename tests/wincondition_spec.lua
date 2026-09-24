@@ -1614,4 +1614,91 @@ t.test('and a score limit reached by a side that has since left does not end the
     t.equals(listed(s.winners()), '3,4', 'the pot did not go to the best side still standing')
 end)
 
+
+-- ======================================================================
+-- LEAVING, AND WHAT THE HOST LEAVING DOES NOT DO
+--
+-- Asked for by the owner: "make it where anyone can leave even if the host
+-- leaves it will not cancel the match". The second half was already true --
+-- ArenaLobby.Leave hands the lobby on rather than closing it -- and that is
+-- exactly why it is pinned here: a promise nothing tests is a promise the
+-- next refactor gets to break quietly.
+-- ======================================================================
+
+t.test('the HOST leaving hands the lobby on rather than cancelling the match', function()
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'tdm', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    local before = s.lobby.Get(id)
+    t.equals(before.hostSource, 1, 'the fixture did not make 1 the host')
+    t.equals(s.lobby.PlayerCount(before), 4, 'the fixture did not seat four')
+
+    t.isTrue(s.lobby.Leave(1, 'notify.you_left'), 'the host could not leave')
+
+    local after = s.lobby.Get(id)
+    t.isNotNil(after, 'THE HOST LEAVING CANCELLED THE MATCH')
+    t.equals(s.lobby.PlayerCount(after), 3, 'the wrong number of fighters were left behind')
+    t.isTrue(after.hostSource ~= 1, 'the departed host is still the host')
+    t.isNotNil(after.players[after.hostSource], 'the lobby was handed to somebody not in it')
+    t.equals(after.hostName, after.players[after.hostSource].name,
+        'the heading still carries the name of the host who walked out')
+end)
+
+t.test('and it is only destroyed when the LAST player goes', function()
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'tdm', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    for _, src in ipairs({ 1, 2, 3 }) do
+        s.lobby.Leave(src, 'notify.you_left')
+        t.isNotNil(s.lobby.Get(id),
+            ('the match died when %d left, with players still in it'):format(src))
+    end
+
+    s.lobby.Leave(4, 'notify.you_left')
+    t.isNil(s.lobby.Get(id), 'an empty match was kept alive')
+end)
+
+t.test('a fighter may walk out of a LIVE round even holding a side bet', function()
+    -- THE FIRST VERSION OF THIS TEST PROVED NOTHING, and its own mutation
+    -- caught it. It set the round live and asserted MayLeave said yes -- which
+    -- it does either way, because with the live-state line deleted the two
+    -- guards below it do not fire for a live round either. Deleting the line
+    -- under test left the test green.
+    --
+    -- WHAT THE LINE ACTUALLY BUYS is this case. A side bet held on a match
+    -- refuses a leave -- that is `error.bet_then_leave`, and it is deliberate:
+    -- backing a fighter and then walking out is a way to move a pot. It is a
+    -- LOBBY rule. Once the round is running the bet is already placed and the
+    -- money already committed, so holding somebody in the arena over it buys
+    -- nothing and traps a player who wants out.
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'tdm', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    -- The bet is asserted through the same two calls MayLeave makes, so this
+    -- cannot pass by the betting stub being switched off.
+    s.env.ArenaBetting.IsEnabled = function() return true end
+    s.env.ArenaBetting.HoldsSideBet = function(_, src) return src == 1 end
+    t.isTrue(s.env.ArenaBetting.IsEnabled(), 'the fixture did not switch betting on')
+
+    local row = s.lobby.Get(id)
+
+    -- IN THE LOBBY the bet holds them, which is the control: without it, a
+    -- pass below would not be telling us the live state is what freed them.
+    row.state = 'lobby'
+    local mayInLobby, lobbyWhy = s.lobby.MayLeave(1)
+    t.isFalse(mayInLobby, 'a side-bet holder walked out of a LOBBY')
+    t.equals(lobbyWhy, 'error.bet_then_leave', 'refused for the wrong reason')
+
+    -- AND IN A LIVE ROUND they are free to go.
+    row.state = 'live'
+    local may, why = s.lobby.MayLeave(1)
+    t.isTrue(may, ('a side-bet holder was trapped in a live round: %s'):format(tostring(why)))
+
+    -- and somebody holding nothing is free either way
+    t.isTrue(s.lobby.MayLeave(3), 'an ordinary fighter was held in a live round')
+end)
+
 os.exit(t.summary())

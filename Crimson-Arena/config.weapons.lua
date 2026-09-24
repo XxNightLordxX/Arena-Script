@@ -226,6 +226,35 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
     {
+        -- NOT A BASE-GAME WEAPON. Every other row in this file is one GTA
+        -- ships; this one is an addon the owner runs, added at their request.
+        -- It follows that the usual safety net does not apply to it: a base
+        -- weapon is present on every client, and this one is present only
+        -- where the addon is installed.
+        --
+        -- IF IT IS MISSING, THE ARENA SAYS SO AT BOOT rather than at the
+        -- counter. ArenaAmmo.WeaponItemReport reads every name in this file
+        -- against ox_inventory's items when the resource starts, so an addon
+        -- whose item is not in ox_inventory/data/weapons.lua is named there
+        -- instead of leaving a fighter standing in the arena unarmed.
+        --
+        -- .45 ACP, ON THE OWNER'S WORD. The arena hands a weapon the rounds
+        -- this row names, so a pistol that actually feeds on something else
+        -- would be issued ammunition it cannot fire -- it would go out with a
+        -- full magazine of the wrong thing. `ammo-45` is the item three other
+        -- sidearms in this file already use, so nothing new has to exist in
+        -- ox_inventory for it.
+        key = 'blackice',
+        weapon = 'WEAPON_BLACKICE',
+        label = 'Black Ice',
+        category = 'sidearm',
+        enabled = true,
+        ammo = { default = 60, options = { 30, 60, 120, 500 }, max = 500 },
+        ammoTypes = { { key = 'standard', label = '.45 ACP', item = 'ammo-45' } },
+        components = {},
+        tint = 0,
+    },
+    {
         key = 'pistol50',
         weapon = 'WEAPON_PISTOL50',
         label = 'Pistol .50',

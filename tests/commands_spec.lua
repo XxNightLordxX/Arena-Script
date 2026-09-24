@@ -176,28 +176,37 @@ end
 
 print('==> the command an operator could not find')
 
-t.test('THE FIX THAT OUTLIVED THE BUG: there are exactly TWO commands now', function()
+t.test('THE FIX THAT OUTLIVED THE BUG: there are exactly THREE commands now', function()
     -- /arenadispatch was the command nobody could discover, and this file was
     -- written because of it. Six commands became one -- /arenaadmin, which
     -- takes no arguments and opens a screen where everything is a button --
     -- and then a second was added back deliberately: /arenaconsole, which
     -- prints every report in one pass for the one place a screen cannot go.
     --
-    -- Two names, both discoverable, neither taking an argument. The guard
-    -- still fails the moment a THIRD is registered without being made
-    -- discoverable too, which is the whole job of this file.
+    -- AND A THIRD, AT THE OWNER'S REQUEST: /arenaleave, the first of them a
+    -- player rather than an admin runs. The panel's Leave button is the
+    -- ordinary way out; this is the way out when the panel will not open,
+    -- which is exactly when somebody most wants one.
+    --
+    -- Three names, all discoverable, none taking an argument. The guard still
+    -- fails the moment a FOURTH is registered without being made discoverable
+    -- too, which is the whole job of this file.
     local commands = registeredCommands()
 
     local names = {}
     for name in pairs(commands) do names[#names + 1] = name end
     table.sort(names)
 
-    t.equals(#names, 2, 'this resource registers ' .. table.concat(names, ', '))
+    t.equals(#names, 3, 'this resource registers ' .. table.concat(names, ', '))
     t.equals(names[1], 'arenaadmin', 'the tablet command is not registered')
     t.equals(names[2], 'arenaconsole', 'the console command is not registered')
+    t.equals(names[3], 'arenaleave', 'the leave command is not registered')
     t.equals(commands.arenaadmin, 'server/main.lua')
+    t.equals(commands.arenaleave, 'server/main.lua',
+        'the leave command must be registered on the SERVER: it acts on `src` and '
+        .. 'must work when the panel that would otherwise carry the click does not')
     t.equals(commands.arenaconsole, 'server/main.lua',
-        'the two commands have drifted into different files')
+        'the commands have drifted into different files')
 end)
 
 t.test('and BOTH offer themselves to autocomplete', function()
@@ -340,11 +349,30 @@ t.test('every suggestion is a slash command with help, and every parameter is de
     end
 end)
 
-t.test('the admin-only commands say so, so a player is not told to run one', function()
+t.test('the admin-only commands say so, and the one anybody may run does NOT', function()
+    -- THIS USED TO ASSERT "(admin)" ON EVERY SUGGESTION, which was right for
+    -- exactly as long as every command was an admin command. /arenaleave is
+    -- the first one a player runs, and the old assertion would have forced the
+    -- tag onto it -- telling every player in the arena that the way out is
+    -- something they are not allowed to use.
+    --
+    -- BOTH DIRECTIONS, because each is a different lie to a different reader.
+    -- An admin command without the tag sends a player off to be refused; a
+    -- player command carrying it stops them trying at all.
+    local ADMIN_ONLY = { arenaadmin = true, arenaconsole = true }
+
     local client = loadClient()
+    t.isTrue(#client.suggested > 0, 'no suggestions were raised at all')
+
     for _, entry in ipairs(client.suggested) do
-        t.contains(entry.help, '(admin)',
-            tostring(entry.command) .. ' does not tell a player it is admin-only')
+        local name = tostring(entry.command):gsub('^/', '')
+        if ADMIN_ONLY[name] then
+            t.contains(entry.help, '(admin)',
+                tostring(entry.command) .. ' does not tell a player it is admin-only')
+        else
+            t.isNil(entry.help:find('(admin)', 1, true),
+                tostring(entry.command) .. ' is marked admin-only, but anybody may run it')
+        end
     end
 end)
 

@@ -1774,6 +1774,57 @@ end)
 --- their tablet. The whole report in a corner notification is what this
 --- resource already tried once: twenty-odd lines and a pasteable snippet, for
 --- a few seconds, which nobody has ever read a resource name out of.
+-- ======================================================================
+-- LEAVING WITHOUT THE PANEL
+--
+-- Asked for by the owner: anyone may walk out at any time, by command, and
+-- the host walking out does not take the round with them.
+--
+-- THE SECOND HALF WAS ALREADY TRUE AND IS NOT CHANGED HERE. ArenaLobby.Leave
+-- hands the lobby to `match.order[1]` when the host goes -- host, name and
+-- the title built from it -- and only destroys a match when the LAST player
+-- leaves. Measured: a four-player lobby whose host left stayed alive with the
+-- next player hosting, and survived two more departures before going empty.
+-- tests/commands_spec.lua now pins that, because it is a promise to the owner
+-- rather than an accident of the code.
+--
+-- A COMMAND RATHER THAN A BUTTON, because the button already exists. What it
+-- buys is a way out when the panel will not open -- the NUI failing is
+-- exactly the moment a player most needs to get out of an arena, and it is
+-- the moment the button cannot be clicked.
+--
+-- THE SAME PATH THE EVENT TAKES, deliberately: the same `detach`, the same
+-- rate bucket, the same refusals. A command that bypassed MayLeave would be a
+-- way to walk out on a side bet and to call off a countdown, both of which
+-- that function refuses on purpose and neither of which stops being true
+-- because the request arrived by chat.
+RegisterCommand('arenaleave', function(src)
+    -- THE CONSOLE IS NOT IN A MATCH AND NEVER WILL BE. RegisterCommand runs
+    -- with src 0 for the server console, and every id below reads it as a
+    -- player: refusing it here keeps a stray console command out of the rate
+    -- bucket and out of ArenaNotifyKey, which has nobody to notify.
+    local target = tonumber(src)
+    if not target or target <= 0 then
+        ArenaLog('arenaleave: that is a player command -- the console is not in a match.')
+        return
+    end
+
+    -- SHARES THE EVENT'S BUCKET, not one of its own. Two routes to one action
+    -- with a rate limit each is one rate limit: a player refused on the button
+    -- can spell the command and be straight back through.
+    if not ArenaRateLimit(target, 'crimson_arena:server:leaveMatch', RATE.leave) then return end
+
+    local ok, reason = detach(target, 'notify.you_left')
+    if ok then return end
+
+    -- NO REASON MEANS THEY WERE NEVER IN ONE. detach answers false with a
+    -- refusal when the leave was turned down -- a held side bet, a countdown
+    -- -- and false with nothing at all when there was nothing to leave. Said
+    -- plainly rather than as a bare "invalid request", which is what refuse
+    -- falls back to and which tells a player nothing.
+    return refuse(target, reason or 'error.not_in_match')
+end)
+
 RegisterCommand('arenaconsole', function(src)
     if not ArenaIsAdmin(src) then
         return refuse(src, 'error.no_permission')

@@ -53,6 +53,11 @@ local function newServer(mutate)
     local qbx = Sandbox.newQbxCore(players)
     local threads = Sandbox.newThreadRunner()
     local netEvents, console, sent, posts, recorded = {}, {}, {}, {}, {}
+    --- The commands server/main.lua registers, by name. Captured so a test can
+    --- run the REAL handler rather than a copy of what it is believed to do --
+    --- "can an ordinary player use this" is a question about the body of that
+    --- function, and reading it back is not an answer.
+    local commands = {}
     local gameEvents = {}
     local clock = 0
 
@@ -73,7 +78,7 @@ local env = Sandbox.newArenaEnv({
         -- is is a rule this file is the home of. A stub that swallowed the
         -- registration left that rule with no test at all.
         AddEventHandler = function(name, fn) gameEvents[name] = fn end,
-        RegisterCommand = function() end,
+        RegisterCommand = function(name, fn) commands[name] = fn end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetGameTimer = function() clock = clock + 60000 return clock end,
         GetPlayerName = function(src) return (players[src] or {}).name or '' end,
@@ -154,7 +159,7 @@ local env = Sandbox.newArenaEnv({
         Sandbox.loadInto('../Crimson-Arena/server/' .. file .. '.lua', env)
     end
 
-    local server = { env = env, config = env.Config,
+    local server = { env = env, config = env.Config, commands = commands,
         match = env.ArenaMatch, lobby = env.ArenaLobby }
     local matchId
 
@@ -1699,6 +1704,55 @@ t.test('a fighter may walk out of a LIVE round even holding a side bet', functio
 
     -- and somebody holding nothing is free either way
     t.isTrue(s.lobby.MayLeave(3), 'an ordinary fighter was held in a live round')
+end)
+
+t.test('/arenaleave is for ANY player in a match, not just the host', function()
+    -- ASKED FOR IN THOSE WORDS: "make it where it's not just the host that can
+    -- do /arenaleave it is any player in a match". It already was -- the
+    -- handler checks for a console caller, a rate bucket and nothing else --
+    -- and that is exactly why this test exists. A permission nobody asked for
+    -- is one line, and an admin check added here later would read as tidying.
+    --
+    -- THE REAL HANDLER, not a copy of it. The fixture captures what
+    -- server/main.lua registers, so this runs the function an operator's
+    -- players run.
+    local s = newServer()
+    t.isNotNil(s.commands.arenaleave, '/arenaleave is not registered at all')
+
+    local id = s.lobby.Create(1, 'trailerpark', 'tdm', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+    t.equals(s.lobby.Get(id).hostSource, 1, 'the fixture did not make 1 the host')
+
+    -- AN ORDINARY PLAYER FIRST, deliberately. A host-only gate fails here
+    -- rather than three assertions later.
+    s.commands.arenaleave(3)
+    local row = s.lobby.Get(id)
+    t.isNil(row.players[3], 'a non-host player could not leave with the command')
+    t.equals(s.lobby.PlayerCount(row), 3, 'the wrong number of fighters were left behind')
+
+    s.commands.arenaleave(4)
+    row = s.lobby.Get(id)
+    t.isNil(row.players[4], 'a second non-host player could not leave')
+
+    -- AND THE HOST TOO, whose leaving still must not take the round with them.
+    s.commands.arenaleave(1)
+    row = s.lobby.Get(id)
+    t.isNotNil(row, 'the host using the command cancelled the match')
+    t.isNil(row.players[1], 'the host could not leave with the command')
+    t.equals(row.hostSource, 2, 'the lobby was not handed on')
+end)
+
+t.test('and somebody in no match at all is told so rather than ignored', function()
+    local s = newServer()
+    local refusals = {}
+    s.env.ArenaNotifyKey = function(src, key) refusals[#refusals + 1] = { src = src, key = key } end
+
+    s.commands.arenaleave(6)
+
+    t.equals(#refusals, 1, 'a player who is in no match was told nothing at all')
+    t.equals(refusals[1].src, 6, 'the wrong player was answered')
+    t.equals(refusals[1].key, 'error.not_in_match',
+        'answered with something other than "you are not in a match"')
 end)
 
 os.exit(t.summary())

@@ -1513,21 +1513,25 @@ end)
 -- 24-29. THE PATHS NOTHING REACHED
 -- ======================================================================
 
-t.test('the mode ships ON, and its ladder is a real one', function()
-    -- IT USED TO SHIP OFF, and this test used to be the guard on that: every
-    -- test in this file switches gun game on, which was only defensible
-    -- while the shipped config really did ship it off, so the assertion here
-    -- was `enabled == false`.
+t.test('the mode ships OFF, and its ladder is a real one anyway', function()
+    -- THIS ASSERTION HAS NOW BEEN BOTH WAYS, AND THE OWNER DECIDES IT. It
+    -- shipped off, then on, and the owner has switched it off again. The
+    -- previous wording invited exactly this -- "if that is deliberate, this
+    -- test is the place to say so" -- so this is that.
     --
-    -- The operator has turned it on. That makes the guard's original job
-    -- disappear -- the config every test in this file runs is now the config
-    -- operators actually have, which is strictly better -- and leaves the
-    -- second half, which matters more than it did: a mode that is ON and
-    -- broken is broken for everybody, immediately, rather than the first
-    -- time somebody opts in.
+    -- WHY THE TEST STAYS RATHER THAN GOING. Every test in this file turns the
+    -- mode on in its own fixture, so none of them can tell you what an
+    -- operator actually receives. This one reads the SHIPPED config and
+    -- nothing else, and it is the only thing that would notice the flag moving
+    -- again by accident.
+    --
+    -- AND THE SECOND HALF MATTERS MORE NOW, NOT LESS. A mode that ships ON and
+    -- broken is broken for everybody immediately, which is loud. A mode that
+    -- ships OFF and broken is silent until the day somebody opts in -- so the
+    -- ladder still has to be provably playable while nobody is playing it.
     local shipped = Sandbox.shippedConfig()
-    t.equals(shipped.Modes.gungame.enabled, true,
-        'gun game was switched back off -- if that is deliberate, this test is the place to say so')
+    t.equals(shipped.Modes.gungame.enabled, false,
+        'gun game was switched back on -- if that is deliberate, this test is the place to say so')
 
     -- AND WHAT SHIPS IS PLAYABLE, which is now the whole of this test's job.
     --

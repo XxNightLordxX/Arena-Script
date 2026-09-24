@@ -1673,7 +1673,14 @@ end)
 -- ======================================================================
 
 t.test('a mode can say how many rounds its tier weapons carry', function()
-    local arena, config = tweaked(function(cfg) cfg.Modes.gungame.tierAmmo = 200 end)
+    -- ENABLED HERE ON PURPOSE: config.lua ships gun game off and
+    -- Arena.GetModeByKey answers nil for a disabled mode, so TierAmmoFor would
+    -- read nil no matter what tierAmmo said. This test is about the ACCESSOR,
+    -- not about whether the operator offers the mode.
+    local arena, config = tweaked(function(cfg)
+        cfg.Modes.gungame.enabled = true
+        cfg.Modes.gungame.tierAmmo = 200
+    end)
     t.equals(arena.TierAmmoFor('gungame'), 200, 'the mode\'s tier ammunition was not read')
     t.isNil(arena.TierAmmoFor('ffa'), 'a mode with no tier ammunition must have no opinion')
     t.isTrue(config.Modes.gungame.tierAmmo > 0, 'the fixture set nothing')
@@ -1697,7 +1704,13 @@ end)
 t.test('the shipped gun game hands its tiers two hundred rounds', function()
     -- The number the operator asked for, asserted where an edit to config
     -- would be seen rather than left to the reader.
-    t.equals(Arena.TierAmmoFor('gungame'), 200,
+    --
+    -- READ OFF THE SHIPPED CONFIG DIRECTLY, NOT THROUGH TierAmmoFor. The mode
+    -- ships DISABLED, and GetModeByKey answers nil for a disabled mode, so the
+    -- accessor returns nil here however the number is set -- which would make
+    -- this test pass or fail on the enabled flag rather than on the figure it
+    -- exists to watch. The accessor has its own test directly above.
+    t.equals(Config.Modes.gungame.tierAmmo, 200,
         'the shipped tier ammunition is no longer 200')
 end)
 

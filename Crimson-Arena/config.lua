@@ -22,16 +22,16 @@
       195   Match         Lives, timers, player counts, win condition
       515   Teams         The sides, and whether they may be uneven
       685   Modes         Free-for-all, team deathmatch and gun game
-     1069   DefaultMode   Which of them a new lobby opens on
-     1088   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1332   UI            Panel colours, logo and title
-     1390   Permissions   Who may open a match, who may force-stop one
-     1476   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1910   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2485   Database      Optional: four tables the arena owns. Ships OFF
-     2516   Leaderboard   Which matches count towards the board, and which do not
-     2582   Webhook       Optional: a Discord line per finished match
-     2614   Dispatch      Optional: keeping police and EMS out of the arena
+     1067   DefaultMode   Which of them a new lobby opens on
+     1086   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1330   UI            Panel colours, logo and title
+     1388   Permissions   Who may open a match, who may force-stop one
+     1474   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1908   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2483   Database      Optional: four tables the arena owns. Ships OFF
+     2514   Leaderboard   Which matches count towards the board, and which do not
+     2580   Webhook       Optional: a Discord line per finished match
+     2612   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -739,7 +739,7 @@ Config.Modes = {
     ['gungame'] = {
         label = 'Gun Game',
         description = 'Climb the tiers. Every kill is a better weapon; a death costs you one unless the fighter who killed you was holding a gun.',
-        enabled = true,
+        enabled = false,
         -- A ladder is climbed by one player, so it is won by one player.
         teams = false,
         icon = 'fas fa-arrow-up-9-1',
@@ -830,8 +830,7 @@ Config.Modes = {
                     'snspistol', 'vintagepistol', 'pistol', 'ceramicpistol',
                     'combatpistol', 'gadgetpistol', 'snspistolmk2', 'pistolxm3',
                     'appistol', 'doubleaction', 'heavypistol', 'tecpistol',
-                    'pistolmk2', 'navyrevolver', 'pistol50', 'marksmanpistol',
-                    'revolver', 'revolvermk2',
+                    'pistolmk2', 'navyrevolver', 'pistol50', 'revolver', 'revolvermk2',
                 },
             },
             {
@@ -851,7 +850,7 @@ Config.Modes = {
                 -- range than the last one".
                 tiers = 4,
                 weapons = {
-                    'dbshotgun', 'sawnoffshotgun', 'pumpshotgunmk2', 'shotgun',
+                    'sawnoffshotgun', 'pumpshotgunmk2', 'shotgun',
                     'bullpupshotgun', 'combatshotgun', 'assaultshotgun',
                     'heavyshotgun', 'autoshotgun',
                 },
@@ -871,7 +870,7 @@ Config.Modes = {
                 key = 'heavy',
                 label = 'Heavy',
                 tiers = 2,
-                weapons = { 'musket', 'mg', 'combatmg', 'combatmgmk2' },
+                weapons = { 'mg', 'combatmg', 'combatmgmk2' },
             },
             {
                 key = 'precision',
@@ -880,8 +879,7 @@ Config.Modes = {
                 -- twenty-seven kills is the one holding it.
                 tiers = 3,
                 weapons = {
-                    'marksman', 'marksmanriflemk2', 'sniper',
-                    'precisionrifle', 'heavysniper', 'snipermk2',
+                    'sniper', 'precisionrifle', 'heavysniper', 'snipermk2',
                 },
             },
         },

@@ -182,17 +182,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
     {
-        key = 'marksmanpistol',
-        weapon = 'WEAPON_MARKSMANPISTOL',
-        label = 'Marksman Pistol',
-        category = 'sidearm',
-        enabled = true,
-        ammo = { default = 60, options = { 30, 60, 120, 500 }, max = 500 },
-        ammoTypes = { { key = 'standard', label = '.22 Long Rifle', item = 'ammo-22' } },
-        components = {},
-        tint = 0,
-    },
-    {
         key = 'nailgun',
         weapon = 'WEAPON_NAILGUN',
         label = 'Nail Gun',
@@ -635,25 +624,6 @@ Config.Loadouts.weapons = {
         tint = 0,
     },
     {
-        key = 'dbshotgun',
-        weapon = 'WEAPON_DBSHOTGUN',
-        label = 'Double Barrel Shotgun',
-        category = 'shotgun',
-        -- OFF AT THE OWNER'S INSTRUCTION, like the musket and the marksman
-        -- rifle: the owner's anti-cheat stops all three firing whatever
-        -- ammunition the arena issues, which is a thing outside this resource.
-        -- What this file hands it is correct -- DO NOT change the ammo entry
-        -- below on the strength of this being off. It stays in the list so it
-        -- can be switched back on with one word, and so a regeneration of this
-        -- file does not quietly bring it back.
-        -- DO NOT flip this to true without being asked.
-        enabled = false,
-        ammo = { default = 40, options = { 20, 40, 80, 500 }, max = 500 },
-        ammoTypes = { { key = 'standard', label = '12 Gauge', item = 'ammo-shotgun' } },
-        components = {},
-        tint = 0,
-    },
-    {
         key = 'heavyshotgun',
         weapon = 'WEAPON_HEAVYSHOTGUN',
         label = 'Heavy Shotgun',
@@ -728,59 +698,6 @@ Config.Loadouts.weapons = {
         enabled = true,
         ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '.50 BMG', item = 'ammo-heavysniper' } },
-        components = {},
-        tint = 0,
-    },
-    {
-        key = 'marksman',
-        weapon = 'WEAPON_MARKSMANRIFLE',
-        label = 'Marksman Rifle',
-        category = 'precision',
-        -- OFF AT THE OWNER'S INSTRUCTION, like the musket and the double-barrel
-        -- above: the owner's anti-cheat stops all three firing whatever
-        -- ammunition the arena issues, which is a thing outside this resource.
-        -- What this file hands it is correct -- DO NOT change the ammo entry
-        -- below on the strength of this being off. It stays in the list so one
-        -- word turns it back on, and so a regeneration of this file does not
-        -- quietly bring it back.
-        -- DO NOT flip this to true without being asked.
-        -- Its Mk2 further down IS STILL ON, on purpose: a different weapon
-        -- with a different hash, and nobody reported it.
-        enabled = false,
-        ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
-        ammoTypes = { { key = 'standard', label = '7.62x51', item = 'ammo-sniper' } },
-        components = {},
-        tint = 0,
-    },
-    {
-        key = 'marksmanriflemk2',
-        weapon = 'WEAPON_MARKSMANRIFLE_MK2',
-        label = 'Marksman Rifle MK2',
-        category = 'precision',
-        enabled = true,
-        ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
-        ammoTypes = { { key = 'standard', label = '7.62x51', item = 'ammo-sniper' } },
-        components = {},
-        tint = 0,
-    },
-    {
-        key = 'musket',
-        weapon = 'WEAPON_MUSKET',
-        label = 'Musket',
-        category = 'precision',
-        -- OFF AT THE OWNER'S INSTRUCTION -- one of the THREE switched off in
-        -- this file and not the only one; the double-barrel shotgun and the
-        -- marksman rifle went the same way and for the same reason. That
-        -- reason is the owner's anti-cheat, which stops all three firing
-        -- whatever ammunition the arena issues; what this file hands them is
-        -- correct, so DO NOT change the ammo entry below on the strength of
-        -- this being off. It still appears in the list so it can be switched
-        -- back on with one word, and so nobody regenerates the file and
-        -- quietly brings it back. DO NOT flip this to true without being
-        -- asked.
-        enabled = false,
-        ammo = { default = 20, options = { 10, 20, 40, 500 }, max = 500 },
-        ammoTypes = { { key = 'standard', label = '.50 Ball', item = 'ammo-musket' } },
         components = {},
         tint = 0,
     },
@@ -1287,8 +1204,6 @@ Config.Loadouts.weaponAttachments = {
     ['WEAPON_PUMPSHOTGUN'] = { flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
     ['WEAPON_PUMPSHOTGUN_MK2'] = { scope = 'at_scope_holo', muzzle = 'at_muzzle_squared', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
     ['WEAPON_HEAVYSNIPER_MK2'] = { scope = 'at_scope_large', extendedclip = 'at_clip_extended_sniper', muzzle = 'at_muzzle_squared', barrel = 'at_barrel', suppressor = 'at_suppressor_heavy' },
-    ['WEAPON_MARKSMANRIFLE'] = { extendedclip = 'at_clip_extended_sniper', grip = 'at_grip', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
-    ['WEAPON_MARKSMANRIFLE_MK2'] = { scope = 'at_scope_holo', extendedclip = 'at_clip_extended_sniper', grip = 'at_grip', muzzle = 'at_muzzle_flat', barrel = 'at_barrel', flashlight = 'at_flashlight', suppressor = 'at_suppressor_heavy' },
     ['WEAPON_SNIPERRIFLE'] = { scope = 'at_scope_advanced', suppressor = 'at_suppressor_heavy' },
     ['WEAPON_GRENADELAUNCHER'] = { scope = 'at_scope_small', grip = 'at_grip', flashlight = 'at_flashlight' },
 }

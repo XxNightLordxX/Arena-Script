@@ -1342,7 +1342,7 @@
         var line = schedule().line;
         var opensAt = schedule().opensAt;
         byId('arena-shut-hours').textContent = (typeof line === 'string' && line !== '')
-            ? 'Arena hours: ' + line + '.'
+            ? 'Arena hours in EST: ' + line + '.'
               + (typeof opensAt === 'string' && opensAt ? ' Next opening ' + opensAt + '.' : '')
             : 'This server keeps no opening hours — it opens again when an admin says so.';
 

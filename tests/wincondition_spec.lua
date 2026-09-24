@@ -141,6 +141,13 @@ local env = Sandbox.newArenaEnv({
     env.Config.Match.lives = 1
     env.Config.Match.respawnDelaySeconds = 0
     env.Config.Betting.enabled = false
+    -- GUN GAME IS SWITCHED ON HERE RATHER THAN INHERITED. It is an OPERATOR
+    -- setting: config.lua ships it off, and Arena.GetModeByKey answers nil for
+    -- a disabled mode, so every lobby.Create('gungame') in this file failed the
+    -- moment the owner turned it off. A test about ladder plumbing must not
+    -- depend on whether the shipped server offers the mode. Set BEFORE the
+    -- caller's mutate, so a test that wants it off can still say so.
+    env.Config.Modes.gungame.enabled = true
     if mutate then mutate(env.Config) end
 
     for _, file in ipairs({ 'util', 'betting', 'lobby', 'match', 'main' }) do

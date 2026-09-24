@@ -182,6 +182,13 @@ local function newArena(wallets, mutate, jobs)
     -- Before the loads below, not after: server/lobby.lua reads
     -- Config.Match.idleLobbyTimeoutSeconds once, at load, to decide whether
     -- its sweep thread is worth starting at all.
+    -- GUN GAME IS SWITCHED ON HERE RATHER THAN INHERITED. It is an OPERATOR
+    -- setting: config.lua ships it off, and Arena.GetModeByKey answers nil for
+    -- a disabled mode, so every lobby.Create('gungame') in this file failed the
+    -- moment the owner turned it off. A test about ladder plumbing must not
+    -- depend on whether the shipped server offers the mode. Set BEFORE the
+    -- caller's mutate, so a test that wants it off can still say so.
+    env.Config.Modes.gungame.enabled = true
     if mutate then mutate(env.Config) end
 
     Sandbox.loadInto('../Crimson-Arena/server/util.lua', env)

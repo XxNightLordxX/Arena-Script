@@ -28,10 +28,10 @@
      1404   Permissions   Who may open a match, who may force-stop one
      1490   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
      1924   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2499   Database      Optional: four tables the arena owns. Ships OFF
-     2530   Leaderboard   Which matches count towards the board, and which do not
-     2596   Webhook       Optional: a Discord line per finished match
-     2628   Dispatch      Optional: keeping police and EMS out of the arena
+     2522   Database      Optional: four tables the arena owns. Ships OFF
+     2553   Leaderboard   Which matches count towards the board, and which do not
+     2619   Webhook       Optional: a Discord line per finished match
+     2651   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1922,6 +1922,29 @@ Config.Arenas = {
 -- every melee entry does, for a weapon whose count is meant to be fixed.
 -- ======================================================================
 Config.Loadouts = {
+    -- A WEAPON THIS SERVER'S ox_inventory HAS NO ITEM FOR IS TAKEN OFF THE
+    -- LIST AT START, rather than offered and then refused on the way over.
+    --
+    -- THE FAILURE THIS PREVENTS, which happened on a live server: a host
+    -- chose four weapons and every fighter walked in carrying none of them.
+    -- Weapons are handed over as ox_inventory items, all four names were
+    -- refused, and the supplies -- ordinary items this inventory did have --
+    -- landed, so the round ran with everybody holding vests and bandages.
+    --
+    -- Prevention rather than substitution: the four a host picks are four
+    -- they get, instead of being armed with something they did not choose.
+    -- Every withdrawal is named on the console, beside the report that lists
+    -- the missing names.
+    --
+    -- ONLY WHERE ox_inventory ANSWERED. A registry that is not up yet, or
+    -- will not answer, withdraws NOTHING -- emptying the catalogue of a
+    -- server whose weapons are all fine would be far worse than the failure
+    -- being prevented.
+    --
+    -- false leaves the old behaviour: everything stays on the list and a
+    -- missing name is refused per fighter, per round.
+    withdrawMissingWeapons = true,
+
     -- WHO PICKS THE WEAPONS. This decides whether a round is a test of skill
     -- or a test of who picked the better gun. Write one of:
     --

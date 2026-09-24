@@ -1874,4 +1874,96 @@ t.test('and a DISABLED weapon is not reported, because it is never handed out', 
         'a switched-off weapon was reported as a missing item')
 end)
 
+
+-- ======================================================================
+-- A WEAPON THIS SERVER HAS NO ITEM FOR IS NOT OFFERED
+--
+-- THE ASK, IN THE OWNER'S WORDS: "is there a way that even if the weapon
+-- is not in the server it doesn't break loadouts completely".
+--
+-- PREVENTION, NOT SUBSTITUTION. The failure is a host choosing four
+-- weapons and every fighter walking in with none of them, each name
+-- refused on the way over. Handing out a DIFFERENT weapon instead would
+-- arm them with something they never chose; taking the broken name off the
+-- list they choose from means the four they pick are four they get.
+-- ======================================================================
+
+local function inventoryWithout(missing)
+    return setmetatable({}, {
+        __index = function(_, name)
+            if type(name) ~= 'string' then return nil end
+            if missing and missing[name] then return nil end
+            if name:sub(1, 7) == 'WEAPON_' then return { name = name, weapon = true } end
+            if name:sub(1, 5) == 'ammo-' then return { name = name, ammo = true } end
+            if name == 'armour' or name == 'bandage' then return { name = name } end
+            if name:sub(1, 3) == 'at_' then return { name = name, component = true } end
+            return nil
+        end,
+        __pairs = function(t) return function() return nil end, t, nil end,
+    })
+end
+
+t.test('a weapon ox_inventory does not have is taken off the list a host picks from', function()
+    local whole = newKit({ knownItems = inventoryWithout(nil) })
+    local full = #whole.env.Arena.GetEnabledWeapons()
+    t.isTrue(full > 3, 'the fixture catalogue is too small to measure a withdrawal')
+
+    local gapped = newKit({ knownItems = inventoryWithout({
+        WEAPON_BLACKICE = true, WEAPON_PISTOL = true, WEAPON_KNIFE = true,
+    }) })
+
+    t.equals(#gapped.env.Arena.GetEnabledWeapons(), full - 3,
+        'the missing weapons are still being offered to hosts')
+    t.isNil(gapped.env.Arena.GetWeaponByKey('blackice'),
+        'a withdrawn weapon can still be resolved and handed out')
+    t.isTrue(gapped.log():find('withdrawn', 1, true) ~= nil,
+        'weapons vanished from the catalogue with nothing said on the console')
+end)
+
+t.test('THE SAFETY CASE: an ox_inventory that cannot answer withdraws NOTHING', function()
+    -- Withdrawing on silence would empty the catalogue of a server whose
+    -- weapons are all fine, which is far worse than the failure being
+    -- prevented. inventoryHasItem answers "unreadable" separately from
+    -- "missing" for exactly this.
+    local whole = newKit({ knownItems = inventoryWithout(nil) })
+    local full = #whole.env.Arena.GetEnabledWeapons()
+
+    local down = newKit({ fail = { noInventory = true } })
+    t.equals(#down.env.Arena.GetEnabledWeapons(), full,
+        'a server with no ox_inventory had its whole catalogue withdrawn')
+
+    local throws = newKit({ knownItems = setmetatable({}, {
+        __index = function() error('Items() is unavailable') end,
+        __pairs = function(t2) return function() return nil end, t2, nil end,
+    }) })
+    t.equals(#throws.env.Arena.GetEnabledWeapons(), full,
+        'an ox_inventory that will not answer had the catalogue withdrawn anyway')
+end)
+
+t.test('and the operator may switch the whole behaviour off', function()
+    local whole = newKit({ knownItems = inventoryWithout(nil) })
+    local full = #whole.env.Arena.GetEnabledWeapons()
+
+    local off = newKit({
+        knownItems = inventoryWithout({ WEAPON_BLACKICE = true }),
+        mutate = function(config) config.Loadouts.withdrawMissingWeapons = false end,
+    })
+
+    t.equals(#off.env.Arena.GetEnabledWeapons(), full,
+        'withdrawMissingWeapons = false did not keep the old behaviour')
+end)
+
+t.test('the report still NAMES what was withdrawn, rather than hiding it', function()
+    -- Reported first, withdrawn second. The report walks the ENABLED
+    -- catalogue, so withdrawing before reporting would hide the very names
+    -- an operator needs in order to fix them.
+    local gapped = newKit({ knownItems = inventoryWithout({ WEAPON_BLACKICE = true }) })
+    local log = gapped.log()
+
+    t.isTrue(log:find('WEAPON_BLACKICE', 1, true) ~= nil,
+        'the withdrawn weapon was never named, so nobody can fix it')
+    t.isTrue(log:find('NOT items in this ox_inventory', 1, true) ~= nil,
+        'the report that explains the withdrawal is missing')
+end)
+
 os.exit(t.summary())

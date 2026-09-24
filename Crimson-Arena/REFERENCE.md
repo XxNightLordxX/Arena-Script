@@ -609,7 +609,7 @@ listed; the source documents them where they are.
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 27 functions
+#### `server/ammo.lua` — 28 functions
 
 | Function | What it does |
 |---|---|
@@ -640,6 +640,7 @@ listed; the source documents them where they are.
 | `ArenaAmmo.QueueReturn(citizenid, stash)` | Puts one stash on the sweep's list, so an offline owner is handed it when next seen. |
 | `ArenaAmmo.WeaponItemReport()` | Every WEAPON, AMMO and SUPPLY name this arena hands out, checked against this server's ox_inventory item list, as lines. Printed at start-up just before the attachment report. A name ox_inventory has no item for is REFUSED at the moment it is handed over, and the fighter gets nothing in its place -- the live symptom being "the host chose 4 weapons and all it had was the vests and bandages", because supplies are ordinary items a server usually does have. Asks only whether the name exists, NOT whether it is tagged a component the way `AttachmentReport` must. |
 | `ArenaAmmo.AttachmentReport()` | Every attachment name the config can fit, checked against this server's ox_inventory item list, as lines. Printed at start, by `/arenaconsole`, and on the admin tablet under **Tools → Attachments**. A name ox_inventory has no item for, or has an item for that is not a component, is dropped rather than fitted, because handing it one leaves the weapon undrawable. |
+| `ArenaAmmo.WithdrawMissingWeapons()` | Switches off every catalogue weapon whose ox_inventory item this server does not have, so a host cannot pick one that cannot be delivered, and returns the keys withdrawn. Runs at start-up straight after `WeaponItemReport`, which is the order that matters: the report walks the enabled catalogue, so withdrawing first would hide the very names an operator needs. Prevention rather than substitution -- the weapons a host picks are the ones their fighters get, instead of being armed with something nobody chose. Withdraws NOTHING where ox_inventory is absent or will not answer `Items()`, since emptying the catalogue of a healthy server is worse than the failure being prevented. Each withdrawal is marked so it keeps appearing in the report that explains it, and named on the console. `Config.Loadouts.withdrawMissingWeapons = false` keeps the old behaviour. |
 
 #### `server/stats.lua` — 6 functions
 

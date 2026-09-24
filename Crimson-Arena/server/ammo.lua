@@ -8331,7 +8331,14 @@ function ArenaAmmo.WeaponItemReport()
     end
 
     for _, weapon in ipairs((Config.Loadouts or {}).weapons or {}) do
-        if type(weapon) == 'table' and weapon.enabled ~= false then
+        -- ENABLED, OR WITHDRAWN BY THIS RESOURCE FOR BEING MISSING. The
+        -- second half is why the marker exists: a weapon taken off the list
+        -- at boot must keep appearing here, or the report that explains the
+        -- withdrawal stops naming what was withdrawn. A weapon the OPERATOR
+        -- switched off is a different thing and stays out.
+        if type(weapon) == 'table'
+            and (weapon.enabled ~= false or weapon.withdrawnByArena == true)
+        then
             add('weapon', weapon.weapon)
             for _, entry in ipairs(weapon.ammoTypes or {}) do
                 if type(entry) == 'table' then add('ammo', entry.item) end
@@ -8584,6 +8591,70 @@ end
 -- -- the same lines from the same function, through the one command this
 -- resource still registers.
 
+--- Switches off every weapon whose ox_inventory item this server does not
+--- have, so nobody can pick one that cannot be delivered.
+---
+--- THE ASK, IN THE OWNER'S WORDS: "is there a way that even if the weapon is
+--- not in the server it doesn't break loadouts completely".
+---
+--- IT IS PREVENTION, NOT SUBSTITUTION, and that is the whole design. The
+--- failure being fixed is a host choosing four weapons and every fighter
+--- walking in with none of them, because each name was refused on the way
+--- over. Handing out a DIFFERENT weapon instead would arm them with something
+--- they did not choose and could not have known about. Taking the broken name
+--- off the list they choose from means the four they pick are four they get.
+---
+--- ONLY WHERE THE REGISTRY ANSWERED. inventoryHasItem returns a second value
+--- for exactly this: an ox_inventory that is not up, or will not answer
+--- Items(), reports every name as unreadable rather than missing. Withdrawing
+--- on silence would empty the catalogue of a server whose weapons are all
+--- fine, which is a far worse failure than the one this prevents.
+---
+--- SAID OUT LOUD, EVERY NAME. A weapon disappearing from the panel with no
+--- reason on the console is the kind of thing an operator spends an evening
+--- hunting. The report printed just above this names them too.
+--- @return string[] keys withdrawn
+function ArenaAmmo.WithdrawMissingWeapons()
+    local withdrawn = {}
+
+    if (Config.Loadouts or {}).withdrawMissingWeapons == false then return withdrawn end
+
+    local catalogue = (Config.Loadouts or {}).weapons
+    if type(catalogue) ~= 'table' then return withdrawn end
+
+    for _, weapon in ipairs(catalogue) do
+        if type(weapon) == 'table' and weapon.enabled ~= false and Arena.IsKey(weapon.weapon) then
+            local known, readable = inventoryHasItem(weapon.weapon)
+            if readable and not known then
+                weapon.enabled = false
+                -- MARKED, NOT JUST SWITCHED OFF. WeaponItemReport walks the
+                -- ENABLED catalogue, so a weapon withdrawn here would drop
+                -- out of the very report that explains why it went -- an
+                -- operator asking "what is missing?" would be told "all
+                -- present" while the broken names sat withdrawn and unnamed.
+                -- The marker keeps them in the report and nowhere else.
+                weapon.withdrawnByArena = true
+                withdrawn[#withdrawn + 1] = tostring(weapon.key or weapon.weapon)
+            end
+        end
+    end
+
+    if #withdrawn > 0 then
+        ArenaLog('issued items: %d weapon(s) withdrawn from the catalogue because this '
+            .. 'ox_inventory has no item by their name -- nobody can pick one now, so a '
+            .. 'loadout cannot come up empty because of them: %s',
+            #withdrawn, table.concat(withdrawn, ', '))
+
+        if #Arena.GetEnabledWeapons() == 0 then
+            ArenaLog('issued items: THAT WAS ALL OF THEM. No weapon in the catalogue exists '
+                .. 'in this ox_inventory, so there is nothing left to hand out. Check that '
+                .. 'ox_inventory/data/weapons.lua is the one this server is running.')
+        end
+    end
+
+    return withdrawn
+end
+
 -- THE CHECK RUNS AT START, BEFORE ANYBODY FIGHTS.
 --
 -- The alternative is what actually happened: the mistake is invisible until
@@ -8605,6 +8676,13 @@ CreateThread(function()
     -- empties the whole loadout; a missing attachment costs a scope. The
     -- bigger failure is read first so it is not buried under the smaller one.
     for _, line in ipairs(ArenaAmmo.WeaponItemReport()) do ArenaLog('%s', line) end
+
+    -- AND THEN TAKEN OFF THE LIST, so the report above is the full picture
+    -- and nobody can pick what it named. Reported first, withdrawn second:
+    -- the report walks the ENABLED catalogue, so withdrawing first would hide
+    -- the very names the operator needs to see.
+    ArenaAmmo.WithdrawMissingWeapons()
+
     for _, line in ipairs(ArenaAmmo.AttachmentReport()) do ArenaLog('%s', line) end
 end)
 

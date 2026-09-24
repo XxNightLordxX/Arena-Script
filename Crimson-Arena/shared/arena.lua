@@ -3784,6 +3784,66 @@ function Arena.ValidateConfig()
                     listed = #raw.gunGameTiers
                 end
 
+                -- EVERY KEY THESE POOLS NAME, CHECKED AGAINST THE
+                -- CATALOGUE.
+                --
+                -- The pools are weapon KEYS written by hand in config.lua and
+                -- the catalogue they point into is a SEPARATE FILE. Delete a
+                -- weapon from config.weapons.lua -- which is an ordinary thing
+                -- to do -- and every pool still naming it holds a key that
+                -- resolves to nothing. LadderTiersFor simply skips it, so the
+                -- mode keeps working and the ladder is quietly shorter than
+                -- the one that was configured.
+                --
+                -- MEASURED: naming a deleted weapon, emptying a pool, or
+                -- disabling every weapon in one all passed this function
+                -- without a word, and the ladder dropped from 30 rungs to 26.
+                -- An operator who cannot watch a round -- which is most of
+                -- them, and certainly anybody editing a live server's config
+                -- between restarts -- had no way to learn their edit had not
+                -- taken.
+                if type(raw.gunGameClasses) == 'table' then
+                    for _, class in ipairs(raw.gunGameClasses) do
+                        if type(class) == 'table' and type(class.weapons) == 'table' then
+                            local missing, switchedOff = {}, {}
+                            for _, key in ipairs(class.weapons) do
+                                if Arena.IsKey(key) then
+                                    local entry = nil
+                                    for _, candidate in ipairs(Config.Loadouts.weapons or {}) do
+                                        if candidate.key == key then entry = candidate break end
+                                    end
+                                    if entry == nil then
+                                        missing[#missing + 1] = key
+                                    elseif entry.enabled == false then
+                                        switchedOff[#switchedOff + 1] = key
+                                    end
+                                end
+                            end
+                            if #missing > 0 then
+                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon key(s) that are not in config.weapons.lua at all: %s. They are skipped, so this class fills fewer tiers than it asks for.')
+                                    :format(mode.key, tostring(class.key), #missing,
+                                        table.concat(missing, ', ')))
+                            end
+                            if #switchedOff > 0 then
+                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon(s) that are switched off: %s. A disabled weapon is not drawn, so this class fills fewer tiers than it asks for.')
+                                    :format(mode.key, tostring(class.key), #switchedOff,
+                                        table.concat(switchedOff, ', ')))
+                            end
+                        end
+                    end
+                end
+
+                -- AND THE LADDER THAT WAS ASKED FOR AGAINST THE ONE THAT WAS
+                -- BUILT. Both numbers are computed above and only the second
+                -- was ever read. A round of 26 rungs where 30 were configured
+                -- is not broken -- the lobby card quotes the real number and
+                -- the mode plays -- but it is not what the operator wrote,
+                -- and nothing said so.
+                if listed > 0 and #playable > 0 and #playable < listed then
+                    complain(('Config.Modes["%s"] asks for %d ladder tier(s) and only %d can be built. The pools do not hold enough usable weapons -- check the keys against config.weapons.lua and that they are enabled.')
+                        :format(mode.key, listed, #playable))
+                end
+
                 if #playable < 2 then
                     complain(('Config.Modes["%s"] is enabled with %d tier(s) of the %d it lists actually playable -- a ladder needs at least two, so this mode will run as an ordinary free-for-all. Check the weapon keys against config.weapons.lua and that they are enabled.')
                         :format(mode.key, #playable, listed))

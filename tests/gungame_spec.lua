@@ -4681,4 +4681,100 @@ t.test('and a list of keys that are not enabled weapons advertises none', functi
     t.equals(said, false, 'unusable keys were advertised as a blade')
 end)
 
+-- ======================================================================
+-- A HAND-EDITED CONFIG THAT QUIETLY DID NOT TAKE
+--
+-- The ladder pools are weapon KEYS written by hand in config.lua, and the
+-- catalogue they point into is a SEPARATE FILE. Deleting a weapon from
+-- config.weapons.lua is an ordinary thing to do -- the owner removed five
+-- in one edit -- and every pool still naming it then holds a key that
+-- resolves to nothing. LadderTiersFor skips it, the mode keeps working,
+-- and the ladder is quietly shorter than the one that was configured.
+--
+-- MEASURED before this was added: naming a deleted weapon, emptying a
+-- pool, and disabling every weapon in one ALL passed ValidateConfig
+-- without a word, while the ladder dropped from 30 rungs to 26. Both
+-- numbers -- asked for and built -- were already computed there, and only
+-- the second was ever read.
+-- ======================================================================
+
+local function problemsWith(mutate)
+    local s = newServer(function(config)
+        config.Modes.gungame.enabled = true
+        mutate(config)
+    end)
+    return s.arena.ValidateConfig(), s
+end
+
+local function mentions(problems, text)
+    for _, problem in ipairs(problems) do
+        if tostring(problem):find(text, 1, true) then return true end
+    end
+    return false
+end
+
+t.test('CONTROL: the config as it ships has nothing to say', function()
+    -- The half that makes every test below worth anything. A validator that
+    -- complained about the shipped config would be noise an operator learns
+    -- to scroll past.
+    local problems = problemsWith(function() end)
+    t.equals(#problems, 0, 'the shipped config now draws a complaint: '
+        .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('a pool naming a weapon that was deleted is named, and so is the pool', function()
+    local problems = problemsWith(function(config)
+        table.insert(config.Modes.gungame.gunGameClasses[2].weapons, 'a_weapon_that_was_deleted')
+    end)
+    t.isTrue(mentions(problems, 'a_weapon_that_was_deleted'),
+        'the dead key was not named: ' .. table.concat(problems, ' | '):sub(1, 300))
+    t.isTrue(mentions(problems, 'sidearm'), 'the pool holding it was not named')
+end)
+
+t.test('and a pool whose weapons are all switched off', function()
+    local problems = problemsWith(function(config)
+        local named = {}
+        for _, key in ipairs(config.Modes.gungame.gunGameClasses[4].weapons) do named[key] = true end
+        for _, weapon in ipairs(config.Loadouts.weapons) do
+            if named[weapon.key] then weapon.enabled = false end
+        end
+    end)
+    t.isTrue(mentions(problems, 'switched off'),
+        'a pool of disabled weapons passed silently: ' .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('THE SHORTFALL ITSELF: asked for thirty, built twenty-six', function()
+    -- The complaint that does not depend on WHY the pool came up short.
+    local problems, s = problemsWith(function(config)
+        config.Modes.gungame.gunGameClasses[3].weapons = {}
+    end)
+    t.equals(#s.arena.LadderTiersFor('gungame'), 26, 'the fixture did not actually shorten the ladder')
+    t.isTrue(mentions(problems, 'asks for 30 ladder tier'),
+        'a ladder four rungs short of its config passed silently: '
+            .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('and a class asking for more tiers than it can ever fill', function()
+    local problems = problemsWith(function(config)
+        config.Modes.gungame.gunGameClasses[6].tiers = 99
+    end)
+    t.isTrue(mentions(problems, 'can be built'),
+        'a class asking for 99 tiers off 3 weapons passed silently: '
+            .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('CONTROL: a ladder that builds exactly what it asks for says nothing', function()
+    -- The shortfall complaint must not fire on a ladder that is merely
+    -- SMALL. An operator who wants a five-rung gun game has not made a
+    -- mistake.
+    local problems = problemsWith(function(config)
+        config.Modes.gungame.gunGameClasses = {
+            { key = 'melee', label = 'Melee', tiers = 1, weapons = { 'knife', 'bat' } },
+            { key = 'sidearm', label = 'Sidearms', tiers = 2, weapons = { 'pistol', 'combatpistol', 'snspistol' } },
+        }
+    end)
+    t.equals(#problems, 0, 'a deliberately short ladder was reported as a fault: '
+        .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
 os.exit(t.summary())

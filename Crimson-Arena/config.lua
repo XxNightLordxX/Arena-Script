@@ -19,19 +19,19 @@
     ------------------------------------------------------------------------------
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
-      195   Match         Lives, timers, player counts, win condition
-      515   Teams         The sides, and whether they may be uneven
-      685   Modes         Free-for-all, team deathmatch and gun game
-     1067   DefaultMode   Which of them a new lobby opens on
-     1086   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1330   UI            Panel colours, logo and title
-     1388   Permissions   Who may open a match, who may force-stop one
-     1474   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1908   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2483   Database      Optional: four tables the arena owns. Ships OFF
-     2514   Leaderboard   Which matches count towards the board, and which do not
-     2580   Webhook       Optional: a Discord line per finished match
-     2612   Dispatch      Optional: keeping police and EMS out of the arena
+      211   Match         Lives, timers, player counts, win condition
+      531   Teams         The sides, and whether they may be uneven
+      701   Modes         Free-for-all, team deathmatch and gun game
+     1083   DefaultMode   Which of them a new lobby opens on
+     1102   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1346   UI            Panel colours, logo and title
+     1404   Permissions   Who may open a match, who may force-stop one
+     1490   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1924   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2499   Database      Optional: four tables the arena owns. Ships OFF
+     2530   Leaderboard   Which matches count towards the board, and which do not
+     2596   Webhook       Optional: a Discord line per finished match
+     2628   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -187,6 +187,22 @@ Config.Schedule = {
     -- daylight saving -- when the clocks change, change this too.
     -- `/arenaconsole` prints what the server currently thinks the time is.
     offsetHours = 0,
+
+    -- WHAT TO CALL THE CLOCK THESE HOURS ARE KEPT IN, on the screen a player
+    -- reads when the arena is shut.
+    --
+    -- THE PANEL CANNOT WORK THIS OUT AND MUST NOT GUESS. `offsetHours` above
+    -- says how far to move the SERVER'S clock, and nothing anywhere says what
+    -- the server's own clock is set to -- so an offset of -5 might be EST on a
+    -- UTC box or something else entirely on a box that is not. The panel used
+    -- to print "EST" flat, which was true only by coincidence and silently
+    -- wrong the moment the offset or the host changed.
+    --
+    -- Only the operator knows, so the operator says. Write whatever your
+    -- players call it: 'EST', 'UK time', 'server time'. Leave it empty or
+    -- delete the line and the panel simply lists the hours and claims no
+    -- timezone at all, which is the honest thing to do when nobody has said.
+    timezoneLabel = 'EST',
 }
 
 -- ======================================================================

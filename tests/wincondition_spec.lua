@@ -2835,4 +2835,70 @@ t.test('CONTROL: the leak check can actually see a table that does not drain', f
     t.isTrue(countOf(planted) > 0, 'the planted leak drained itself, so it proves nothing')
 end)
 
+t.test('the clock the opening hours are kept in is the operator\'s to name', function()
+    -- THE PANEL CANNOT WORK IT OUT AND MUST NOT GUESS. offsetHours says how
+    -- far to move the SERVER'S clock and nothing anywhere says what that
+    -- clock is set to, so -5 is EST on a UTC box and something else on any
+    -- other. The shut screen printed "EST" flat: true by coincidence, and
+    -- silently wrong the first time the offset or the host changed.
+    local s = newServer(function(config)
+        config.Schedule.enabled = true
+        config.Schedule.timezoneLabel = 'UK time'
+    end)
+
+    t.equals(s.env.ArenaHoursSnapshot().timezoneLabel, 'UK time',
+        'the operator\'s label never reached the panel')
+end)
+
+t.test('CONTROL: no label is sent where none was written', function()
+    -- The honest fallback: with nothing configured the panel lists the hours
+    -- and claims no timezone. A field that always carried something would put
+    -- an invented clock on a locked-out player's screen.
+    local blank = newServer(function(config)
+        config.Schedule.enabled = true
+        config.Schedule.timezoneLabel = ''
+    end)
+    local gone = newServer(function(config)
+        config.Schedule.enabled = true
+        config.Schedule.timezoneLabel = nil
+    end)
+
+    t.isNil(blank.env.ArenaHoursSnapshot().timezoneLabel, 'an empty label was sent as one')
+    t.isNil(gone.env.ArenaHoursSnapshot().timezoneLabel, 'a missing label was invented')
+end)
+
+t.test('and a label that is not text is withheld AND reported at boot', function()
+    -- Withholding it alone would be a silent repair: the screen stops naming
+    -- the clock and nobody is told why. Both halves are asserted.
+    local s = newServer(function(config)
+        config.Schedule.enabled = true
+        config.Schedule.timezoneLabel = 5
+    end)
+
+    t.isNil(s.env.ArenaHoursSnapshot().timezoneLabel, 'a number was sent as a timezone')
+
+    local said = false
+    for _, problem in ipairs(s.env.Arena.ValidateConfig()) do
+        if tostring(problem):find('timezoneLabel', 1, true) then said = true end
+    end
+    t.isTrue(said, 'a mistyped label was repaired silently, with nothing said at boot')
+end)
+
+t.test('and the label is checked even with the hours switched OFF', function()
+    -- A label typed wrong today is still typed wrong the day the gate is
+    -- switched on, and that is the day it matters. The shipped config keeps
+    -- the gate off, so a check that only ran when it was on would never see
+    -- this server's own label at all.
+    local s = newServer(function(config)
+        config.Schedule.enabled = false
+        config.Schedule.timezoneLabel = {}
+    end)
+
+    local said = false
+    for _, problem in ipairs(s.env.Arena.ValidateConfig()) do
+        if tostring(problem):find('timezoneLabel', 1, true) then said = true end
+    end
+    t.isTrue(said, 'the label went unchecked because the gate was off')
+end)
+
 os.exit(t.summary())

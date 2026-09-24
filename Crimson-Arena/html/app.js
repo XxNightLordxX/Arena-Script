@@ -1352,8 +1352,21 @@
 
         var line = schedule().line;
         var opensAt = schedule().opensAt;
+        /* THE CLOCK IS NAMED BY THE OPERATOR OR NOT AT ALL.
+
+           This read "Arena hours in EST" flat. The panel cannot know that:
+           Config.Schedule.offsetHours says how far to move the SERVER'S clock
+           and nothing says what the server's clock is, so -5 is EST on a UTC
+           box and something else anywhere else. It was true by coincidence and
+           would have gone quietly wrong the first time the offset or the host
+           changed, on the one screen a locked-out player reads.
+
+           Sent only when they have written one, so with no label the hours are
+           listed and no timezone is claimed. */
+        var zone = schedule().timezoneLabel;
+        var named = (typeof zone === 'string' && zone !== '') ? ' in ' + zone : '';
         byId('arena-shut-hours').textContent = (typeof line === 'string' && line !== '')
-            ? 'Arena hours in EST: ' + line + '.'
+            ? 'Arena hours' + named + ': ' + line + '.'
               + (typeof opensAt === 'string' && opensAt ? ' Next opening ' + opensAt + '.' : '')
             : 'This server keeps no opening hours — it opens again when an admin says so.';
 

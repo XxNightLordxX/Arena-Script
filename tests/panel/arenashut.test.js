@@ -213,5 +213,51 @@ if (failures.length > 0) {
         console.log(row.error.stack);
     });
 }
+test('THE CLOCK IS NAMED BY THE OPERATOR, not guessed by the panel', () => {
+    /* This screen read "Arena hours in EST" flat. The panel cannot know that:
+       Config.Schedule.offsetHours says how far to move the SERVER'S clock and
+       nothing says what the server's clock is, so -5 is EST on a UTC box and
+       something else on any other. It was true by coincidence and would have
+       gone quietly wrong the first time the offset or the host changed -- on
+       the one screen a locked-out player is reading. */
+    const panel = opened(Object.assign({}, SHUT_ON_HOURS, { timezoneLabel: 'EST' }), null);
+    const hours = panel.text('arena-shut-hours');
+
+    assert.ok(/Arena hours in EST/.test(hours), 'the operator\'s label is missing: ' + hours);
+    assert.ok(/05:00-07:00/.test(hours), 'and the hours went with it: ' + hours);
+});
+
+test('and any other label the operator writes is what is shown', () => {
+    /* The point of the field: a server outside the Americas is not lying to
+       its players any more. */
+    const hours = opened(
+        Object.assign({}, SHUT_ON_HOURS, { timezoneLabel: 'UK time' }), null
+    ).text('arena-shut-hours');
+
+    assert.ok(/Arena hours in UK time/.test(hours), 'the label was not used: ' + hours);
+    assert.ok(!/EST/.test(hours), 'and the old hardcoded one is still there: ' + hours);
+});
+
+test('CONTROL: with no label the hours are listed and no clock is claimed', () => {
+    /* The honest fallback. An operator who has not said which clock these
+       hours are kept in must not have one invented for them. */
+    const hours = opened(SHUT_ON_HOURS, null).text('arena-shut-hours');
+
+    assert.ok(/05:00-07:00/.test(hours), 'the hours themselves went missing: ' + hours);
+    assert.ok(!/ in /.test(hours), 'a timezone was claimed that nobody configured: ' + hours);
+    assert.ok(!/EST/.test(hours), 'the hardcoded label survived: ' + hours);
+});
+
+test('and a label that is not text is ignored rather than printed raw', () => {
+    /* The server withholds a non-string, but the panel must not print
+       "Arena hours in 5" if one ever reaches it. */
+    const hours = opened(
+        Object.assign({}, SHUT_ON_HOURS, { timezoneLabel: 5 }), null
+    ).text('arena-shut-hours');
+
+    assert.ok(!/ in 5/.test(hours), 'a number was printed as a timezone: ' + hours);
+    assert.ok(/05:00-07:00/.test(hours), 'and the hours were lost with it: ' + hours);
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length > 0 ? 1 : 0);

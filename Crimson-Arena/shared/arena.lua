@@ -4186,6 +4186,19 @@ function Arena.ValidateConfig()
     end
 
     local schedule = Config.Schedule
+    -- THE NAME THE OPENING HOURS ARE SHOWN IN, checked whatever the gate is
+    -- set to: a label typed wrong today is a label still typed wrong the day
+    -- the hours are switched on, and that is the day it matters.
+    --
+    -- Anything but text reaches the panel as nothing, and the shut screen
+    -- then lists the hours while naming no clock -- on the one screen a
+    -- locked-out player is looking at.
+    local zoneLabel = type(schedule) == 'table' and schedule.timezoneLabel or nil
+    if zoneLabel ~= nil and type(zoneLabel) ~= 'string' then
+        complain(('Config.Schedule.timezoneLabel is a %s, not text -- the shut screen will list the opening hours without naming a clock. Write what your players call it, such as \'EST\', or delete the line.')
+            :format(type(zoneLabel)))
+    end
+
     if type(schedule) == 'table' and schedule.enabled == true then
         local windows = type(schedule.windows) == 'table' and schedule.windows or {}
         local usable = 0

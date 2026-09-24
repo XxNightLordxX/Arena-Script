@@ -371,6 +371,12 @@ function ArenaHoursSnapshot()
     end
 
     if line then block.line = line end
+    -- THE NAME OF THE CLOCK, straight from the operator, because it cannot be
+    -- worked out here: offsetHours moves the SERVER'S clock and nothing says
+    -- what that clock is. Sent only when they have written one, so a panel
+    -- with no label claims no timezone rather than inventing one.
+    local label = type(Config.Schedule) == 'table' and Config.Schedule.timezoneLabel or nil
+    if type(label) == 'string' and label ~= '' then block.timezoneLabel = label end
     if status.opensAt then block.opensAt = Arena.ClockText(status.opensAt) end
     if status.closesAt then block.closesAt = Arena.ClockText(status.closesAt) end
     return block

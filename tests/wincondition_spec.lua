@@ -2361,4 +2361,303 @@ t.test('CONTROL: the randomised rounds really do reach a live round', function()
     t.isTrue(sawTeams, 'the generator never reached a team round')
 end)
 
+-- ======================================================================
+-- A HOSTILE CLIENT
+--
+-- Every other test in this file sends what the panel sends. This one sends
+-- what a cheat sends: all 26 client-reachable events, each fired with a
+-- battery of malformed and malicious payloads, by somebody with no right to
+-- fire them, against three stages of round.
+--
+-- Nothing may throw (a handler that errors on a malformed payload is a
+-- denial of service anybody can trigger), no money may be invented, and
+-- nothing that belongs to the host or to another player may move.
+--
+-- THREE LESSONS ARE BUILT INTO ITS SHAPE, each learnt by an injected
+-- vulnerability the first versions could not see:
+--
+--   AN OUTSIDER IS TOO WEAK AN ATTACKER. Somebody in no match is turned
+--   away by "you are not in a match" long before any authority check is
+--   reached, so a MISSING host check is invisible to them. The dangerous
+--   attacker is an ordinary member of the round.
+--
+--   GARBAGE TESTS THE PARSING, NOT THE AUTHORITY. Malformed payloads stop
+--   at the type guards. A request that is perfectly well formed and merely
+--   sent by the wrong person is what a real cheat sends, and it is the only
+--   shape that arrives at an authority check with something to change.
+--
+--   LAYERED DEFENCES MASK EACH OTHER. A live round refuses host-only
+--   actions on STATE, and a PAID lobby refuses rule changes because people
+--   have already staked -- for the host too -- both before authority is
+--   consulted. A free lobby is the only world where the host check on the
+--   rules is the thing actually doing the refusing.
+-- ======================================================================
+
+local HOSTILE_EVENTS = {
+    'adminHours', 'adminReturn', 'adminRevive', 'adminState', 'adminStop', 'adminTool',
+    'adminUnjam', 'adminWipe', 'cancelMatch', 'clientDebug', 'createMatch', 'holdCountdown',
+    'joinMatch', 'leaveMatch', 'outlineReason', 'panelClosed', 'placeSpectatorBet',
+    'reportDeath', 'requestState', 'setLoadout', 'setReady', 'setTeam', 'spectateMatch',
+    'startMatch', 'stopSpectating', 'updateMatch',
+}
+
+--- The payload shapes, trimmed to the ones that discriminate. The full
+--- battery took a third of this suite's whole runtime; these are the rows
+--- that actually caught the injected holes, plus cheap insurance on strings.
+local HOSTILE_PAYLOADS = {
+    { name = 'nil', value = nil },
+    { name = 'wrong types', value = {
+        matchId = true, amount = 'lots', pick = false, account = 0,
+        killer = 'someone', ready = 'yes', weapons = 'all' } },
+    { name = 'negative numbers', value = {
+        matchId = 'X', amount = -999999, pick = '1', account = 'cash',
+        entryFee = -5000, scoreLimit = -1, lives = -1, killer = -1, ready = true } },
+    { name = 'fractions', value = {
+        matchId = 'X', amount = 0.5, pick = '1.5', account = 'cash',
+        entryFee = 1.7, scoreLimit = 2.5, lives = 1.5, killer = 2.5, ready = true } },
+    { name = 'nested tables', value = {
+        matchId = {{{}}}, amount = {}, pick = {}, account = {}, killer = {},
+        weapons = {{{{}}}} } },
+    { name = 'hostile strings', value = {
+        matchId = "'; DROP TABLE x;--", pick = '../../etc/passwd',
+        account = '<script>', teamKey = '%s%s%s%n' } },
+    -- THE ONE THAT TESTS AUTHORITY RATHER THAN PARSING.
+    { name = 'WELL FORMED, wrong sender', value = {
+        matchId = 'X', arenaKey = 'pier', modeKey = 'ffa', lives = 9, radar = true,
+        roundTimeSeconds = 1200, winCondition = 'most_kills', scoreLimit = 2,
+        teamKey = 'ash', ready = true, account = 'cash', amount = 200, pick = '1',
+        killer = 1, entryFee = 0, weapons = { { key = 'rifle' } } } },
+}
+
+local HOSTILE_ATTACKERS = {
+    { name = 'an outsider in no match', src = 6, insider = false },
+    { name = 'a non-host member', src = 3, insider = true },
+}
+
+local HOSTILE_STAGES = {
+    { name = 'a free lobby', live = false, fee = 0 },
+    { name = 'a paid lobby', live = false, fee = 500 },
+    { name = 'a live round', live = true, fee = 500 },
+}
+
+--- WALLETS PLUS ESCROW. Wallets alone is the wrong measure, and the first
+--- run of this sweep proved it: a player leaving a lobby is refunded their
+--- entry fee, their wallet rises, and nothing has been created -- the money
+--- came out of the pot it was already in. Counting the pot makes a refund a
+--- transfer and leaves only real invention showing.
+local function systemTotal(s)
+    local total = s.moneyInCirculation()
+    for _, match in ipairs(s.lobby.All()) do
+        total = total + (s.env.ArenaBetting.GetPrizePool(match.id) or 0)
+    end
+    return total
+end
+
+local function hostileWorld(live, fee)
+    local s = newServer(function(config)
+        config.Betting.enabled = true
+        config.Match.lives = 3
+    end)
+    s.env.ArenaAmmo.SwapWeapon = function() return true end
+    s.env.ArenaAmmo.GrantSupply = function() return true end
+
+    s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = fee,
+        account = 'cash', winCondition = 'score_limit', scoreLimit = 5 })
+    local id = s.lobby.All()[1].id
+    for src = 2, 3 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+    for src = 1, 3 do
+        s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+    end
+    if live then
+        for src = 1, 3 do s.fire('setReady', src, { ready = true }) end
+        s.match.Start(id)
+        s.settle(1)
+    end
+    return s, id
+end
+
+--- Runs the whole sweep and returns everything it caught.
+local function sweep()
+    local caught = {}
+    local probes = 0
+
+    for _, stage in ipairs(HOSTILE_STAGES) do
+        for _, attacker in ipairs(HOSTILE_ATTACKERS) do
+            for _, event in ipairs(HOSTILE_EVENTS) do
+                for _, shot in ipairs(HOSTILE_PAYLOADS) do
+                    probes = probes + 1
+                    local s, id = hostileWorld(stage.live, stage.fee)
+                    local before = systemTotal(s)
+                    local snap = s.lobby.Get(id)
+                    local was = {
+                        state = snap and snap.state, scoreLimit = snap and snap.scoreLimit,
+                        winCondition = snap and snap.winCondition, lives = snap and snap.lives,
+                        host = snap and snap.hostSource, roster = {}, kills = {},
+                    }
+                    for src, row in pairs(snap and snap.players or {}) do
+                        was.roster[src] = true
+                        was.kills[src] = row.kills
+                    end
+
+                    local function caughtIt(what)
+                        caught[#caught + 1] = ('[%s | %s] %s <- %s : %s')
+                            :format(stage.name, attacker.name, event, shot.name, what)
+                    end
+
+                    -- The real match id, spliced in: a cheat reads it off
+                    -- their own screen, so withholding it tests nothing.
+                    local payload = shot.value
+                    if type(payload) == 'table' and payload.matchId == 'X' then
+                        payload.matchId = id
+                    end
+
+                    local ok, err = pcall(function() s.fire(event, attacker.src, payload) end)
+                    if not ok then caughtIt('THREW: ' .. tostring(err)) end
+
+                    if systemTotal(s) > before then
+                        caughtIt(('money appeared: +%d'):format(systemTotal(s) - before))
+                    end
+
+                    local now = s.lobby.Get(id)
+                    if now == nil then
+                        caughtIt('DESTROYED THE MATCH')
+                    else
+                        if now.state ~= was.state then
+                            caughtIt(('moved the round on: %s -> %s')
+                                :format(tostring(was.state), tostring(now.state)))
+                        end
+                        if now.scoreLimit ~= was.scoreLimit then caughtIt('moved the kill limit') end
+                        if now.winCondition ~= was.winCondition then caughtIt('changed how it is won') end
+                        if now.lives ~= was.lives then caughtIt('changed the lives') end
+                        if now.hostSource ~= was.host then caughtIt('TOOK THE MATCH OVER') end
+                        if not attacker.insider and now.players[attacker.src] then
+                            caughtIt('AN OUTSIDER GOT IN')
+                        end
+                        for src = 1, 3 do
+                            if was.roster[src] and not now.players[src] and src ~= attacker.src then
+                                caughtIt(('threw player %d out'):format(src))
+                            end
+                            local before2, after2 = was.kills[src], now.players[src] and now.players[src].kills
+                            if before2 and after2 and after2 > before2 then
+                                caughtIt(('conjured %d kill(s) for player %d')
+                                    :format(after2 - before2, src))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return caught, probes
+end
+
+t.test('a hostile client cannot crash, enrich itself or take what is not its own', function()
+    local caught, probes = sweep()
+    t.isTrue(probes >= 1000, ('the sweep barely ran: only %d probe(s)'):format(probes))
+
+    if #caught > 0 then
+        local head = {}
+        for index = 1, math.min(4, #caught) do head[index] = caught[index] end
+        t.equals(#caught, 0, ('%d hole(s); first few: %s')
+            :format(#caught, table.concat(head, ' | ')))
+    end
+    t.equals(#caught, 0, 'the hostile sweep got through')
+end)
+
+t.test('EXPLOIT: a player cannot credit themselves for their own death', function()
+    -- READ THE FIELD NAME TWICE. The first version of this test sent
+    -- `killer`, and the handler reads `killerServerId` -- so it named nobody
+    -- at all, measured a death with no claimed killer, and "proved" that kill
+    -- farming was impossible. It was asserting something FALSE about the
+    -- resource and would never have caught a regression. The control below
+    -- is what would have caught it: a claim that DOES credit somebody, in the
+    -- same fixture, so a refusal can be told apart from a payload that was
+    -- never understood.
+    local s = newServer(function(c) c.Match.lives = 99 end)
+    local id = s.play(4, false, { winCondition = 'score_limit', scoreLimit = 99 })
+
+    for _ = 1, 10 do
+        s.fire('reportDeath', 3, { killerServerId = 3 })
+        local row = s.lobby.Get(id) and s.lobby.Get(id).players[3]
+        if row then row.alive = true end
+    end
+
+    t.equals(s.rowOf(3).kills, 0, 'a player bought kills off their own corpse')
+    t.isTrue(s.rowOf(3).deaths > 0, 'the deaths themselves went unrecorded')
+
+    -- THE CONTROL THAT MAKES THE ASSERTION ABOVE MEAN ANYTHING. Naming
+    -- somebody else, through the same event and the same field, DOES credit
+    -- them -- so the nought above is a refusal and not a payload the server
+    -- quietly ignored.
+    s.fire('reportDeath', 4, { killerServerId = 2 })
+    t.equals(s.rowOf(2).kills, 1,
+        'the fixture credits nobody at all, so the refusal above proves nothing')
+end)
+
+t.test('EXPLOIT: a killer who is not on the roster is refused', function()
+    local s = newServer(function(c) c.Match.lives = 99 end)
+    local id = s.play(4, false, { winCondition = 'score_limit', scoreLimit = 99 })
+
+    -- Every kill on the roster, before and after. Asserting only that the
+    -- outsider is absent from the roster was too weak: it passes even where
+    -- the claim is honoured and the credit goes somewhere. What must be true
+    -- is that naming somebody who is not fighting buys NOBODY anything.
+    local function killsOnRoster()
+        local tally = {}
+        for src, row in pairs(s.lobby.Get(id).players) do tally[src] = row.kills end
+        return tally
+    end
+
+    local before = killsOnRoster()
+    s.fire('reportDeath', 3, { killerServerId = 6 })
+    local after = killsOnRoster()
+
+    t.isNil(s.lobby.Get(id).players[6],
+        'naming an outsider as the killer let them into the round')
+    for src, kills in pairs(after) do
+        t.equals(kills, before[src] or 0,
+            ('naming an outsider moved player %d\'s kill count'):format(src))
+    end
+    t.isTrue(s.rowOf(3).deaths > 0,
+        'refusing the CREDIT turned into refusing the death, which strands the player')
+
+    -- THE CONTROL, again: the same event with a real fighter named DOES
+    -- credit, so the untouched counts above are a refusal and not a payload
+    -- the fixture never understood.
+    s.fire('reportDeath', 4, { killerServerId = 2 })
+    t.equals(s.rowOf(2).kills, (before[2] or 0) + 1,
+        'the fixture credits nobody at all, so the refusal above proves nothing')
+end)
+
+t.test('KNOWN AND ACCEPTED: two accomplices standing together can trade kills', function()
+    -- NOT A DEFECT, AND WRITTEN DOWN HERE SO NOBODY "FIXES" IT BY ACCIDENT.
+    -- resolveKiller says so itself: a dying client names its own killer, and
+    -- the guard is the kill-distance ceiling, which "does not make the report
+    -- honest -- two players standing together can still trade kills nobody
+    -- fired -- but it forces them to be there, which costs them the round
+    -- they are trying to win."
+    --
+    -- MEASURED: twenty self-reported deaths naming a neighbour bought that
+    -- neighbour twenty kills. This test PINS that, so the day somebody
+    -- tightens it the change is deliberate and this expectation is updated
+    -- on purpose rather than a test quietly going green.
+    --
+    -- TWO THINGS SLOW IT ON A REAL SERVER AND NEITHER IS VISIBLE HERE: the
+    -- rate limit on the event, which this fixture's clock jumps a minute per
+    -- call and so never trips, and the respawn delay between deaths.
+    local s = newServer(function(c) c.Match.lives = 99 end)
+    local id = s.play(4, false, { winCondition = 'score_limit', scoreLimit = 99 })
+
+    for _ = 1, 20 do
+        s.fire('reportDeath', 3, { killerServerId = 2 })
+        local row = s.lobby.Get(id) and s.lobby.Get(id).players[3]
+        if row then row.alive = true end
+    end
+
+    t.equals(s.rowOf(2).kills, 20,
+        'the close-range trade stopped working -- if that was deliberate, update this test')
+    t.equals(s.rowOf(3).deaths, 20, 'the deaths paid for those kills went unrecorded')
+end)
+
 os.exit(t.summary())

@@ -338,6 +338,25 @@ local env = Sandbox.newArenaEnv({
     --- Every entry handed to ArenaStats.Record, in order.
     function server.recorded() return recorded end
 
+    --- Every wallet movement the fixture has seen, with its reason.
+    ---
+    --- Exposed for the property test at the foot of this file: money is the
+    --- one thing a round can get wrong without any screen showing it.
+    server.ledger = qbx.ledger
+
+    --- Every player's whole balance, cash and bank together.
+    --- @return integer
+    function server.moneyInCirculation()
+        local total = 0
+        for id = 1, 6 do
+            local record = qbx.players[id]
+            if record then
+                total = total + (record.money.cash or 0) + (record.money.bank or 0)
+            end
+        end
+        return total
+    end
+
     --- Every notification one player was sent, oldest first, as plain text.
     ---
     --- Read off the wire because that is where the defect was: the string
@@ -2070,6 +2089,276 @@ t.test('CONTROL: free-for-all sends none of it', function()
     local hud = s.hudOf(3)
     t.isNil(hud.teamScores, 'a mode with no teams sent team totals')
     t.isNil(hud.departedScores, 'a mode with no teams sent banked team kills')
+end)
+
+-- ======================================================================
+-- THE PROPERTIES, OVER RANDOMISED ROUNDS
+--
+-- Every other test in this file names a case. These name a RULE and then
+-- go looking for a round that breaks it: 150 rounds of randomised mode,
+-- win condition, entry fee, lives, roster size, side bets, kills, walkouts
+-- and disconnections, with the invariants checked after every single event
+-- rather than only at the end.
+--
+-- IT FOUND A REAL DEFECT BEFORE IT WAS WRITTEN DOWN. The reconcile rule
+-- below -- the scoreboard rows plus the kills banked from fighters who
+-- left must equal the total the round is decided on -- is what caught the
+-- overlay printing a team total the board underneath it could not account
+-- for. No amount of reading either file raises that question.
+--
+-- TWO OF ITS FIRST FINDINGS WERE ITS OWN FAULT, and both are guarded
+-- against here in the way the probe is built rather than in a comment:
+--
+--   NEGATIVE LIVES came from the probe putting ELIMINATED fighters back on
+--   their feet, which nothing in the resource does. The elimination rule is
+--   under test; a probe that bypasses it tests nothing. Only a fighter who
+--   is still in is revived below.
+--
+--   MONEY "DESTROYED" came from asserting a closed system with no house. A
+--   stake forfeited by walking out is kept deliberately -- server/betting.lua
+--   says so at length and an admin stop is the one thing that unwinds it --
+--   so the rule is that money is never CREATED, and never leaves except
+--   where somebody walked out.
+--
+-- SEEDED, so a failure names a round that can be replayed exactly.
+-- ======================================================================
+
+local FUZZ_ROUNDS = 150
+local FUZZ_MODES = { 'ffa', 'tdm', 'gungame' }
+local FUZZ_CONDITIONS = { 'last_standing', 'score_limit', 'most_kills' }
+
+--- One randomised round, returning every rule it broke.
+--- @param seed integer
+--- @return string[]
+local function fuzzRound(seed)
+    math.randomseed(seed)
+
+    local broken = {}
+    local function broke(rule, detail)
+        broken[#broken + 1] = ('seed %d: %s -- %s'):format(seed, rule, detail)
+    end
+
+    local mode = FUZZ_MODES[math.random(#FUZZ_MODES)]
+    local condition = FUZZ_CONDITIONS[math.random(#FUZZ_CONDITIONS)]
+    local roster = math.random(2, 4)
+
+    local s = newServer(function(config)
+        config.Betting.enabled = true
+        config.Match.lives = math.random(1, 4)
+        config.Modes.gungame.enabled = true
+    end)
+    -- The ladder swaps a weapon and pays a supply on every promotion, and
+    -- this file's ammo stub predates the mode.
+    s.env.ArenaAmmo.SwapWeapon = function() return true end
+    s.env.ArenaAmmo.GrantSupply = function() return true end
+
+    local moneyBefore = s.moneyInCirculation()
+    local somebodyWalkedOut = false
+
+    local ok, err = pcall(function()
+        s.fire('createMatch', 1, {
+            arenaKey = 'trailerpark', modeKey = mode, entryFee = math.random(0, 2) * 500,
+            account = 'cash', winCondition = condition, scoreLimit = math.random(2, 5),
+        })
+        -- A create CAN be refused on purpose -- most_kills needs a clock --
+        -- and a refused create is not a round to measure.
+        local opened = s.lobby.All()[1]
+        if not opened then return end
+        local id = opened.id
+
+        for src = 2, roster do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+        if mode == 'tdm' then
+            for src = 1, roster do
+                s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+            end
+        end
+        if math.random() < 0.5 then
+            s.fire('spectateMatch', 5, { matchId = id })
+            s.fire('placeSpectatorBet', 5, { matchId = id, pick = tostring(math.random(1, roster)),
+                amount = math.random(1, 5) * 200, account = 'cash' })
+        end
+        for src = 1, roster do s.fire('setReady', src, { ready = true }) end
+        s.match.Start(id)
+        s.settle(1)
+
+        for _ = 1, math.random(3, 12) do
+            local live = s.lobby.Get(id)
+            if not live or live.state ~= 'live' then break end
+
+            local roll = math.random()
+            local victim, killer = math.random(1, roster), math.random(1, roster)
+            if roll < 0.70 then
+                if victim ~= killer then s.match.OnDeath(victim, killer) end
+                if math.random() < 0.6 then
+                    local row = s.lobby.Get(id) and s.lobby.Get(id).players[victim]
+                    -- STILL IN, or not at all. See the note above.
+                    if row and (row.lives == nil or row.lives > 0) then row.alive = true end
+                end
+            elseif roll < 0.85 then
+                s.fire('leaveMatch', victim, {}); somebodyWalkedOut = true
+            else
+                s.drop(victim); somebodyWalkedOut = true
+            end
+            s.settle(1)
+
+            local now = s.lobby.Get(id)
+            local hud = s.hudOf(1) or s.hudOf(2)
+            if now and hud then
+                if hud.remaining > hud.total then
+                    broke('more fighters remaining than there are',
+                        ('%d/%d'):format(hud.remaining, hud.total))
+                end
+
+                for _, row in ipairs(hud.scoreboard or {}) do
+                    if row.kills < 0 or row.deaths < 0 then
+                        broke('a negative score reached the board',
+                            ('%s %d/%d'):format(tostring(row.name), row.kills, row.deaths))
+                    end
+                    if row.tiers and (row.tier < 1 or row.tier > row.tiers) then
+                        broke('a tier outside the ladder reached the board',
+                            ('%s/%s'):format(tostring(row.tier), tostring(row.tiers)))
+                    end
+                end
+
+                -- THE RULE THAT CAUGHT THE DEFECT.
+                for team, total in pairs(hud.teamScores or {}) do
+                    local onBoard = 0
+                    for _, row in ipairs(hud.scoreboard or {}) do
+                        if row.team == team then onBoard = onBoard + row.kills end
+                    end
+                    local banked = (hud.departedScores or {})[team] or 0
+                    if onBoard + banked ~= total then
+                        broke('the board does not add up to the total above it',
+                            ('%s: rows %d + banked %d ~= %d'):format(team, onBoard, banked, total))
+                    end
+                end
+
+                if hud.winCondition and now.winCondition
+                    and hud.winCondition ~= s.env.Arena.WinConditionFor(now.winCondition)
+                then
+                    broke('the overlay and the match disagree about the rule',
+                        ('%s vs %s'):format(tostring(hud.winCondition), tostring(now.winCondition)))
+                end
+
+                -- The pot a player is shown is its own two halves added up:
+                -- the bet screen reads the halves and the overlay the whole.
+                local card = (s.lastState(1) or {}).matches
+                card = card and card[1]
+                if card and card.pot and card.entryPot and card.betPool
+                    and card.pot ~= card.entryPot + card.betPool
+                then
+                    broke('the pot is not its own halves',
+                        ('%d ~= %d + %d'):format(card.pot, card.entryPot, card.betPool))
+                end
+
+                for _, player in pairs(now.players or {}) do
+                    if (player.lives or 0) < 0 then
+                        broke('a fighter was driven below nought lives', tostring(player.lives))
+                    end
+                end
+            end
+        end
+
+        local guard = 0
+        while s.lobby.Get(id) and guard < 30 do
+            local live = s.lobby.Get(id)
+            if live.state == 'live' and guard == 10 then live.endsAt = os.time() - 1 end
+            s.settle(1)
+            guard = guard + 1
+        end
+        if s.lobby.Get(id) then
+            broke('the round never ended', 'still open after thirty sweeps and a spent clock')
+        end
+    end)
+
+    if not ok then broke('the round threw', tostring(err)) end
+
+    local moneyAfter = s.moneyInCirculation()
+    if moneyAfter > moneyBefore then
+        broke('money was created', ('%+d'):format(moneyAfter - moneyBefore))
+    end
+    if moneyAfter < moneyBefore and not somebodyWalkedOut then
+        broke('money left circulation with nobody having walked out',
+            ('%+d'):format(moneyAfter - moneyBefore))
+    end
+
+    local stillHeld = 0
+    for _, match in ipairs(s.lobby.All()) do
+        stillHeld = stillHeld + (s.env.ArenaBetting.GetPrizePool(match.id) or 0)
+    end
+    if stillHeld > 0 then
+        broke('a finished lobby is still holding stakes', tostring(stillHeld))
+    end
+
+    return broken
+end
+
+t.test(('the rules hold across %d randomised rounds'):format(FUZZ_ROUNDS), function()
+    local broken = {}
+    for seed = 1, FUZZ_ROUNDS do
+        for _, entry in ipairs(fuzzRound(seed)) do broken[#broken + 1] = entry end
+    end
+
+    if #broken > 0 then
+        local shown = {}
+        for index = 1, math.min(5, #broken) do shown[index] = broken[index] end
+        t.equals(#broken, 0, ('%d violation(s); first few: %s')
+            :format(#broken, table.concat(shown, ' | ')))
+    end
+    t.equals(#broken, 0, 'the randomised rounds broke a rule')
+end)
+
+t.test('CONTROL: the randomised rounds really do reach a live round', function()
+    -- A property test that silently created no matches would pass for ever.
+    -- This measures that the generator actually gets fighters into an arena
+    -- and kills happening, which is what every rule above is checked against.
+    local sawLive, sawKills, sawLadder, sawTeams = false, false, false, false
+
+    for seed = 1, 25 do
+        math.randomseed(seed * 7)
+        local s = newServer(function(config)
+            config.Betting.enabled = true
+            config.Match.lives = 3
+            config.Modes.gungame.enabled = true
+        end)
+        s.env.ArenaAmmo.SwapWeapon = function() return true end
+        s.env.ArenaAmmo.GrantSupply = function() return true end
+
+        local mode = FUZZ_MODES[(seed % #FUZZ_MODES) + 1]
+        s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = mode,
+            entryFee = 0, account = 'cash', winCondition = 'score_limit', scoreLimit = 9 })
+        local opened = s.lobby.All()[1]
+        if opened then
+            for src = 2, 4 do s.fire('joinMatch', src, { matchId = opened.id, account = 'cash' }) end
+            if mode == 'tdm' then
+                for src = 1, 4 do
+                    s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+                end
+            end
+            for src = 1, 4 do s.fire('setReady', src, { ready = true }) end
+            s.match.Start(opened.id)
+            s.settle(1)
+            local live = s.lobby.Get(opened.id)
+            if live and live.state == 'live' then
+                sawLive = true
+                s.match.OnDeath(2, 1)
+                s.settle(1)
+                local hud = s.hudOf(1)
+                if hud then
+                    for _, row in ipairs(hud.scoreboard or {}) do
+                        if row.kills > 0 then sawKills = true end
+                        if row.tiers then sawLadder = true end
+                    end
+                    if hud.teamScores then sawTeams = true end
+                end
+            end
+        end
+    end
+
+    t.isTrue(sawLive, 'the generator never got a round live')
+    t.isTrue(sawKills, 'the generator never recorded a kill')
+    t.isTrue(sawLadder, 'the generator never reached a ladder round')
+    t.isTrue(sawTeams, 'the generator never reached a team round')
 end)
 
 os.exit(t.summary())

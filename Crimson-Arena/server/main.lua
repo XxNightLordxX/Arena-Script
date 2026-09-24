@@ -1235,6 +1235,32 @@ local ADMIN_TOOLS = {
             return ArenaBetting.OwedReport()
         end,
     },
+    -- WHAT THE ARENA HANDS OUT, ASKED FOR RATHER THAN WAITED FOR.
+    --
+    -- THE BIGGER FAILURE WAS THE ONE YOU COULD NOT RE-CHECK. This report ran
+    -- once, at boot, and nowhere else -- while the ATTACHMENT report beside it
+    -- has always been on this list. That is backwards, and the boot thread
+    -- that runs them says why in its own words: a missing weapon item empties
+    -- the whole loadout, a missing attachment costs a scope.
+    --
+    -- IT IS ASKED AGAIN BECAUSE THE ANSWER CHANGES. An operator adds a weapon
+    -- to config.weapons.lua, installs or drops a weapon addon, or updates
+    -- ox_inventory -- and until now the only way to find out whether the
+    -- arena could still arm anybody was to restart the server and scroll back
+    -- through the console for a line printed thirty seconds in.
+    --
+    -- THE SAME FUNCTION THE BOOT THREAD CALLS, not a second copy: the report
+    -- an operator asks for and the one the console printed at start cannot
+    -- disagree about what this ox_inventory has.
+    items = {
+        title = 'Issued items',
+        run = function()
+            if type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.WeaponItemReport) ~= 'function' then
+                return { 'this build has no issued-items report.' }
+            end
+            return ArenaAmmo.WeaponItemReport()
+        end,
+    },
     attachments = {
         title = 'Attachments',
         run = function()
@@ -1861,7 +1887,11 @@ RegisterCommand('arenaconsole', function(src)
     -- IN A FIXED ORDER, not pairs(). ADMIN_TOOLS is a hash, so walking it
     -- directly prints these in a different order every run and makes two logs
     -- from the same server impossible to diff.
-    local order = { 'hours', 'dispatch', 'isolation', 'attachments', 'owed', 'jams' }
+    -- WHAT IS HANDED OUT BEFORE WHAT IS FITTED TO IT, the same order the boot
+    -- thread reads them in and for the same reason: a missing weapon item
+    -- empties the whole loadout, a missing attachment costs a scope, and the
+    -- bigger failure should not be scrolled past to reach the smaller one.
+    local order = { 'hours', 'dispatch', 'isolation', 'items', 'attachments', 'owed', 'jams' }
 
     local printed = 0
     for _, name in ipairs(order) do

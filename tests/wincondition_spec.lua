@@ -338,6 +338,13 @@ local env = Sandbox.newArenaEnv({
     --- Every entry handed to ArenaStats.Record, in order.
     function server.recorded() return recorded end
 
+    --- Every line this server printed to the console, in order.
+    ---
+    --- Exposed for the reports an operator reads: a report that is built
+    --- correctly and never printed is the defect, so the assertion has to be
+    --- made against what reached the console rather than the return value.
+    server.console = console
+
     --- Every wallet movement the fixture has seen, with its reason.
     ---
     --- Exposed for the property test at the foot of this file: money is the
@@ -2899,6 +2906,73 @@ t.test('and the label is checked even with the hours switched OFF', function()
         if tostring(problem):find('timezoneLabel', 1, true) then said = true end
     end
     t.isTrue(said, 'the label went unchecked because the gate was off')
+end)
+
+-- ======================================================================
+-- THE REPORT AN OPERATOR CAN ASK FOR
+--
+-- WeaponItemReport ran once, at boot, and nowhere else -- while the
+-- ATTACHMENT report beside it had always been on /arenaconsole and the
+-- admin tablet. That is backwards, and the boot thread that runs the pair
+-- says why in its own words: a missing weapon item empties the whole
+-- loadout, a missing attachment costs a scope.
+--
+-- IT IS ASKED AGAIN BECAUSE THE ANSWER CHANGES. Adding a weapon to
+-- config.weapons.lua, installing or dropping a weapon addon, or updating
+-- ox_inventory all change it, and the only way to find out whether the
+-- arena could still arm anybody was to restart the server and scroll back
+-- for a line printed thirty seconds in. That is a poor answer for any
+-- operator and no answer at all for one who cannot watch a round.
+-- ======================================================================
+
+t.test('/arenaconsole reports the issued items, not just the attachments', function()
+    local s = newServer()
+    t.isNotNil(s.commands.arenaconsole, '/arenaconsole is not registered at all')
+
+    local before = #s.console
+    -- Source 0 is the server console, which the command answers without an ace.
+    s.commands.arenaconsole(0, {}, '/arenaconsole')
+
+    local titles = {}
+    for index = before + 1, #s.console do
+        local title = tostring(s.console[index]):match('arenaconsole: %-%-%-%- (.+) %-%-%-%-')
+        if title then titles[#titles + 1] = title end
+    end
+
+    local sawItems, sawAttachments = nil, nil
+    for index, title in ipairs(titles) do
+        if title == 'Issued items' then sawItems = index end
+        if title == 'Attachments' then sawAttachments = index end
+    end
+
+    t.isNotNil(sawItems, 'the issued-items report is still only printed at boot: '
+        .. table.concat(titles, ', '))
+
+    -- AND BEFORE THE SMALLER FAILURE, the same order the boot thread reads
+    -- them in. A report buried under the one that matters less is a report an
+    -- operator scrolls past.
+    t.isNotNil(sawAttachments, 'the attachment report went missing')
+    t.isTrue(sawItems < sawAttachments,
+        'the whole-loadout failure is printed after the missing-scope one')
+end)
+
+t.test('and the tablet offers it as a tool of its own', function()
+    -- The panel draws whatever the server lists, so a tool that reaches
+    -- /arenaconsole and not the tablet is a tool half the operators never
+    -- find. Both read the SAME function, so they cannot disagree about what
+    -- this ox_inventory has.
+    local s = newServer()
+    local before = #s.console
+    s.commands.arenaconsole(0, {}, '/arenaconsole')
+
+    local counted
+    for index = before + 1, #s.console do
+        local n = tostring(s.console[index]):match('arenaconsole: (%d+) report%(s%) above')
+        if n then counted = tonumber(n) end
+    end
+
+    t.isNotNil(counted, 'the console never said how many reports it took')
+    t.equals(counted, 7, 'the tool list changed size unexpectedly -- was a report added or lost?')
 end)
 
 os.exit(t.summary())

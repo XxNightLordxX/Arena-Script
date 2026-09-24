@@ -4907,7 +4907,7 @@
         if (has(toolsTab)) toolsTab.classList.toggle('active', onTools);
 
         if (onTools) {
-            arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams', 'medical']).forEach(function (name) {
+            arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'items', 'attachments', 'jams', 'medical']).forEach(function (name) {
                 var button = byId('admin-tool-' + name);
                 if (has(button)) button.classList.toggle('active', admin.tool === name);
             });
@@ -5865,7 +5865,7 @@
     /* One binding per report rather than a loop over the five, because the
        ids are in the markup and a loop would let a renamed button fail
        silently instead of at the first press. */
-    arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'attachments', 'jams', 'medical']).forEach(function (name) {
+    arrayOf(['isolation', 'hours', 'dispatch', 'owed', 'items', 'attachments', 'jams', 'medical']).forEach(function (name) {
         bind('admin-tool-' + name, 'click', function () {
             admin.tool = name;
             admin.toolTitle = null;

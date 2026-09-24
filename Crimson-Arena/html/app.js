@@ -4573,7 +4573,7 @@
             var limit = int(hud.scoreLimit, 0);
             if (limit > 0) {
                 text = 'First to ' + limit;
-                    var sides = hudTeamScores(hud);
+                var sides = hudTeamScores(hud);
                 if (sides !== '') text += '  -  ' + sides;
                 else text += '  -  You ' + int(hud.kills, 0);
                 text += hudDepartedNote(hud);

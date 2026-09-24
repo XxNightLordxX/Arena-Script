@@ -1151,7 +1151,10 @@ local function pushHud(match)
             local banked, any = {}, false
             for team, kills in pairs(match.departedKills or {}) do
                 local count = math.max(0, Arena.ToInt(kills) or 0)
-                if Arena.IsKey(team) and count > 0 then banked[team] = count any = true end
+                if Arena.IsKey(team) and count > 0 then
+                    banked[team] = count
+                    any = true
+                end
             end
             if not any then return nil end
             return banked

@@ -2660,4 +2660,162 @@ t.test('KNOWN AND ACCEPTED: two accomplices standing together can trade kills', 
     t.equals(s.rowOf(3).deaths, 20, 'the deaths paid for those kills went unrecorded')
 end)
 
+-- ======================================================================
+-- WHAT THE RESOURCE IS STILL HOLDING AFTER A LONG DAY
+--
+-- A FiveM resource is a PROCESS that runs for days. Every test above asks
+-- whether one round is correct; this one asks whether ten thousand rounds
+-- leave anything behind. A per-player table that fills and never drains is
+-- invisible in every functional test ever written and takes the server down
+-- on a Saturday night.
+--
+-- The tables are found by INTROSPECTION rather than by a list somebody has
+-- to remember to update: every table held as an upvalue by any exported
+-- function of any module is long-lived by definition, so a new one added
+-- next year is tracked the day it appears without anybody touching this.
+-- ======================================================================
+
+--- Every table that lives for the resource's uptime, by module and name.
+local function longLivedTables(s)
+    local found, seen = {}, {}
+    local modules = {
+        lobby = s.env.ArenaLobby, match = s.env.ArenaMatch,
+        betting = s.env.ArenaBetting, ammo = s.env.ArenaAmmo,
+        dispatch = s.env.ArenaDispatch, stats = s.env.ArenaStats,
+    }
+
+    local function harvest(label, fn)
+        if type(fn) ~= 'function' then return end
+        local index = 1
+        while true do
+            local name, value = debug.getupvalue(fn, index)
+            if not name then break end
+            if type(value) == 'table' and name ~= '_ENV' and not seen[value] then
+                seen[value] = true
+                found[#found + 1] = { key = label .. '.' .. name, table = value }
+            end
+            index = index + 1
+        end
+    end
+
+    for module, exports in pairs(modules) do
+        if type(exports) == 'table' then
+            for _, fn in pairs(exports) do harvest(module, fn) end
+        end
+    end
+    harvest('util', s.env.ArenaRateLimit)
+
+    table.sort(found, function(a, b) return a.key < b.key end)
+    return found
+end
+
+--- THE FIXTURE'S OWN RECORDERS, which accumulate ON PURPOSE so tests above
+--- can read what the match told them. They are this file's tables, not the
+--- resource's, and counting them as leaks would make this test cry wolf on
+--- every run. Named rather than pattern-matched so adding a recorder without
+--- thinking about it fails here.
+local FIXTURE_RECORDERS = {
+    ['dispatch.downCleared'] = true,
+    ['stats.recorded'] = true,
+}
+
+local function countOf(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+t.test('a long day of rounds leaves nothing behind', function()
+    local s = newServer(function(config)
+        config.Betting.enabled = true
+        config.Match.lives = 1
+    end)
+    s.env.ArenaAmmo.SwapWeapon = function() return true end
+    s.env.ArenaAmmo.GrantSupply = function() return true end
+
+    local tracked = longLivedTables(s)
+    t.isTrue(#tracked >= 10,
+        ('introspection found only %d long-lived table(s) -- it has stopped working')
+            :format(#tracked))
+
+    local atRest = {}
+    for _, entry in ipairs(tracked) do atRest[entry.key] = countOf(entry.table) end
+
+    -- Sixty complete lifecycles, with panels opened and shut, entry fees
+    -- paid, fighters walking out and fighters disconnecting mid-round --
+    -- every path that puts a player into a table somebody has to take them
+    -- out of again.
+    local peak = 0
+    for round = 1, 60 do
+        for src = 1, 6 do s.fire('requestState', src, { panel = true }) end
+        s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa',
+            entryFee = 500, account = 'cash' })
+        local id = s.lobby.All()[1].id
+        for src = 2, 4 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+        for src = 1, 4 do s.fire('setReady', src, { ready = true }) end
+        s.match.Start(id)
+        s.settle(1)
+
+        -- THE HIGH-WATER MARK, so this test can prove the tables FILL. One
+        -- that measured nought throughout would pass on a resource that had
+        -- stopped tracking anything at all.
+        for _, entry in ipairs(tracked) do
+            if not FIXTURE_RECORDERS[entry.key] then
+                peak = math.max(peak, countOf(entry.table) - (atRest[entry.key] or 0))
+            end
+        end
+
+        if round % 3 == 0 then s.fire('leaveMatch', 4, {}) end
+        if round % 5 == 0 then s.drop(3) end
+        s.kill(2, 1); s.settle(1); s.kill(3, 1); s.kill(4, 1)
+        s.settle(5)
+        for src = 1, 6 do s.fire('panelClosed', src, {}) end
+    end
+
+    for src = 1, 6 do s.drop(src) end
+    s.settle(5)
+
+    t.isTrue(peak > 0,
+        'no tracked table ever filled, so draining to nought proves nothing')
+
+    local held = {}
+    for _, entry in ipairs(tracked) do
+        if not FIXTURE_RECORDERS[entry.key] then
+            local now = countOf(entry.table)
+            local was = atRest[entry.key] or 0
+            if now > was then
+                held[#held + 1] = ('%s %d -> %d'):format(entry.key, was, now)
+            end
+        end
+    end
+
+    t.equals(#held, 0, ('still holding after sixty rounds: %s')
+        :format(table.concat(held, ', ')))
+end)
+
+t.test('CONTROL: the leak check can actually see a table that does not drain', function()
+    -- A leak test that cannot fail is the most reassuring useless thing in a
+    -- suite. This plants a table that fills and never empties, on the same
+    -- introspection path the test above uses, and requires it to be caught.
+    local s = newServer()
+    local planted = {}
+    -- Held as an upvalue of an exported function, which is exactly how every
+    -- real long-lived table in the resource is held.
+    s.env.ArenaLobby.LeakForTest = function(src) planted[src] = true end
+
+    local tracked = longLivedTables(s)
+    local sawIt = false
+    for _, entry in ipairs(tracked) do
+        if entry.table == planted then sawIt = true end
+    end
+    t.isTrue(sawIt, 'introspection missed a table held exactly the way the real ones are')
+
+    for src = 1, 25 do s.env.ArenaLobby.LeakForTest(src) end
+    t.equals(countOf(planted), 25, 'the planted table did not fill')
+
+    -- and nothing anywhere empties it, which is the whole point
+    for src = 1, 6 do s.drop(src) end
+    t.isTrue(countOf(planted) > 0, 'the planted leak drained itself, so it proves nothing')
+end)
+
 os.exit(t.summary())

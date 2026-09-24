@@ -2423,7 +2423,12 @@ local HOSTILE_PAYLOADS = {
         account = '<script>', teamKey = '%s%s%s%n' } },
     -- THE ONE THAT TESTS AUTHORITY RATHER THAN PARSING.
     { name = 'WELL FORMED, wrong sender', value = {
-        matchId = 'X', arenaKey = 'pier', modeKey = 'ffa', lives = 9, radar = true,
+        -- A REAL, ENABLED ARENA THAT IS NOT THE ONE THIS MATCH IS ON. The
+        -- first version named 'pier', which does not exist on this server, so
+        -- UpdateMatch refused it on 'error.arena_unavailable' and the
+        -- arena-changing path was never reached at all -- a well-formed
+        -- payload that could not actually change anything.
+        matchId = 'X', arenaKey = 'skydome', modeKey = 'ffa', lives = 9, radar = true,
         roundTimeSeconds = 1200, winCondition = 'most_kills', scoreLimit = 2,
         teamKey = 'ash', ready = true, account = 'cash', amount = 200, pick = '1',
         killer = 1, entryFee = 0, weapons = { { key = 'rifle' } } } },
@@ -2491,6 +2496,7 @@ local function sweep()
                     local snap = s.lobby.Get(id)
                     local was = {
                         state = snap and snap.state, scoreLimit = snap and snap.scoreLimit,
+                        arenaKey = snap and snap.arenaKey, modeKey = snap and snap.modeKey,
                         winCondition = snap and snap.winCondition, lives = snap and snap.lives,
                         host = snap and snap.hostSource, roster = {}, kills = {},
                     }
@@ -2525,6 +2531,17 @@ local function sweep()
                         if now.state ~= was.state then
                             caughtIt(('moved the round on: %s -> %s')
                                 :format(tostring(was.state), tostring(now.state)))
+                        end
+                        -- THE GROUND AND THE GAME, which nothing here checked
+                        -- until the well-formed payload was given values that
+                        -- could really move them.
+                        if now.arenaKey ~= was.arenaKey then
+                            caughtIt(('moved the round to another arena: %s -> %s')
+                                :format(tostring(was.arenaKey), tostring(now.arenaKey)))
+                        end
+                        if now.modeKey ~= was.modeKey then
+                            caughtIt(('changed the mode: %s -> %s')
+                                :format(tostring(was.modeKey), tostring(now.modeKey)))
                         end
                         if now.scoreLimit ~= was.scoreLimit then caughtIt('moved the kill limit') end
                         if now.winCondition ~= was.winCondition then caughtIt('changed how it is won') end

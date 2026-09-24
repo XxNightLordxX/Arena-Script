@@ -235,6 +235,33 @@ local teamMarkTint = nil
 --- with exactly one caller.
 local drawTeamMarks
 
+--- DECLARED HERE FOR THE REASON ABOVE, and it is the same per-frame thread.
+---
+--- The arena repair is defined two thousand lines down, beside the props it
+--- puts back, and it is called from the same loop `drawTeamMarks` is --
+--- which is compiled long before either exists. A `local function` down
+--- there would leave this call site reading a global nothing assigns, and
+--- calling nil inside that loop takes the death backstop down with it.
+local repairArenaProps
+
+--- How often the standing arena is checked for holes, and when the next
+--- check is due.
+---
+--- UP HERE WITH THE DECLARATION ABOVE, AND FOR EXACTLY THE SAME REASON.
+--- Written beside the repair itself, two thousand lines down, these two are
+--- locals declared AFTER the per-frame loop that reads them -- so that loop
+--- would compile against globals nothing ever assigns, and
+--- `GetGameTimer() >= nil` raises on the first frame of the first round,
+--- inside the thread that also carries the death backstop. Caught before it
+--- shipped, by the warning above saying so in as many words.
+---
+--- TWO SECONDS IS A COMPROMISE BETWEEN TWO BAD ANSWERS. Faster is a
+--- pointless walk over ninety entities on a client already drawing a round;
+--- slower is how long somebody stands on air before the ground comes back,
+--- and on the sky arena standing on air is a kilometre of falling.
+local ARENA_REPAIR_MS = 2000
+local nextArenaRepairAt = 0
+
 local function notify(key, notifyType, ...)
     lib.notify({
         title = Config.NotifyTitle,
@@ -1249,6 +1276,23 @@ local function startArenaThread()
 
             handleDeath(PlayerPedId())
 
+            -- THE FLOOR IS STILL THERE, CHECKED ON A TIMER INSIDE THE LOOP
+            -- THAT IS ALREADY RUNNING.
+            --
+            -- Not a thread of its own, deliberately: this loop is already
+            -- per-frame for the death backstop above, so the check costs one
+            -- clock read on the frames it does not run -- and a new thread
+            -- is the change this file has already measured as moving what
+            -- the blip loop's own timing tests see.
+            --
+            -- GATED ON A CLOCK AND NOT ON A FRAME COUNT, because the thing
+            -- being bounded is how long somebody stands on air, which is
+            -- measured in seconds and not in frames.
+            if repairArenaProps and GetGameTimer() >= nextArenaRepairAt then
+                nextArenaRepairAt = GetGameTimer() + ARENA_REPAIR_MS
+                repairArenaProps()
+            end
+
             -- HOLD THE TEAM OUTLINE AGAINST THE OTHER RESOURCES ON THE BOX.
             --
             -- The outline colour and shader are ONE setting for the whole
@@ -2134,7 +2178,80 @@ local FLOOR_PIECES_WORTH_WARNING_ABOUT = 40
 
 local arenaProps = {}
 
+--- HOW EACH STANDING PIECE WAS BUILT, index-aligned with `arenaProps`.
+---
+--- THE REPORT THIS EXISTS FOR, from the owner of a live server: "the floor
+--- keeps disappearing occasionally in the match" -- and, asked what that
+--- looks like from inside: "some of the floor disappears where you can fall
+--- through it, just disappears, but not the whole floor".
+---
+--- PATCHY AND SOLID-ELSEWHERE IS THE WHOLE DIAGNOSIS. A floor that went
+--- INVISIBLE but stayed walkable would be the model being evicted or the
+--- draw distance giving out, and both of those take every piece of a model
+--- at once. Holes you fall through, in some places and not others, is
+--- individual OBJECTS ceasing to exist while the round is still being
+--- fought. On the shipped skydome the floor is nine huge tiles, so losing
+--- one is a thirty-metre hole in the ground at a thousand metres up.
+---
+--- WE DO NOT KNOW WHO DELETES THEM, AND THIS DOES NOT NEED TO. These are
+--- client-local objects on a server running two hundred other resources,
+--- any of which may sweep the object pool, clear an area, or run an
+--- anticheat tidy-up; the engine itself reclaims entities when the object
+--- pool fills. What every one of those has in common is that the piece
+--- stops existing and nothing puts it back. This table is what makes
+--- putting it back possible: the model, the exact position and heading, and
+--- what kind of piece it was, kept for as long as the piece is meant to be
+--- standing.
+local arenaPlan = {}
+
+--- Every model the standing arena is built from.
+---
+--- RELEASED AT TEARDOWN, NOT AT THE END OF THE BUILD, and the move is worth
+--- the line it costs. Holding a model is how the repair below can put a
+--- piece back in the same frame it notices one missing -- a RequestModel
+--- there would have to wait, and waiting is a hole in the floor for as long
+--- as it takes. The build already held them for its own whole length for a
+--- related reason; this extends that to the length of the arena.
+local heldModels = {}
+
 local arenaSurfaceZ = nil
+
+--- DECLARED WITH THE REST OF THE PROP STATE, ABOVE EVERY READER.
+--- clearArenaScenery is defined hundreds of lines before buildArenaProps
+--- and reads this; left beside the build it guards, it was a local
+--- declared after that reader, so the refusal compiled against a global
+--- nothing assigns and `if nil and not mine` was false every time. The
+--- guard would have been in the file, read correctly by anybody looking
+--- at it, and doing nothing at all.
+--- Is a build in flight right now?
+---
+--- THE RACE THIS CLOSES, and it produces the owner's symptom exactly.
+--- buildArenaProps YIELDS -- loadPropModel waits for a model the streamer
+--- has not finished with -- so a second call can start while the first is
+--- still laying pieces. The second one's first act is clearArenaScenery,
+--- which DELETES every piece the first has placed so far and empties the
+--- list; the first then carries on appending the pieces it had left to an
+--- empty list, and stops. What is standing afterwards is whatever the first
+--- build had not reached yet: a floor with holes in it, and no error
+--- anywhere.
+---
+--- AND THE COUNT STILL READS RIGHT, which is why this was invisible. Each
+--- build counts its OWN successful CreateObjects, so both report "87 of 87
+--- piece(s) built" while far fewer than 87 are left standing. Every measured
+--- fact the owner sent is consistent with this.
+---
+--- TWO CALLERS CAN COINCIDE: entering a round (enterArena) and the spectator
+--- camera making sure there is something to look at
+--- (ArenaMatch.EnsureSpectatorScenery, which runs off a per-frame loop).
+--- A fighter who is eliminated and starts watching is one client doing both.
+---
+--- REFUSED, NOT QUEUED. The second caller wanted an arena standing and one
+--- is being built for it; waiting for it would mean yielding inside callers
+--- that must not, and queueing a rebuild behind it would run the whole
+--- teardown again for no reason. Answering "no" is honest -- the caller
+--- re-asks on its next pass, by which time the first build has finished and
+--- the `#arenaProps > 0` guard answers for it.
+local buildingArena = false
 
 --- Which arena this client last built scenery for, and at what size.
 ---
@@ -2186,6 +2303,34 @@ local function removeArenaProps()
         end
     end
     arenaProps = {}
+
+    -- THE PLAN AND THE MODELS GO WITH THE PIECES, and both have to. A plan
+    -- that outlived the teardown would have the repair below rebuilding an
+    -- arena somebody has just left; a model held past it would be held for
+    -- the rest of the session, which is the leak the end-of-build release
+    -- used to prevent and which moving it here has to keep preventing.
+    arenaPlan = {}
+    for hash in pairs(heldModels) do SetModelAsNoLongerNeeded(hash) end
+    heldModels = {}
+end
+
+--- Everything a freshly created piece needs doing to it.
+---
+--- SPLIT OUT SO THERE IS EXACTLY ONE OF IT. The repair below has to produce
+--- a piece indistinguishable from one the build made -- frozen, solid,
+--- invincible, drawn at the arena's own distance and marked as ours -- and
+--- a second copy of this list is a second copy that drifts. The first thing
+--- it would drift on is the collision, which is the half of a floor tile
+--- that stops somebody falling a thousand metres.
+--- @param object integer
+--- @param heading number
+local function dressArenaProp(object, heading)
+    SetEntityHeading(object, heading)
+    FreezeEntityPosition(object, true)
+    SetEntityCollision(object, true, true)
+    SetEntityInvincible(object, true)
+    SetEntityLodDist(object, PROP_LOD_DISTANCE)
+    SetEntityAsMissionEntity(object, true, true)
 end
 
 local function sweepStrayArenaProps(arenaKey, factor)
@@ -2219,6 +2364,97 @@ local function sweepStrayArenaProps(arenaKey, factor)
     return removed
 end
 
+--- How many pieces this client has had to put back this round, and how many
+--- of them it has already said so about.
+local repairsThisArena = 0
+local repairsSaid = 0
+
+--- Puts back any piece of the standing arena that has stopped existing.
+---
+--- WHAT IT IS FOR, in the owner's words: "the floor keeps disappearing
+--- occasionally in the match ... some of the floor disappears where you can
+--- fall through it ... it was there then disappeared". Built, drawn, stood
+--- on, and then gone -- while the round carried on around the hole.
+---
+--- IT DOES NOT KNOW WHO DELETED THEM AND DOES NOT NEED TO. A client-local
+--- object can stop existing for reasons that have nothing to do with this
+--- resource: another script sweeping the object pool, an area being
+--- cleared, an anticheat tidying up entities it does not recognise, or the
+--- engine reclaiming one when the object pool fills -- which a server
+--- running two hundred resources does. Every one of those ends the same
+--- way, with a piece missing and nothing putting it back. This puts it
+--- back.
+---
+--- AND IT SAYS SO, because a floor that silently repairs itself is a fault
+--- nobody ever fixes properly. The count goes to the SERVER console -- the
+--- operator's, not the player's F8 -- so what is deleting them can be found
+--- by what else is in the log beside it.
+---
+--- REBUILT FROM THE PLAN, NEVER FROM THE CONFIG. arenaPlan holds what
+--- CreateObject was actually given, so a replacement lands exactly where its
+--- neighbours expect it. Recomputing the placement here would be a second
+--- copy of the arithmetic that decides whether two floor tiles meet or leave
+--- a seam.
+---
+--- FAILS QUIET ON A MODEL IT CANNOT HAVE. heldModels keeps every model the
+--- arena was built from loaded for as long as the arena stands, so the
+--- normal case needs no request and no wait at all. If it is somehow gone,
+--- the piece is skipped rather than waited for: this runs inside the round's
+--- own loop, and a loop that blocks is worse than a hole.
+--- @return integer repaired
+-- ASSIGNED, NOT DECLARED: it writes the local forward-declared at the top of
+-- this file rather than shadowing it. See that declaration for what a shadow
+-- costs here.
+repairArenaProps = function()
+    if #arenaProps == 0 then return 0 end
+
+    local repaired, floors = 0, 0
+    for index, object in ipairs(arenaProps) do
+        if not DoesEntityExist(object) then
+            local plan = arenaPlan[index]
+            if plan and HasModelLoaded(plan.hash) then
+                local replacement = CreateObject(plan.hash, plan.x, plan.y, plan.z, false, false, false)
+                if replacement and replacement ~= 0 then
+                    dressArenaProp(replacement, plan.heading)
+                    arenaProps[index] = replacement
+                    repaired = repaired + 1
+                    if plan.kind == 'floor' then floors = floors + 1 end
+                end
+            end
+        end
+    end
+
+    if repaired == 0 then return 0 end
+
+    repairsThisArena = repairsThisArena + repaired
+
+    -- SAID ON THE FIRST, THE TENTH AND THEN EVERY HUNDREDTH, which is the
+    -- shape of the question an operator is actually asking. One piece once
+    -- is worth knowing and not worth a second line; a floor being eaten
+    -- continuously is a different fault and has to keep saying so, or it
+    -- reads as the first one and gets closed.
+    local say = repairsThisArena == 1
+        or (repairsThisArena >= 10 and repairsSaid < 10)
+        or (repairsThisArena - repairsSaid) >= 100
+    if say then
+        repairsSaid = repairsThisArena
+        local lines = {
+            ('arena scenery: PUT BACK %d piece(s) that had stopped existing mid-round -- %d of them floor. '
+                .. '%d of this arena\'s %d piece(s) have had to be replaced so far.')
+                :format(repaired, floors, repairsThisArena, #arenaProps),
+            '  These are built by this client and nothing in this resource deletes them during a round,',
+            '  so something else on this server is removing them -- an object sweep, an area being',
+            '  cleared, an anticheat, or the engine reclaiming entities because the object pool is full.',
+            '  Whatever it is will be in this log beside this line. Until it is found, the floor is',
+            '  repaired rather than left with a hole in it.',
+        }
+        for _, line in ipairs(lines) do print('[crimson_arena] ' .. line) end
+        ArenaDebugReport(lines)
+    end
+
+    return repaired
+end
+
 --- Takes down this client's arena scenery: the pieces it remembers building,
 --- and then anything of that arena's own still standing that it does not.
 ---
@@ -2229,7 +2465,23 @@ end
 --- precisely the one that appears after it: created by a build that was still
 --- unwinding when the exit ran. The next build overwrites it, so it never
 --- names the wrong arena.
-local function clearArenaScenery()
+--- @param mine boolean? -- true only from the build that raised the flag
+local function clearArenaScenery(mine)
+    -- NOTHING TEARS DOWN WHAT A BUILD IS STILL PLACING, and this is the rule
+    -- the whole race turns on.
+    --
+    -- Refusing the second BUILD was not enough on its own, and testing it is
+    -- what showed that: both of the callers that ask for an arena treat a
+    -- refusal as a failure and run clearArenaScenery in their failure path
+    -- -- ArenaMatch.EnsureSpectatorScenery does it outright, and enterArena
+    -- does it by way of leaveArena. So the refusal simply moved the same
+    -- deletion one line down, and the first build's pieces went anyway.
+    --
+    -- The invariant belongs here, where every one of those paths passes
+    -- through. A build in flight owns the pieces until it finishes; the only
+    -- caller allowed past is that build's own opening clear, which says so.
+    if buildingArena and not mine then return false end
+
     removeArenaProps()
     spectatorBuilt = false
     if builtArena then sweepStrayArenaProps(builtArena.key, builtArena.factor) end
@@ -2237,11 +2489,38 @@ local function clearArenaScenery()
 end
 
 local function buildArenaProps(arenaKey, factor, boundary)
-    clearArenaScenery()
+    -- REFUSED BEFORE clearArenaScenery, WHICH IS THE WHOLE POINT. The
+    -- teardown is the destructive half; a second build that gets as far as
+    -- running it has already done the damage.
+    if buildingArena then
+        ArenaLogOnce('build-reentered',
+            'arena scenery: a second build was asked for while one was still laying pieces, and was '
+            .. 'refused. Running it would have deleted the pieces already placed and left holes in '
+            .. 'the floor. (Said once a session.)')
+
+        -- ANSWERED WITH WHAT IS ACTUALLY STANDING, not a flat no. Both
+        -- callers read this as "is there an arena", and a no sends them into
+        -- a failure path whose first act is a teardown. The build already
+        -- running is laying the arena they asked for, so once it has pieces
+        -- on the ground the honest answer to their question is yes.
+        return #arenaProps > 0
+    end
+    buildingArena = true
+
+    clearArenaScenery(true)
 
     sweepStrayArenaProps(arenaKey, factor)
     builtArena = { key = arenaKey, factor = factor }
     spectatorBuilt = false
+
+    -- A FRESH ARENA IS A FRESH TALLY. The repair count is about THIS
+    -- standing arena -- "how much of the ground under this round has had to
+    -- be put back" -- so carrying it across a rebuild would report the last
+    -- round's damage against this one, and the escalating report above would
+    -- go quiet on the very round that started eating the floor.
+    repairsThisArena = 0
+    repairsSaid = 0
+    nextArenaRepairAt = 0
 
     -- THE SAME FACTOR THE SERVER PLANNED THE SPAWNS WITH. It arrives on the
     -- entry payload rather than being worked out here, because this side
@@ -2278,6 +2557,7 @@ local function buildArenaProps(arenaKey, factor, boundary)
 
     local wanted = Arena.ArenaProps(arenaKey, measured, factor)
     if #wanted == 0 then
+        buildingArena = false
         return true
     end
 
@@ -2348,13 +2628,22 @@ local function buildArenaProps(arenaKey, factor, boundary)
                     local out = math.sqrt(ox * ox + oy * oy)
                     if out > coverReach then coverReach = out end
                 end
-                SetEntityHeading(object, heading)
-                FreezeEntityPosition(object, true)
-                SetEntityCollision(object, true, true)
-                SetEntityInvincible(object, true)
-                SetEntityLodDist(object, PROP_LOD_DISTANCE)
-                SetEntityAsMissionEntity(object, true, true)
+                dressArenaProp(object, heading)
                 arenaProps[#arenaProps + 1] = object
+
+                -- WRITTEN DOWN AT THE SAME INDEX, so a piece that goes
+                -- missing can be put back exactly where it was. Everything
+                -- here is what CreateObject and dressArenaProp were just
+                -- given -- the placement arithmetic above is NOT repeated at
+                -- repair time, because a second copy of it is a second copy
+                -- that drifts, and this one decides whether a tile lines up
+                -- with its neighbours or leaves a seam to fall through.
+                arenaPlan[#arenaProps] = {
+                    hash = hash,
+                    x = piece.x, y = piece.y, z = placeZ,
+                    heading = heading,
+                    kind = piece.kind,
+                }
                 built = built + 1
             end
             held[hash] = true
@@ -2363,7 +2652,13 @@ local function buildArenaProps(arenaKey, factor, boundary)
         end
     end
 
-    for hash in pairs(held) do SetModelAsNoLongerNeeded(hash) end
+    -- HELD FOR THE LIFE OF THE ARENA, NOT RELEASED HERE. See `heldModels`:
+    -- the repair below has to be able to put a piece back in the frame it
+    -- notices one gone, and a RequestModel at that moment would wait. They
+    -- are released by removeArenaProps, which is the only thing that takes
+    -- the pieces down, so nothing is held longer than the arena it belongs
+    -- to.
+    for hash in pairs(held) do heldModels[hash] = true end
 
     -- ONCE PER MODEL: a model this build does not have is not going to
     -- appear between one round and the next, so the second printing of the
@@ -2495,12 +2790,20 @@ local function buildArenaProps(arenaKey, factor, boundary)
         end
     end
 
+    -- LOWERED ON EVERY EXIT, AND THERE ARE THREE. A flag left up by one
+    -- early return would refuse every build for the rest of the session --
+    -- arenas that never appear at all, which is worse than the race it was
+    -- raised to stop. Both failure exits lower it as well as the success
+    -- one, and there is no path out of this function that does not go
+    -- through one of the three.
     if needsFloor and builtFloor == 0 then
         arenaSurfaceZ = nil
         print('[crimson_arena] arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.')
+        buildingArena = false
         return false
     end
 
+    buildingArena = false
     return true
 end
 

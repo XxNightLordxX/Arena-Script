@@ -798,6 +798,19 @@ t.test('DEFECT: and it does not let go of a model it is still building with', fu
     --
     -- So the ordering is the invariant, not the count: nothing may be
     -- released while pieces are still going up.
+    --
+    -- THE RELEASE HAS SINCE MOVED AGAIN, FURTHER IN THE SAME DIRECTION, and
+    -- this test moved with it rather than being relaxed. It used to happen
+    -- at the end of the build; it now happens at TEARDOWN, so the models are
+    -- held for as long as the arena is standing. That is the stronger form
+    -- of the very rule this test exists for -- during a build there is now
+    -- no release at all to be mis-ordered -- and it is what lets a missing
+    -- piece be put back in the frame it is noticed rather than after a wait
+    -- for the streamer. See client/match.lua's `heldModels`, and
+    -- floorrepair_spec for the repair that depends on it.
+    --
+    -- So the round is run to its END here. Watching only the entry would see
+    -- no release at all and could not tell "held on purpose" from "leaked".
     local c = newClient()
 
     local order = {}
@@ -810,6 +823,17 @@ t.test('DEFECT: and it does not let go of a model it is still building with', fu
 
     c.enter('skydome')
 
+    -- NOT ONE RELEASE YET, which is the new half of the contract: the arena
+    -- is standing, so every model it is built from is still wanted.
+    local duringBuild = #order
+    for _, what in ipairs(order) do
+        t.isTrue(what ~= 'release',
+            'a model was released while the arena was still standing -- a repair would have to wait for it')
+    end
+    t.isTrue(duringBuild > 0, 'nothing happened at all, so this test measures nothing')
+
+    c.fire('crimson_arena:client:exitArena', {})
+
     c.env.CreateObject = realCreate
 
     local lastCreate, firstRelease = 0, nil
@@ -819,7 +843,7 @@ t.test('DEFECT: and it does not let go of a model it is still building with', fu
     end
 
     t.isTrue(lastCreate > 0, 'nothing was built, so this test measures nothing')
-    t.isNotNil(firstRelease, 'the build never lets go of its models at all, which is a leak')
+    t.isNotNil(firstRelease, 'the arena never lets go of its models at all, which is a leak')
     t.isTrue(firstRelease > lastCreate,
         ('a model was released at step %d while pieces were still going up until step %d -- '
             .. 'the streamer is free to unload it and the next batch will block reloading it')

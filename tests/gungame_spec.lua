@@ -1513,25 +1513,26 @@ end)
 -- 24-29. THE PATHS NOTHING REACHED
 -- ======================================================================
 
-t.test('the mode ships OFF, and its ladder is a real one anyway', function()
-    -- THIS ASSERTION HAS NOW BEEN BOTH WAYS, AND THE OWNER DECIDES IT. It
-    -- shipped off, then on, and the owner has switched it off again. The
-    -- previous wording invited exactly this -- "if that is deliberate, this
-    -- test is the place to say so" -- so this is that.
+t.test('the mode ships ON, and its ladder is a real one', function()
+    -- THIS ASSERTION HAS NOW BEEN BOTH WAYS THREE TIMES, AND THE OWNER
+    -- DECIDES IT EVERY TIME. Off, on, off, and now on again -- asked for in
+    -- those words, so that players can pick it. Each previous wording invited
+    -- exactly this -- "if that is deliberate, this test is the place to say
+    -- so" -- so this is that, again.
     --
-    -- WHY THE TEST STAYS RATHER THAN GOING. Every test in this file turns the
-    -- mode on in its own fixture, so none of them can tell you what an
-    -- operator actually receives. This one reads the SHIPPED config and
+    -- WHY THE TEST STAYS RATHER THAN GOING. Every other test in this file
+    -- turns the mode on in its own fixture, so none of them can tell you what
+    -- an operator actually receives. This one reads the SHIPPED config and
     -- nothing else, and it is the only thing that would notice the flag moving
-    -- again by accident.
+    -- by accident rather than on purpose.
     --
-    -- AND THE SECOND HALF MATTERS MORE NOW, NOT LESS. A mode that ships ON and
-    -- broken is broken for everybody immediately, which is loud. A mode that
-    -- ships OFF and broken is silent until the day somebody opts in -- so the
-    -- ladder still has to be provably playable while nobody is playing it.
+    -- AND THE SECOND HALF IS WHAT IT WAS ALWAYS FOR. A ladder that does not
+    -- resolve is now broken for every player the moment they open the panel,
+    -- rather than silently waiting for somebody to opt in -- so the classes
+    -- below matter more with the mode on than they did with it off.
     local shipped = Sandbox.shippedConfig()
-    t.equals(shipped.Modes.gungame.enabled, false,
-        'gun game was switched back on -- if that is deliberate, this test is the place to say so')
+    t.equals(shipped.Modes.gungame.enabled, true,
+        'gun game was switched back off -- if that is deliberate, this test is the place to say so')
 
     -- AND WHAT SHIPS IS PLAYABLE, which is now the whole of this test's job.
     --

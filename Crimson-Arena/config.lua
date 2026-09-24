@@ -755,7 +755,7 @@ Config.Modes = {
     ['gungame'] = {
         label = 'Gun Game',
         description = 'Climb the tiers. Every kill is a better weapon; a death costs you one unless the fighter who killed you was holding a gun.',
-        enabled = false,
+        enabled = true,
         -- A ladder is climbed by one player, so it is won by one player.
         teams = false,
         icon = 'fas fa-arrow-up-9-1',

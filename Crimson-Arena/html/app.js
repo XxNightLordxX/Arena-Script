@@ -4573,18 +4573,45 @@
             var limit = int(hud.scoreLimit, 0);
             if (limit > 0) {
                 text = 'First to ' + limit;
-                var sides = hudTeamScores(hud);
+                    var sides = hudTeamScores(hud);
                 if (sides !== '') text += '  -  ' + sides;
                 else text += '  -  You ' + int(hud.kills, 0);
+                text += hudDepartedNote(hud);
             }
         } else if (rule === 'most_kills') {
             text = 'Most kills when the clock stops';
             var tally = hudTeamScores(hud);
-            if (tally !== '') text += '  -  ' + tally;
+            if (tally !== '') text += '  -  ' + tally + hudDepartedNote(hud);
         }
 
         node.textContent = text;
         show(node, text !== '');
+    }
+
+    /* WHY THE ROWS DO NOT ADD UP TO THE LINE ABOVE THEM.
+
+       A side keeps the kills of a fighter who walks out -- the server banks
+       them so quitting cannot cost a team its progress, and they still end
+       the round: measured, a crimson pair on 2 lost their 2-kill fighter,
+       the remaining one took a third, and the limit of 3 was reached. The
+       board beside the total lists who is HERE, so it added to 1 under a
+       line that said 3. Both numbers are right, and a player cannot
+       reconcile them by looking.
+
+       Said only when there is something to say. The server sends this field
+       at all only once somebody with a kill to their name has gone. */
+    function hudDepartedNote(hud) {
+        var banked = hud.departedScores;
+        if (!banked || typeof banked !== 'object') return '';
+
+        var total = 0;
+        Object.keys(banked).forEach(function (key) { total += int(banked[key], 0); });
+        if (total <= 0) return '';
+
+        /* THE KILLS, NOT A HEADCOUNT. The server banks a per-side total and
+           never how many people it came from, so the number of fighters who
+           walked out is not known here and is not claimed. */
+        return '  (incl. ' + total + ' from fighters who left)';
     }
 
     /* The two sides and their totals, THE READER'S OWN SIDE FIRST, or '' for

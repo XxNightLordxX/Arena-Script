@@ -631,5 +631,66 @@ test('and a limit of zero is not advertised as a target of nought', () => {
         'the overlay offered a race to nought: ' + panel.node('hud-goal').textContent);
 });
 
+test('the goal line explains kills the board cannot account for', () => {
+    /* A side KEEPS the kills of a fighter who walks out -- the server banks
+       them and they still end the round -- while the board beside the total
+       lists who is here. Measured: rows adding to 0 under a line saying 2.
+       Both right, neither reconcilable by looking. */
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 3, total: 3, kills: 0, deaths: 1,
+        winCondition: 'score_limit', scoreLimit: 9,
+        team: 'crimson', teamScores: { crimson: 2, ash: 1 },
+        departedScores: { crimson: 2 },
+    } });
+
+    const said = panel.node('hud-goal').textContent;
+    assert.ok(/incl\. 2 from fighters who left/.test(said),
+        'the unaccounted kills are still unexplained: ' + said);
+    assert.ok(/Crimson 2/.test(said), 'and the total itself was lost: ' + said);
+});
+
+test('CONTROL: an ordinary round carries no such clause', () => {
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 2, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 9,
+        team: 'crimson', teamScores: { crimson: 2, ash: 1 },
+    } });
+
+    assert.ok(!/fighters who left/.test(panel.node('hud-goal').textContent),
+        'a round nobody left was given the clause: ' + panel.node('hud-goal').textContent);
+});
+
+test('and a banked total of zero is not announced as nothing', () => {
+    /* The server only sends the field once there is something to explain,
+       but a zero arriving any other way must not print "(incl. 0 ...)". */
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 2, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 9,
+        team: 'crimson', teamScores: { crimson: 2, ash: 1 },
+        departedScores: { crimson: 0 },
+    } });
+
+    assert.ok(!/incl\./.test(panel.node('hud-goal').textContent),
+        'a nought was announced: ' + panel.node('hud-goal').textContent);
+});
+
+test('the clause counts every side, not just the reader\'s own', () => {
+    /* Both sides can lose a scorer. A note that only added up the reader's
+       own would under-explain the gap on the row opposite theirs. */
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 2, total: 2, kills: 0, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 9,
+        team: 'crimson', teamScores: { crimson: 3, ash: 4 },
+        departedScores: { crimson: 3, ash: 1 },
+    } });
+
+    assert.ok(/incl\. 4 from fighters who left/.test(panel.node('hud-goal').textContent),
+        'the two sides were not added together: ' + panel.node('hud-goal').textContent);
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

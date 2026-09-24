@@ -1126,6 +1126,36 @@ local function pushHud(match)
             if not Arena.ModeUsesTeams(match.modeKey) then return nil end
             return teamKills(match)
         end)(),
+        -- THE KILLS NOBODY ON THE BOARD CAN ACCOUNT FOR.
+        --
+        -- teamKills BANKS a departing fighter's kills so a side does not lose
+        -- its progress when somebody quits -- and that is right: MEASURED, a
+        -- crimson pair on 2 had their 2-kill fighter walk out, the remaining
+        -- one took a third, and the round ended on the limit of 3. The
+        -- banked kills decide the round.
+        --
+        -- But the scoreboard beside the total lists who is HERE, so the rows
+        -- added up to 1 while the line above them said 3. Both numbers are
+        -- right and they cannot be reconciled by looking, which is the shape
+        -- a player reports as "the score is broken". Reachable by all three
+        -- ways out -- the button, the command and a disconnect -- and by
+        -- nothing else, which is the control.
+        --
+        -- Sent only when there is something to explain, so the ordinary
+        -- round carries no extra clause. Free-for-all never sends any of
+        -- this: reachedScoreLimit reads the live roster there, so a leaver's
+        -- kills stop counting and there is nothing to reconcile.
+        departedScores = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+            local banked, any = {}, false
+            for team, kills in pairs(match.departedKills or {}) do
+                local count = math.max(0, Arena.ToInt(kills) or 0)
+                if Arena.IsKey(team) and count > 0 then banked[team] = count any = true end
+            end
+            if not any then return nil end
+            return banked
+        end)(),
     }
 
     local function hudFor(kills, deaths, team)
@@ -1155,6 +1185,7 @@ local function pushHud(match)
             winCondition = common.winCondition,
             scoreLimit = common.scoreLimit,
             teamScores = common.teamScores,
+            departedScores = common.departedScores,
             -- WHICH SIDE IS READING IT. The board already carries a team per
             -- row, but the overlay has to put THIS player's side first in a
             -- two-team score line, and a row is matched by src -- which the

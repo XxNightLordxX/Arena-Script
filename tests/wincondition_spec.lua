@@ -1996,4 +1996,80 @@ t.test('CONTROL: a REFUSED leave is not reported as a successful one', function(
         'a player who was never in a match was told they had left one')
 end)
 
+t.test('the kills of a fighter who left are named, not left unaccounted', function()
+    -- THE BOARD AND THE LINE ABOVE IT DISAGREED, and both were right.
+    -- teamKills BANKS a departing fighter's kills so a side does not lose
+    -- its progress, and they still decide the round; the scoreboard lists
+    -- who is HERE. So the rows added to 0 under a line that said 2, which a
+    -- player reads as a broken score rather than a rule.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    local id = s.play(4, true, { winCondition = 'score_limit', scoreLimit = 9 })
+    s.kill(2, 1); s.revive(2)        -- crimson's p1 takes two
+    s.kill(4, 1); s.revive(4)
+    s.settle(1)
+
+    t.isNil(s.hudOf(3).departedScores, 'a round nobody left carried the clause anyway')
+
+    s.fire('leaveMatch', 1, {})
+    s.settle(2)
+
+    local hud = s.hudOf(3)
+    t.equals((hud.teamScores or {}).crimson, 2, 'the banked kills left the total')
+    t.equals((hud.departedScores or {}).crimson, 2, 'the unaccounted kills were never named')
+
+    -- AND THE ROWS REALLY DO NOT ADD UP, which is the whole reason the field
+    -- exists. A fixture where they did would prove nothing.
+    local onBoard = 0
+    for _, row in ipairs(hud.scoreboard or {}) do
+        if row.team == 'crimson' then onBoard = onBoard + row.kills end
+    end
+    t.equals(onBoard, 0, 'the fixture did not actually take the scorer off the board')
+end)
+
+t.test('and by every way out of a round, not just the button', function()
+    -- Reachable three ways and the player cannot tell them apart.
+    local function bankedAfter(exit)
+        local s = newServer(function(c) c.Match.lives = 9 end)
+        s.play(4, true, { winCondition = 'score_limit', scoreLimit = 9 })
+        s.kill(2, 1); s.revive(2)
+        s.settle(1)
+        exit(s)
+        s.settle(2)
+        return ((s.hudOf(3) or {}).departedScores or {}).crimson
+    end
+
+    t.equals(bankedAfter(function(s) s.commands.arenaleave(1) end), 1, 'the command left it unaccounted')
+    t.equals(bankedAfter(function(s) s.drop(1) end), 1, 'a disconnect left it unaccounted')
+    t.equals(bankedAfter(function(s) s.fire('leaveMatch', 1, {}) end), 1, 'the button left it unaccounted')
+end)
+
+t.test('CONTROL: a leaver with NO kills adds no clause', function()
+    -- Nothing to explain, so nothing is said. A field that answered for
+    -- every departure would put a "(incl. 0 ...)" on an ordinary round.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, true, { winCondition = 'score_limit', scoreLimit = 9 })
+    s.kill(2, 1); s.revive(2)          -- p1 scores; p3 does not
+    s.settle(1)
+    s.fire('leaveMatch', 3, {})        -- the one with nothing to their name
+    s.settle(2)
+
+    t.isNil(s.hudOf(1).departedScores, 'a scoreless leaver produced a clause')
+end)
+
+t.test('CONTROL: free-for-all sends none of it', function()
+    -- reachedScoreLimit reads the LIVE roster outside team mode, so a
+    -- leaver's kills stop counting there and there is nothing to reconcile.
+    -- A clause here would explain a gap that does not exist.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, false, { winCondition = 'score_limit', scoreLimit = 9 })
+    s.kill(2, 1); s.revive(2)
+    s.settle(1)
+    s.fire('leaveMatch', 1, {})
+    s.settle(2)
+
+    local hud = s.hudOf(3)
+    t.isNil(hud.teamScores, 'a mode with no teams sent team totals')
+    t.isNil(hud.departedScores, 'a mode with no teams sent banked team kills')
+end)
+
 os.exit(t.summary())

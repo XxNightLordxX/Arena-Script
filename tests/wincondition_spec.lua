@@ -338,6 +338,22 @@ local env = Sandbox.newArenaEnv({
     --- Every entry handed to ArenaStats.Record, in order.
     function server.recorded() return recorded end
 
+    --- The LAST in-match overlay one player was pushed, or nil.
+    ---
+    --- Read off the wire rather than from the match record: what the round
+    --- is won on has to reach the SCREEN of the player fighting it, and a
+    --- field that is correct on the server and never sent is the whole of
+    --- the defect the tests at the foot of this file are about.
+    function server.hudOf(src)
+        local found
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:matchHud' and message.target == src then
+                found = message.payload
+            end
+        end
+        return found
+    end
+
     return server
 end
 
@@ -1753,6 +1769,121 @@ t.test('and somebody in no match at all is told so rather than ignored', functio
     t.equals(refusals[1].src, 6, 'the wrong player was answered')
     t.equals(refusals[1].key, 'error.not_in_match',
         'answered with something other than "you are not in a match"')
+end)
+
+-- ======================================================================
+-- WHAT THE ROUND IS WON ON, ON THE SCREEN OF THE PLAYER FIGHTING IT
+--
+-- MEASURED by driving four fighters through a real score_limit round: the
+-- round ends the instant a side reaches the limit, and the in-match overlay
+-- named neither the limit nor anybody's total. It carried "Kills 4 Deaths 1"
+-- and a per-player board, so a team racing to 25 had to add its own four
+-- rows up in its head, every kill, under fire -- and under `most_kills`
+-- nothing said the clock decides it on kills at all. `last_standing` was the
+-- only rule the overlay expressed, and only by accident, through the
+-- survivor count it already drew.
+--
+-- The numbers are read through the DECIDER'S OWN functions, so the figure a
+-- player races cannot disagree with the figure that ends their round -- which
+-- is what the third test here pins.
+-- ======================================================================
+
+t.test('a score_limit round tells every fighter the target', function()
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, false, { winCondition = 'score_limit', scoreLimit = 7 })
+    s.kill(2, 1)
+    s.settle(2)
+
+    local hud = s.hudOf(1)
+    t.isTrue(hud ~= nil, 'no overlay ever reached the player')
+    t.equals(hud.winCondition, 'score_limit', 'the rule never reached the screen')
+    t.equals(hud.scoreLimit, 7, 'the target never reached the screen')
+end)
+
+t.test('and a TEAM round carries both sides, counted the decider\'s way', function()
+    -- THE NUMBER THAT ENDS THE ROUND AND THE NUMBER ON THE SCREEN ARE ONE
+    -- NUMBER. reachedScoreLimit counts teamKills; so does this. A second
+    -- tally assembled for the overlay is a second tally that can disagree
+    -- with the one the round is stopped on.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, true, { winCondition = 'score_limit', scoreLimit = 5 })
+    s.kill(2, 1); s.revive(2)              -- crimson +1
+    s.kill(4, 1); s.revive(4)              -- crimson +1
+    s.kill(1, 2); s.revive(1)              -- ash     +1
+    s.settle(2)
+
+    local mine = s.hudOf(1)
+    t.equals(mine.team, 'crimson', 'the overlay does not say which side is reading it')
+    t.equals((mine.teamScores or {}).crimson, 2, 'crimson\'s total is wrong on the screen')
+    t.equals((mine.teamScores or {}).ash, 1, 'ash\'s total is wrong on the screen')
+
+    -- AND THE OTHER SIDE READS THE SAME TOTALS, tagged as themselves.
+    local theirs = s.hudOf(2)
+    t.equals(theirs.team, 'ash', 'the ash fighter is told they are on crimson')
+    t.equals((theirs.teamScores or {}).crimson, 2, 'the two sides disagree about crimson')
+end)
+
+t.test('the figure on the screen is the figure the round is stopped on', function()
+    -- Driven to one kill short, read, then over. A screen that said 4 while
+    -- the server stopped the round at 5 would be worse than no screen.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    local id = s.play(4, true, { winCondition = 'score_limit', scoreLimit = 3 })
+    s.kill(2, 1); s.revive(2)
+    s.kill(4, 1); s.revive(4)
+    s.settle(2)
+
+    t.equals((s.hudOf(1).teamScores or {}).crimson, 2, 'the overlay is not one short')
+    t.isTrue(s.lobby.Get(id) ~= nil, 'the round ended a kill early')
+
+    s.kill(2, 1)
+    s.settle(3)
+    t.equals(s.endedWith(), 'match.ended_score_limit',
+        'the round did not stop on the number the screen was counting to')
+end)
+
+t.test('a most_kills round says so, and names no target', function()
+    -- The rule with nothing to count TO. A fighter under most_kills read the
+    -- same overlay as one under last_standing and had no way to tell that
+    -- staying alive is not what the round pays for.
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, false, { winCondition = 'most_kills' })
+    s.settle(2)
+
+    local hud = s.hudOf(1)
+    t.equals(hud.winCondition, 'most_kills', 'the rule never reached the screen')
+    t.isNil(hud.scoreLimit, 'a rule with no target advertised one')
+end)
+
+t.test('CONTROL: last_standing carries no target either', function()
+    local s = newServer(function(c) c.Match.lives = 9 end)
+    s.play(4, false, { winCondition = 'last_standing' })
+    s.settle(2)
+
+    local hud = s.hudOf(1)
+    t.equals(hud.winCondition, 'last_standing', 'the rule never reached the screen')
+    t.isNil(hud.scoreLimit, 'last_standing advertised a score target')
+    t.isNil(hud.teamScores, 'a mode with no teams sent team totals')
+end)
+
+t.test('CONTROL: a LADDER round sends none of it', function()
+    -- `evaluate` skips both counting rules outright in a gun game, so a
+    -- target on that overlay would be a number that ends nothing. The host
+    -- here picks score_limit deliberately: the field is accepted on the
+    -- match and must still be withheld from the screen.
+    local s = newServer()
+    s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'gungame',
+        entryFee = 0, account = 'cash', winCondition = 'score_limit', scoreLimit = 5 })
+    local id = s.lobby.All()[1].id
+    for src = 2, 4 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+    for src = 1, 4 do s.fire('setReady', src, { ready = true }) end
+    s.match.Start(id)
+    s.settle(2)
+
+    local hud = s.hudOf(1)
+    t.isTrue(hud ~= nil, 'the gun game fixture never pushed an overlay')
+    t.isTrue(#(hud.scoreboard or {}) > 0, 'the fixture is not really in a live round')
+    t.isNil(hud.winCondition, 'a ladder round advertised a counting rule')
+    t.isNil(hud.scoreLimit, 'a ladder round advertised a score target')
 end)
 
 os.exit(t.summary())

@@ -4636,4 +4636,49 @@ t.test('demoteOnMeleeOnly DEFAULT: absent from config, the rule is still ON', fu
         'with the line absent a GUN kill cost a tier -- the rule did not default ON')
 end)
 
+t.test('the panel is told WHETHER a permanent blade is issued', function()
+    -- THE PANEL CANNOT READ Config.Modes. It tells a climber that a melee
+    -- kill is what takes a tier off the leader, and until this field was
+    -- projected nothing on any screen said they are HANDED a melee weapon to
+    -- do it with. WHICH blade is drawn per match (bladeOf refuses any key
+    -- that landed on this round's ladder), so only the fact of it can be sent.
+    local s = newServer()
+    local modes = {}
+    for _, mode in ipairs(s.arena.GetEnabledModes()) do modes[mode.key] = mode end
+    t.isTrue(modes.gungame ~= nil, 'the fixture lost the gun game mode')
+    t.equals(modes.gungame.permanentBlade, true,
+        'the shipped blade list never reached the panel')
+end)
+
+t.test('CONTROL: a mode that names no blade advertises none', function()
+    -- Both halves of the switch, because a projection that answered `true`
+    -- for everybody would put the promise of a blade on a screen whose mode
+    -- hands out none.
+    local empty = newServer(function(config) config.Modes.gungame.permanentBlade = {} end)
+    local gone = newServer(function(config) config.Modes.gungame.permanentBlade = nil end)
+
+    local function bladeSaid(s)
+        for _, mode in ipairs(s.arena.GetEnabledModes()) do
+            if mode.key == 'gungame' then return mode.permanentBlade end
+        end
+    end
+
+    t.equals(bladeSaid(empty), false, 'an empty list still promised a blade')
+    t.equals(bladeSaid(gone), false, 'a missing list still promised a blade')
+end)
+
+t.test('and a list of keys that are not enabled weapons advertises none', function()
+    -- The case the server already logs about: every candidate misspelt or
+    -- switched off. bladeOf hands out nothing, so the panel must not say one
+    -- is coming.
+    local s = newServer(function(config)
+        config.Modes.gungame.permanentBlade = { 'not_a_weapon_key', 'also_missing' }
+    end)
+    local said
+    for _, mode in ipairs(s.arena.GetEnabledModes()) do
+        if mode.key == 'gungame' then said = mode.permanentBlade end
+    end
+    t.equals(said, false, 'unusable keys were advertised as a blade')
+end)
+
 os.exit(t.summary())

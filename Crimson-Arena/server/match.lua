@@ -1089,9 +1089,46 @@ local function pushHud(match)
         timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
         pot = ArenaBetting.GetPrizePool(match.id),
         scoreboard = scoreboard,
+        -- WHAT THIS ROUND IS WON ON, on the screen of the player fighting it.
+        --
+        -- MEASURED, by driving four fighters through a real score_limit
+        -- round: the round ends the moment a side or a player reaches the
+        -- limit, and NOTHING on the in-match overlay named the limit or said
+        -- how close anybody was to it. The overlay carried "Kills 4 Deaths
+        -- 1" and a per-player board, so a team racing to 25 had to add its
+        -- own four rows up in its head, every kill, while being shot at --
+        -- and under `most_kills` nobody was told the clock decides it on
+        -- kills at all. `last_standing` was the only rule the overlay
+        -- expressed, through "Remaining 3 / 6".
+        --
+        -- The numbers are read through the DECIDER'S OWN functions --
+        -- teamKills is what reachedScoreLimit counts, ScoreLimitFor is what
+        -- it compares against -- so the figure a player is racing cannot
+        -- disagree with the figure that ends their round.
+        --
+        -- THE MATCH'S OWN CONDITION, not the config's, for the reason
+        -- `evaluate` gives: the host picked it when the round was made, and
+        -- re-reading the config would let a mid-session edit change the rule
+        -- on a round already being fought.
+        --
+        -- A LADDER SENDS NONE OF IT. `evaluate` skips both counting rules
+        -- outright in a gun game, so a limit on that overlay would be a
+        -- target that ends nothing.
+        winCondition = #ladderOf(match) == 0
+            and Arena.WinConditionFor(match.winCondition) or nil,
+        scoreLimit = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if Arena.WinConditionFor(match.winCondition) ~= 'score_limit' then return nil end
+            return Arena.ScoreLimitFor(match.scoreLimit)
+        end)(),
+        teamScores = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+            return teamKills(match)
+        end)(),
     }
 
-    local function hudFor(kills, deaths)
+    local function hudFor(kills, deaths, team)
         return {
             -- WHOSE ROUND THIS BOARD IS, which it never said.
             --
@@ -1115,12 +1152,21 @@ local function pushHud(match)
             pot = common.pot,
             scoreboard = common.scoreboard,
             livesSpent = common.livesSpent,
+            winCondition = common.winCondition,
+            scoreLimit = common.scoreLimit,
+            teamScores = common.teamScores,
+            -- WHICH SIDE IS READING IT. The board already carries a team per
+            -- row, but the overlay has to put THIS player's side first in a
+            -- two-team score line, and a row is matched by src -- which the
+            -- spectator branch below has none of.
+            team = team,
         }
     end
 
     for _, player in ipairs(players) do
         TriggerClientEvent('crimson_arena:client:matchHud', player.src,
-            hudFor(math.max(0, Arena.ToInt(player.kills) or 0), math.max(0, Arena.ToInt(player.deaths) or 0)))
+            hudFor(math.max(0, Arena.ToInt(player.kills) or 0),
+                math.max(0, Arena.ToInt(player.deaths) or 0), player.team))
     end
 
     for src in pairs(match.spectators or {}) do

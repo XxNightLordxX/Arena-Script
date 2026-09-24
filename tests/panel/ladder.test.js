@@ -454,6 +454,73 @@ test('and a plan resolved to zero rungs falls back rather than saying zero', () 
         'the card offered a nought-rung ladder: ' + panel.text('lobby-meta'));
 });
 
+console.log('==> what the loadout screen tells a climber a death costs');
+
+/* The panel with the ladder mode's two rule fields set the way the server
+   really sends them. Both arrive off Arena.GetEnabledModes: a boolean for
+   each. `undefined` deletes the field, which is how a mode that predates it
+   arrives. */
+function panelWithRules(demoteOnMeleeOnly, permanentBlade) {
+    const panel = loadPanel(ROOT);
+    const snap = snapshot('gungame', []);
+    const mode = snap.config.modes.find((m) => m.key === 'gungame');
+    if (demoteOnMeleeOnly === undefined) delete mode.demoteOnMeleeOnly;
+    else mode.demoteOnMeleeOnly = demoteOnMeleeOnly;
+    if (permanentBlade === undefined) delete mode.permanentBlade;
+    else mode.permanentBlade = permanentBlade;
+    panel.send('open', snap);
+    panel.send('state', snap);
+    return panel;
+}
+
+test('a death with nobody to blame is named, because it costs a tier too', () => {
+    /* THE PANEL WAS WRONG, and wrong in the direction that loses a player
+       tiers. It said a gun kill spares you "so only a melee kill takes one
+       off you". MEASURED against server/match.lua: the sparing gate needs a
+       killer, so a fall, a drowning or a suicide names nobody, leaves
+       killedWithAGun false, and DEMOTES. A climber on tier 4 who jumps off
+       the tower to reset lands on tier 3, and the screen told them it would
+       not. */
+    const note = panelWithRules(true, false).text('loadout-note');
+
+    assert.ok(/fall/.test(note) && /drown/.test(note),
+        'the note never warns that a death with no killer costs a tier: ' + note);
+    assert.ok(!/only a melee kill takes one off you/.test(note),
+        'the note still makes the claim that is false: ' + note);
+});
+
+test('CONTROL: with the rule off the note still says every death costs one', () => {
+    const note = panelWithRules(false, false).text('loadout-note');
+
+    assert.ok(/Every death costs you a tier/.test(note),
+        'the rule-off branch was lost: ' + note);
+});
+
+test('the blade a climber keeps all match is named on the screen', () => {
+    /* The sentence above tells a player that melee is how you take a tier off
+       the leader. Until permanentBlade reached the panel, nothing on any
+       screen said they are HANDED a melee weapon to do it with -- so the one
+       tactic the mode is built around read as something to scavenge. */
+    const note = panelWithRules(true, true).text('loadout-note');
+
+    assert.ok(/melee weapon the whole match/.test(note),
+        'the permanent blade is still never mentioned: ' + note);
+    assert.ok(/never swapped out when you climb/.test(note),
+        'and the note does not say it survives a promotion: ' + note);
+});
+
+test('CONTROL: a mode that hands out no blade does not claim one', () => {
+    /* The false half of the same switch. A note that promised a blade to
+       everybody would be the original bug with the sign flipped. */
+    const off = panelWithRules(true, false).text('loadout-note');
+    const missing = panelWithRules(true, undefined).text('loadout-note');
+
+    assert.ok(!/melee weapon the whole match/.test(off),
+        'a mode with the blade switched off still promised one: ' + off);
+    assert.ok(!/melee weapon the whole match/.test(missing),
+        'a mode that never names the field still promised one: ' + missing);
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

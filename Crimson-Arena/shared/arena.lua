@@ -387,6 +387,24 @@ function Arena.GetEnabledModes()
                 -- setting it was never sent is a sentence that goes stale on
                 -- the next change. It is sent.
                 demoteOnMeleeOnly = mode.demoteOnMeleeOnly ~= false,
+                -- WHETHER A BLADE COMES WITH THE RUNG, because the panel was
+                -- telling ladder players a melee kill is the only thing that
+                -- takes a tier off a leader, without ever telling them they
+                -- are handed the melee weapon to do it with. WHICH blade is
+                -- drawn per match and cannot be known here, so only the fact
+                -- of it is sent -- true when at least one named candidate is
+                -- an enabled weapon. bladeOf may still find every candidate
+                -- sitting on the round's ladder and hand out none, which is
+                -- why the panel's sentence says what is issued, not what is
+                -- guaranteed.
+                permanentBlade = (function()
+                    local candidates = mode.permanentBlade
+                    if type(candidates) ~= 'table' then return false end
+                    for _, key in ipairs(candidates) do
+                        if Arena.GetWeaponByKey(key) then return true end
+                    end
+                    return false
+                end)(),
                 tiers = (function()
                     if not Arena.PlaysLadder(key) then return nil end
                     return #Arena.LadderTiersFor(key)

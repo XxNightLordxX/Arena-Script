@@ -1613,6 +1613,7 @@ option {
 
 #hud-alive,
 #hud-kills,
+#hud-goal,
 #hud-pot {
     position: absolute;
     left: 1.5rem;
@@ -1633,8 +1634,18 @@ option {
     top: calc(30% + 2.4rem);
 }
 
-#hud-pot {
+/* WHAT THIS ROUND IS WON ON, under the player's own tally and above the
+   pot, because it is read the same way: a glance, mid-fight, without opening
+   the panel. The pot moves down a row rather than this line moving out of
+   the stack -- the pot is drawn only on a betting server with money in it,
+   so a gap above it is the ordinary case and a gap in the middle is not. */
+#hud-goal {
     top: calc(30% + 4.8rem);
+    border-left-color: var(--accent);
+}
+
+#hud-pot {
+    top: calc(30% + 7.2rem);
     border-left-color: var(--success);
     color: var(--success);
 }

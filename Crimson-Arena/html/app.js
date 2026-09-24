@@ -597,8 +597,19 @@
                 + 'round on the same rung. '
                 + (mode.demoteOnMeleeOnly
                     ? 'A death costs you a tier unless the fighter who killed you was holding '
-                        + 'a gun, so only a melee kill takes one off you.'
+                        + 'a gun, so a melee kill takes one off them -- and so does a death with '
+                        + 'nobody to blame, like a fall or a drowning.'
                     : 'Every death costs you a tier, whatever killed you.');
+
+            /* THE BLADE, NAMED. The sentence above tells a player that going
+               melee is how you take a tier off the leader, and until this line
+               the panel never said they are handed a melee weapon to do it
+               with -- so the one tactic the mode is built around read as
+               something you had to find on the floor. */
+            if (mode.permanentBlade) {
+                text += ' You also carry a melee weapon the whole match: it is handed to you '
+                    + 'beside your rung and it is never swapped out when you climb.';
+            }
 
             var kit = startingKitText(mode);
             if (kit !== '') text += ' Everyone is issued ' + kit + ' at the start of every round.';
@@ -4499,6 +4510,11 @@
             if (has(timer)) timer.textContent = '';
             if (has(alive)) alive.textContent = '';
             if (has(kills)) kills.textContent = '';
+            // AND THE GOAL LINE, which otherwise outlives the round it
+            // belongs to: every other line here is blanked on a cleared hud
+            // and a stale "First to 25" would sit over the next one.
+            var goal = byId('hud-goal');
+            if (has(goal)) { goal.textContent = ''; show(goal, false); }
             show(byId('hud-pot'), false);
             clear(byId('hud-scoreboard'));
             return;
@@ -4519,6 +4535,8 @@
 
         if (has(kills)) kills.textContent = 'Kills ' + int(hud.kills, 0) + '  Deaths ' + int(hud.deaths, 0);
 
+        renderHudGoal(hud);
+
         var pot = byId('hud-pot');
         if (has(pot)) {
             var amount = int(hud.pot, 0);
@@ -4527,6 +4545,71 @@
         }
 
         renderHudScoreboard(arrayOf(hud.scoreboard));
+    }
+
+    /* WHAT THE ROUND IS WON ON, said on the overlay the player is actually
+       looking at while they fight.
+
+       MEASURED by driving four fighters through a real score_limit round:
+       the round ends the instant a side reaches the limit, and the overlay
+       named neither the limit nor anybody's total. A team racing to 25 had
+       to add its own four scoreboard rows up in its head, every kill, under
+       fire -- and under `most_kills` nothing anywhere said the clock decides
+       it on kills. `last_standing` was the only rule the overlay expressed,
+       and only by accident, through "Remaining 3 / 6".
+
+       STRAIGHT OFF THE `hud` MESSAGE, like everything else in this overlay
+       and for the same reason its header gives: it is on screen with the
+       panel shut, so it must not reach into state.config. The server sends
+       nothing at all for a ladder, where neither counting rule can fire. */
+    function renderHudGoal(hud) {
+        var node = byId('hud-goal');
+        if (!has(node)) return;
+
+        var rule = hud.winCondition;
+        var text = '';
+
+        if (rule === 'score_limit') {
+            var limit = int(hud.scoreLimit, 0);
+            if (limit > 0) {
+                text = 'First to ' + limit;
+                var sides = hudTeamScores(hud);
+                if (sides !== '') text += '  -  ' + sides;
+                else text += '  -  You ' + int(hud.kills, 0);
+            }
+        } else if (rule === 'most_kills') {
+            text = 'Most kills when the clock stops';
+            var tally = hudTeamScores(hud);
+            if (tally !== '') text += '  -  ' + tally;
+        }
+
+        node.textContent = text;
+        show(node, text !== '');
+    }
+
+    /* The two sides and their totals, THE READER'S OWN SIDE FIRST, or '' for
+       a mode with no teams. The numbers are the server's -- the same ones the
+       decider counts -- and are never re-added here from the scoreboard: a
+       second tally is a second tally that can disagree with the one that
+       ends the round. */
+    function hudTeamScores(hud) {
+        var scores = hud.teamScores;
+        if (!scores || typeof scores !== 'object') return '';
+
+        var keys = Object.keys(scores);
+        if (keys.length === 0) return '';
+
+        var mine = hud.team;
+        keys.sort(function (a, b) {
+            if (a === mine) return -1;
+            if (b === mine) return 1;
+            return a < b ? -1 : (a > b ? 1 : 0);
+        });
+
+        return keys.map(function (key) {
+            var team = teamByKey(key);
+            return ((team && team.label) || key) + ' ' + int(scores[key], 0);
+        }).join('  ');
     }
 
     function scoreRow(entry, me) {

@@ -503,5 +503,133 @@ test('and a payload with no livesSpent field counts as it always did', () => {
         'a snapshot with no livesSpent field lost its header');
 });
 
+console.log('==> what the overlay tells a fighter the round is won on');
+
+/* A panel whose team list has BOTH sides in it, because the goal line puts
+   the reader's own side first by label and a fixture with one team cannot
+   tell that apart from a fixture with none. */
+function teamPanel() {
+    const panel = loadPanel(ROOT);
+    const snap = snapshot(false);
+    snap.config.teams.list = [
+        { key: 'crimson', label: 'Crimson', color: '#c81020' },
+        { key: 'ash', label: 'Ash', color: '#888888' },
+    ];
+    panel.send('open', snap);
+    return panel;
+}
+
+test('a score_limit round names the limit and both sides, own side first', () => {
+    /* THE DEFECT, MEASURED against a real four-man round: the round ends the
+       instant a side reaches the limit, and the overlay named neither the
+       limit nor anybody's total. A team racing to 25 was adding its own
+       scoreboard rows up in its head, under fire. */
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 2, deaths: 1,
+        winCondition: 'score_limit', scoreLimit: 5,
+        // CRIMSON ON PURPOSE. 'ash' sorts before 'crimson' alphabetically,
+        // so a reader on ash comes out first whether the rule is applied or
+        // not -- the fixture that proves nothing. This one is the other way
+        // round, so only the rule can put it first.
+        team: 'crimson', teamScores: { crimson: 2, ash: 3 },
+    } });
+
+    const said = panel.node('hud-goal').textContent;
+    assert.ok(/First to 5/.test(said), 'the limit is not on the overlay: ' + said);
+    assert.ok(/Crimson 2/.test(said) && /Ash 3/.test(said),
+        'the side totals are missing: ' + said);
+    assert.ok(said.indexOf('Crimson 2') < said.indexOf('Ash 3'),
+        'the reader\'s own side is not first: ' + said);
+    assert.strictEqual(shown(panel, 'hud-goal'), true, 'the goal line stayed hidden');
+});
+
+test('and a score_limit round with no teams counts the reader themselves', () => {
+    const panel = panelWith(false);
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 3, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 7,
+    } });
+
+    const said = panel.node('hud-goal').textContent;
+    assert.ok(/First to 7/.test(said), 'the limit is not on the overlay: ' + said);
+    assert.ok(/You 3/.test(said), 'a free-for-all fighter is not told their own count: ' + said);
+});
+
+test('a most_kills round says the clock decides it on kills', () => {
+    /* Nothing anywhere said this. A fighter under most_kills read the same
+       overlay as one under last_standing and had no way to tell that staying
+       alive was not what the round pays for. */
+    const panel = panelWith(false);
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 1, deaths: 0, winCondition: 'most_kills',
+    } });
+
+    assert.ok(/Most kills when the clock stops/.test(panel.node('hud-goal').textContent),
+        'the rule is still unstated: ' + panel.node('hud-goal').textContent);
+});
+
+test('CONTROL: last_standing and a ladder draw no goal line at all', () => {
+    /* last_standing is already expressed by "Remaining 3 / 8" above it, and
+       the server sends nothing for a ladder because neither counting rule
+       can fire in one. A line invented for either would be a target that
+       ends nothing. */
+    const standing = panelWith(false);
+    standing.send('hud', { visible: true, hud: {
+        remaining: 3, total: 8, kills: 0, deaths: 0, winCondition: 'last_standing',
+    } });
+    assert.strictEqual(standing.node('hud-goal').textContent, '',
+        'last_standing invented a goal line: ' + standing.node('hud-goal').textContent);
+    assert.strictEqual(shown(standing, 'hud-goal'), false, 'and left it on screen');
+
+    const ladder = panelWith(false);
+    ladder.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 0, deaths: 0, scoreboard: [],
+    } });
+    assert.strictEqual(ladder.node('hud-goal').textContent, '',
+        'a ladder round invented a goal line: ' + ladder.node('hud-goal').textContent);
+});
+
+test('the goal line does not outlive the round it belongs to', () => {
+    /* Every other line on this overlay is blanked when the hud is cleared.
+       One that was not would sit a finished round's "First to 25" over the
+       next one. */
+    const panel = panelWith(false);
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 2, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 9,
+    } });
+    assert.ok(/First to 9/.test(panel.node('hud-goal').textContent), 'the fixture never drew one');
+
+    /* THE REAL CLEARING PATH, which is the only one there is: a `visible:
+       false` push is what drops state.hud, and the overlay coming back up
+       with nothing in it is what runs the blanking branch. A push that
+       merely omits `hud` leaves the last one standing -- true of the timer
+       and the kill tally too, and not this line's to change. */
+    panel.send('hud', { visible: false });
+    panel.send('hud', { visible: true });
+
+    assert.strictEqual(panel.node('hud-goal').textContent, '',
+        'the finished round\'s goal line is still on screen: ' + panel.node('hud-goal').textContent);
+    assert.strictEqual(shown(panel, 'hud-goal'), false,
+        'and it was left visible over the next round');
+
+    // THE CONTROL: the lines beside it blank on exactly the same push, so
+    // this is the overlay's own rule and not something invented here.
+    assert.strictEqual(panel.node('hud-kills').textContent, '',
+        'the fixture is not really on the blanking path');
+});
+
+test('and a limit of zero is not advertised as a target of nought', () => {
+    const panel = panelWith(false);
+    panel.send('hud', { visible: true, hud: {
+        remaining: 4, total: 4, kills: 0, deaths: 0,
+        winCondition: 'score_limit', scoreLimit: 0,
+    } });
+
+    assert.strictEqual(panel.node('hud-goal').textContent, '',
+        'the overlay offered a race to nought: ' + panel.node('hud-goal').textContent);
+});
+
 console.log(passed + ' passed, ' + failures.length + ' failed');
 process.exit(failures.length === 0 ? 0 : 1);

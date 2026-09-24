@@ -293,6 +293,12 @@ end
 --- declaration is not, and must not be "tidied away" for that reason.
 local ArenaDebugPrint
 
+--- FORWARD-DECLARED beside ArenaDebugPrint, and for the same reason. It is
+--- the batched form: a whole report in one server event, because the server
+--- allows one debug event per second per player and a report sent a line at
+--- a time loses everything after the first.
+local ArenaDebugReport
+
 --- FORWARD-DECLARED for the same reason as ArenaDebugPrint above, and it is
 --- the second time this file has caught the same trap: the loggers live with
 --- the rest of the logging, hundreds of lines below the first code that wants
@@ -726,6 +732,37 @@ ArenaDebugPrint = function(fmt, ...)
     -- NOT A SILENT SWAP: server/main.lua re-checks Config.Debug before
     -- printing, so this is off on a finished server at both ends.
     TriggerServerEvent('crimson_arena:server:clientDebug', { line = text })
+end
+
+--- A whole multi-line report, sent as ONE server event.
+---
+--- THE RATE LIMIT ATE THESE AND SAID NOTHING. MEASURED on a live server: the
+--- prop check printed its heading -- "arena props, checked against this
+--- build:" -- and not one of the lines underneath it. Every line was a
+--- separate TriggerServerEvent, they all fired in the same tick, and the
+--- server allows one per second per player. The first arrived and the rest
+--- were dropped, so a check that had looked at every model read as though it
+--- had found nothing.
+---
+--- The limit is not the bug and is not touched: it guards an arbitrary
+--- string from any connected client. Sending a REPORT through it one line at
+--- a time was the bug. This costs one slot however many lines it carries, and
+--- the server caps the count for exactly that reason.
+---
+--- ASSIGNED, NOT DECLARED, like its sibling above: checklist_spec counts a
+--- `function Name(` at column zero as this file's public surface.
+--- @param lines string[]
+ArenaDebugReport = function(lines)
+    if Config.Debug ~= true then return end
+    if type(lines) ~= 'table' then return end
+
+    local out = {}
+    for _, line in ipairs(lines) do
+        if type(line) == 'string' and line ~= '' then out[#out + 1] = line end
+    end
+    if #out == 0 then return end
+
+    TriggerServerEvent('crimson_arena:server:clientDebug', { lines = out })
 end
 
 --- Every key ArenaLogOnce has already spoken for, for this session.
@@ -2331,12 +2368,20 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- likely to be misbuilt -- the one whose floor prop this build does not
     -- have -- was also the one that printed nothing about what it did build.
     if #wanted > 0 then
-        ArenaDebugPrint('arena scenery: %d of %d piece(s) built -- %d floor, %d cover, furthest cover %.2fm out.',
-            built, #wanted, builtFloor, builtCover, coverReach)
+        -- BOTH LINES IN ONE EVENT. These fire in the same tick, and the
+        -- server's debug rate limit allows one per second per player -- so
+        -- sent separately the floor measurement was dropped every time,
+        -- silently, which is the same fault the prop check had.
+        local scenery = {
+            ('arena scenery: %d of %d piece(s) built -- %d floor, %d cover, furthest cover %.2fm out.')
+                :format(built, #wanted, builtFloor, builtCover, coverReach),
+        }
         if measured then
-            ArenaDebugPrint('arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.',
-                measured.x, measured.y, arenaSurfaceZ or 0.0)
+            scenery[#scenery + 1] =
+                ('arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
+                    :format(measured.x, measured.y, arenaSurfaceZ or 0.0)
         end
+        ArenaDebugReport(scenery)
 
         -- WHICH PROP THIS CLIENT GOT DECIDES HOW HEAVY THE ARENA IS, AND THE
         -- TWO ANSWERS ARE NOT CLOSE.
@@ -2958,8 +3003,13 @@ CreateThread(function()
         for _, line in ipairs(missing) do print('    ' .. line) end
         print('[crimson_arena] Add those models to a stream/ folder in this resource, or name props your build does have. See STREAMING.md.')
     elseif #checked > 0 then
-        ArenaDebugPrint('arena props, checked against this build:')
-        for _, line in ipairs(checked) do ArenaDebugPrint('    %s', line) end
+        -- ONE EVENT FOR THE WHOLE REPORT. Sent a line at a time, the heading
+        -- arrived and every model under it was dropped by the server's debug
+        -- rate limit -- which is how this read on a live console as a check
+        -- that had found nothing.
+        local report = { 'arena props, checked against this build:' }
+        for _, line in ipairs(checked) do report[#report + 1] = '    ' .. line end
+        ArenaDebugReport(report)
     end
 end)
 

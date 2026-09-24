@@ -30,6 +30,15 @@ local RATE = {
 --- megabyte of it would be a megabyte in the console log on disk.
 local MAX_DEBUG_LINE = 300
 
+--- The most lines one batched client report will print.
+---
+--- A batch costs ONE rate-limit slot however long it is, which is the whole
+--- point of it -- and is also why it needs its own ceiling. The longest
+--- report this resource sends is the prop check, one line per distinct model
+--- across every arena, so forty is roomy for an honest client and nowhere
+--- near a flood from a dishonest one.
+local MAX_DEBUG_LINES = 40
+
 --- A client-supplied string, cut to length and made safe to put in the
 --- server console.
 ---
@@ -1180,7 +1189,42 @@ onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, dat
     if Config.Debug ~= true then return end
 
     local payload = tableArg(data)
-    local line = payload and payload.line
+    if not payload then return end
+
+    -- A WHOLE REPORT IN ONE EVENT, BECAUSE THE RATE LIMIT ATE THE REST.
+    --
+    -- MEASURED on a live server: the props check printed its heading --
+    -- "arena props, checked against this build:" -- and not one of the lines
+    -- underneath it. Every line was a SEPARATE event, they all fired in the
+    -- same tick, and this handler allows one per second per player. The
+    -- first arrived and the rest were dropped without a word, so the report
+    -- read as though the check had found nothing.
+    --
+    -- The limit is right and stays: this is an arbitrary string from any
+    -- connected client. What was wrong is sending a report a line at a time
+    -- through it. A batch costs one slot however many lines it carries.
+    local lines = payload.lines
+    if type(lines) == 'table' then
+        -- COUNTED, BECAUSE THE CLIENT CHOOSES THE LENGTH. A batch is one
+        -- rate-limit slot, so an unbounded one would be the flood the limit
+        -- exists to stop, arriving by the front door.
+        local printed = 0
+        for _, entry in ipairs(lines) do
+            if printed >= MAX_DEBUG_LINES then
+                ArenaDebug('client %s (%s): ...report cut at %d lines.',
+                    tostring(src), ArenaPlayerName(src), MAX_DEBUG_LINES)
+                break
+            end
+            if type(entry) == 'string' and entry ~= '' then
+                printed = printed + 1
+                ArenaDebug('client %s (%s): %s', tostring(src), ArenaPlayerName(src),
+                    scrubbedForLog(entry, MAX_DEBUG_LINE))
+            end
+        end
+        return
+    end
+
+    local line = payload.line
     if type(line) ~= 'string' or line == '' then return end
 
     -- CUT AND STRIPPED IN ONE PLACE. This handler is where the rule was

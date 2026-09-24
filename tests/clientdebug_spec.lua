@@ -361,4 +361,139 @@ t.test('CONTROL: with Config.Debug OFF outlineReason prints nothing', function()
     t.equals(s.log(), '', 'the debug switch does not cover this handler')
 end)
 
+-- ======================================================================
+-- A REPORT IS ONE EVENT, NOT ONE EVENT PER LINE
+--
+-- FOUND IN A LIVE SERVER LOG. The prop check printed its heading --
+-- "arena props, checked against this build:" -- and not one of the lines
+-- underneath it. Every line was a SEPARATE TriggerServerEvent, they all
+-- fired in the same tick, and this relay allows one per second per player.
+-- The first arrived and the rest were dropped without a word, so a check
+-- that had looked at every model in every arena read, on the operator's
+-- console, as a check that had found nothing.
+--
+-- THE RATE LIMIT IS NOT THE BUG AND IS NOT TOUCHED. It guards an arbitrary
+-- string from any connected client. Sending a report through it a line at
+-- a time was the bug.
+-- ======================================================================
+
+t.test('THE DEFECT: line-at-a-time, the heading lands and the rest is dropped', function()
+    -- The clock is frozen so the rate limiter behaves as it does on a real
+    -- server, where a report's lines all leave in the same frame. Without
+    -- this the fixture advances a minute per call and nothing is ever
+    -- limited, which is why no test had caught it.
+    local s = newServer(true)
+    s.freezeClock()
+
+    s.say(7, 'arena props, checked against this build:')
+    s.say(7, '    trailerpark floor: prop_container_01a')
+    s.say(7, '    trailerpark cover #1: prop_barrier_work05')
+
+    local log = s.log()
+    t.contains(log, 'checked against this build',
+        'even the heading did not arrive, so this fixture proves nothing')
+    t.isTrue(log:find('prop_container_01a', 1, true) == nil,
+        'the fixture did not reproduce the drop -- the rate limit let the second line through')
+end)
+
+t.test('THE FIX: the whole report arrives in one event', function()
+    local s = newServer(true)
+    s.freezeClock()
+
+    s.send(7, { lines = {
+        'arena props, checked against this build:',
+        '    trailerpark floor: prop_container_01a',
+        '    trailerpark cover #1: prop_barrier_work05',
+    } })
+
+    local log = s.log()
+    t.contains(log, 'checked against this build', 'the heading was lost')
+    t.contains(log, 'prop_container_01a', 'the first model under the heading was dropped')
+    t.contains(log, 'prop_barrier_work05', 'the last model under the heading was dropped')
+end)
+
+t.test('and every line is still attributed to the client that sent it', function()
+    -- A batch must not become an anonymous block. The whole reason these
+    -- moved off F8 was so a report says WHO it came from.
+    local s = newServer(true)
+    s.freezeClock()
+    s.send(7, { lines = { 'first line', 'second line' } })
+
+    local log = s.log()
+    local seen = 0
+    for _ in log:gmatch('Fighter 7') do seen = seen + 1 end
+    t.isTrue(seen >= 2, 'the sender is named once for the batch rather than on each line')
+end)
+
+t.test('a batch is capped, because one slot must not buy unlimited console', function()
+    -- The batch costs ONE rate-limit slot however long it is, which is the
+    -- point of it and also why it needs its own ceiling. An uncapped batch
+    -- would be the flood the limit exists to stop, arriving by the front
+    -- door.
+    local s = newServer(true)
+    s.freezeClock()
+
+    local many = {}
+    for index = 1, 500 do many[index] = ('line %d'):format(index) end
+    s.send(7, { lines = many })
+
+    local log = s.log()
+    t.contains(log, 'line 1', 'the batch printed nothing at all')
+    t.isTrue(log:find('line 500', 1, true) == nil,
+        'five hundred client-supplied lines went straight into the console')
+    t.contains(log, 'cut at', 'the report was truncated without saying so')
+end)
+
+t.test('and a batched line is scrubbed exactly as a single one is', function()
+    -- The rules that were written for the one-line form apply here or the
+    -- batch is a way around them: a newline forging a console line, an
+    -- escape sequence, a megabyte.
+    local s = newServer(true)
+    s.freezeClock()
+    s.send(7, { lines = {
+        'safe line',
+        'forged\n[crimson_arena] the server said this',
+        ('x'):rep(5000),
+    } })
+
+    local log = s.log()
+    t.contains(log, 'safe line', 'the ordinary line did not arrive')
+    t.isTrue(log:find('\n[crimson_arena] the server said this', 1, true) == nil,
+        'a newline in a batched line forged a console line of its own')
+    t.isTrue(log:find(('x'):rep(1000), 1, true) == nil,
+        'a batched line was not cut to length')
+end)
+
+t.test('CONTROL: junk in a batch is ignored, not raised on', function()
+    local s = newServer(true)
+    s.freezeClock()
+
+    local ok = pcall(function()
+        s.send(7, { lines = { 'kept', 42, {}, false, '', 'also kept' } })
+    end)
+    t.isTrue(ok, 'a batch holding junk took the handler down')
+
+    local log = s.log()
+    t.contains(log, 'kept', 'the good lines were thrown out with the bad')
+    t.contains(log, 'also kept', 'a later good line was lost after junk')
+end)
+
+t.test('CONTROL: the one-line form still works, and Debug OFF still silences both', function()
+    -- The batch is an addition, not a replacement: callers that send a
+    -- single line must be untouched, and neither form may speak with
+    -- Config.Debug off.
+    local on = newServer(true)
+    on.say(7, 'a single line')
+    t.contains(on.log(), 'a single line', 'the one-line form was broken by the batch')
+
+    local off = newServer(false)
+    off.freezeClock()
+    off.send(7, { lines = { 'should not appear' } })
+    off.say(7, 'nor should this')
+    t.isTrue(off.log():find('should not appear', 1, true) == nil,
+        'a batch printed with Config.Debug off')
+    t.isTrue(off.log():find('nor should this', 1, true) == nil,
+        'the one-line form printed with Config.Debug off')
+end)
+
 os.exit(t.summary())

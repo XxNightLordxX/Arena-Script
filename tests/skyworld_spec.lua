@@ -306,7 +306,18 @@ local function newClient(opts)
         for _, sent in ipairs(c.serverEvents) do
             if sent.name == 'crimson_arena:server:clientDebug'
                 and type(sent.payload) == 'table' then
-                said[#said + 1] = tostring(sent.payload.line)
+                -- BOTH SHAPES THE WIRE CARRIES, the way server/main.lua reads
+                -- them. A multi-line report is sent as ONE event with a list,
+                -- because the server allows one debug event per second per
+                -- player and a report sent a line at a time lost everything
+                -- after the first -- which is what a live log showed.
+                if type(sent.payload.lines) == 'table' then
+                    for _, line in ipairs(sent.payload.lines) do
+                        said[#said + 1] = tostring(line)
+                    end
+                elseif sent.payload.line ~= nil then
+                    said[#said + 1] = tostring(sent.payload.line)
+                end
             end
         end
         return table.concat(said, '\n')

@@ -338,6 +338,24 @@ local env = Sandbox.newArenaEnv({
     --- Every entry handed to ArenaStats.Record, in order.
     function server.recorded() return recorded end
 
+    --- Every notification one player was sent, oldest first, as plain text.
+    ---
+    --- Read off the wire because that is where the defect was: the string
+    --- existed, was passed down the call as a reason key, and reached the
+    --- other players and the bet refunds while never reaching the person who
+    --- had asked to leave.
+    --- @param src integer
+    --- @return string[]
+    function server.noticesTo(src)
+        local out = {}
+        for _, message in ipairs(sent) do
+            if message.event == 'crimson_arena:client:notify' and message.target == src then
+                out[#out + 1] = tostring((message.payload or {}).description or '')
+            end
+        end
+        return out
+    end
+
     --- The LAST in-match overlay one player was pushed, or nil.
     ---
     --- Read off the wire rather than from the match record: what the round
@@ -1884,6 +1902,98 @@ t.test('CONTROL: a LADDER round sends none of it', function()
     t.isTrue(#(hud.scoreboard or {}) > 0, 'the fixture is not really in a live round')
     t.isNil(hud.winCondition, 'a ladder round advertised a counting rule')
     t.isNil(hud.scoreLimit, 'a ladder round advertised a score target')
+end)
+
+-- ======================================================================
+-- WALKING OUT SAYS SO
+--
+-- MEASURED by walking a player out of a lobby with the panel shut:
+-- `/arenaleave` sent them NOTHING AT ALL. No toast, and no state push
+-- either -- Broadcast reaches the roster and the panel-open list, and a
+-- leaver is on neither -- so the only thing telling them the command had
+-- worked was the absence of anything telling them it had not.
+--
+-- `notify.you_left` has been in the locale the whole time and has been
+-- passed down this very call as the reason key. It reached the OTHER
+-- players and the bet refunds, and never the person who typed it.
+--
+-- Joining answers "You are in." on exactly this line of exactly this
+-- shape. Leaving was the one action a player could take and be told
+-- nothing about.
+-- ======================================================================
+
+--- Every notification one player was sent, newest last, as plain text.
+local function toldOnLeaving(s, src, leave)
+    local before = #s.noticesTo(src)
+    leave()
+    local after = s.noticesTo(src)
+    return after[#after], #after - before
+end
+
+t.test('/arenaleave answers the player who typed it', function()
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    local said, count = toldOnLeaving(s, 3, function() s.commands.arenaleave(3) end)
+    t.isNil(s.lobby.Get(id).players[3], 'the fixture did not actually leave')
+    t.equals(count, 1, 'the leaver was told nothing at all')
+    t.equals(said, 'You are out of the arena.', 'the leaver was told the wrong thing')
+end)
+
+t.test('and so does the panel button, which is the same action', function()
+    -- TWO ROUTES TO ONE ACTION ANSWER THE SAME WAY. A button that confirms
+    -- and a command that does not is the shape a player reports as "the
+    -- command is broken".
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    local said, count = toldOnLeaving(s, 3, function() s.fire('leaveMatch', 3) end)
+    t.isNil(s.lobby.Get(id).players[3], 'the fixture did not actually leave')
+    t.equals(count, 1, 'the leaver was told nothing at all')
+    t.equals(said, 'You are out of the arena.', 'the two routes answer differently')
+end)
+
+t.test('a fighter who walks out of a LIVE round is answered too', function()
+    -- The path that already changes the screen under them. The exit is a
+    -- screen transition, not a sentence, and the two do not say the same
+    -- thing twice.
+    local s = newServer(function(c) c.Match.lives = 3 end)
+    local id = s.play(4)
+
+    local said = toldOnLeaving(s, 3, function() s.commands.arenaleave(3) end)
+    t.isNil(s.lobby.Get(id).players[3], 'the fighter never left the live round')
+    t.equals(said, 'You are out of the arena.', 'a live-round leaver was told nothing')
+end)
+
+t.test('CONTROL: a REFUSED leave is not reported as a successful one', function()
+    -- The half that would turn this into a worse bug than the one it fixes.
+    -- A player held by a side bet must read the refusal, not "You are out of
+    -- the arena." while still standing in the lobby.
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    -- THE HOLD, STUBBED AT ITS SOURCE, the way the two tests above this one
+    -- in this file already do it. Turning the Config switches on is NOT
+    -- enough and the first version of this test proved nothing because of
+    -- it: the flags were set, no stake was ever placed, MayLeave answered
+    -- true, and the assertion sat inside an `if` that never ran.
+    s.env.ArenaBetting.IsEnabled = function() return true end
+    s.env.ArenaBetting.HoldsSideBet = function(_, src) return src == 2 end
+    t.equals(s.lobby.MayLeave(2), false, 'the fixture did not actually hold player 2')
+
+    local held = toldOnLeaving(s, 2, function() s.commands.arenaleave(2) end)
+    t.isTrue(s.lobby.Get(id).players[2] ~= nil, 'the held player left anyway')
+    t.isTrue(held ~= 'You are out of the arena.',
+        'a refused leave was announced as a successful one')
+
+    -- AND SOMEBODY IN NO MATCH AT ALL, which must not be congratulated on
+    -- leaving one. This half needs no fixture and always runs.
+    local said = toldOnLeaving(s, 6, function() s.commands.arenaleave(6) end)
+    t.isTrue(said ~= 'You are out of the arena.',
+        'a player who was never in a match was told they had left one')
 end)
 
 os.exit(t.summary())

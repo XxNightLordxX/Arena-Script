@@ -329,6 +329,27 @@ end)
 onClient('crimson_arena:server:leaveMatch', RATE.leave, function(src)
     local ok, reason = detach(src, 'notify.you_left')
     if not ok and reason then return refuse(src, reason) end
+
+    -- AND SAY SO, which neither route did.
+    --
+    -- MEASURED by walking a player out of a lobby with the panel shut:
+    -- `/arenaleave` sent them NOTHING AT ALL. No toast, and no state push
+    -- either -- Broadcast reaches the roster and the panel-open list, and a
+    -- leaver is on neither -- so the one thing telling them the command
+    -- worked was the absence of anything telling them it had not.
+    -- `notify.you_left` has been in the locale and has been passed down this
+    -- call as the reason key the whole time; it reached the OTHER players
+    -- ("%s walked out of the fight") and the bet refunds, and never the
+    -- person who typed it.
+    --
+    -- THE OTHER HALF OF A PAIR. Joining answers 'notify.match_joined' -- "You
+    -- are in." -- on exactly this line of exactly this shape. Leaving is the
+    -- one action in the resource a player can take and be told nothing about.
+    --
+    -- It is sent on the live-round path too, where the player is also pulled
+    -- out of the arena: that is a screen changing under them, not a sentence,
+    -- and the two do not say the same thing twice.
+    if ok then ArenaNotifyKey(src, 'notify.you_left', 'info') end
 end)
 
 onClient('crimson_arena:server:setTeam', RATE.choice, function(src, data)
@@ -1815,7 +1836,14 @@ RegisterCommand('arenaleave', function(src)
     if not ArenaRateLimit(target, 'crimson_arena:server:leaveMatch', RATE.leave) then return end
 
     local ok, reason = detach(target, 'notify.you_left')
-    if ok then return end
+    if ok then
+        -- THE SAME LINE THE BUTTON ANSWERS WITH, and the route that needed it
+        -- most: a player who typed this with the panel shut got no toast and
+        -- no state push, so nothing on their screen moved at all. See the
+        -- note on the leaveMatch handler above.
+        ArenaNotifyKey(target, 'notify.you_left', 'info')
+        return
+    end
 
     -- NO REASON MEANS THEY WERE NEVER IN ONE. detach answers false with a
     -- refusal when the leave was turned down -- a held side bet, a countdown

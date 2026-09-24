@@ -2250,6 +2250,10 @@ local function buildArenaProps(arenaKey, factor, boundary)
     local platform = Arena.GetPlatform(arenaKey, factor)
 
     local measured = nil
+    -- WHICH FLOOR MODEL THIS CLIENT ACTUALLY GOT, kept where the piece-count
+    -- warning below can name it. It is the first thing worth knowing about a
+    -- floor that misbehaves and it was scoped to the block that resolved it.
+    local floorModel, floorWanted = nil, nil
     if platform then
         local hash, name = loadPropModel(platform.models)
         if hash then
@@ -2258,9 +2262,16 @@ local function buildArenaProps(arenaKey, factor, boundary)
                 measured = { x = sizeX, y = sizeY, top = top }
             end
             arenaSurfaceZ = platform.z
+            floorModel, floorWanted = name, platform.models[1]
             if name ~= platform.models[1] then
-                print(('[crimson_arena] arena scenery: the floor fell back to \'%s\' -- this build does not have \'%s\'.')
-                    :format(tostring(name), tostring(platform.models[1])))
+                -- SAID IN BOTH CONSOLES. print() reaches this player's F8 and
+                -- nowhere else, and the person diagnosing a floor is watching
+                -- the SERVER console -- so the one fact that explains a floor
+                -- built out of hundreds of pieces never reached them.
+                local fell = ('arena scenery: the floor fell back to \'%s\' -- this build does not have \'%s\'.')
+                    :format(tostring(name), tostring(platform.models[1]))
+                print('[crimson_arena] ' .. fell)
+                ArenaDebugReport({ fell })
             end
         end
     end
@@ -2412,18 +2423,44 @@ local function buildArenaProps(arenaKey, factor, boundary)
         if builtFloor > FLOOR_PIECES_WORTH_WARNING_ABOUT
             and not saidOnce['floor-pieces:' .. tostring(arenaKey)] then
             saidOnce['floor-pieces:' .. tostring(arenaKey)] = true
-            print(('[crimson_arena] arena scenery: THIS CLIENT BUILT THE FLOOR OUT OF %d PIECES.')
-                :format(builtFloor))
-            print('[crimson_arena]   That is the small-prop end of the model chain -- the large prop at the')
-            print('[crimson_arena]   head of it is missing from this build, and the same arena is a handful')
-            print('[crimson_arena]   of pieces on a client that has it. Every piece is a pinned object, so')
-            print('[crimson_arena]   this client is carrying far more of them than anybody else in the round.')
-            print('[crimson_arena]   If a player crashes entering this arena and others do not, this is the')
-            print('[crimson_arena]   first thing to check. Stream the large prop, or give the arena a floor')
-            print('[crimson_arena]   model every one of your players actually has -- see STREAMING.md.')
-            print('[crimson_arena]   Do NOT answer it by lowering platform.maxTiles: the floor needs every')
-            print('[crimson_arena]   one of these pieces to reach its wall, and trimming them puts a hole')
-            print('[crimson_arena]   in the ground inside it.')
+
+            -- BUILT ONCE, SAID TWICE, AND THE SECOND PLACE IS THE POINT.
+            --
+            -- Every line of this was print(), which on a client reaches that
+            -- player's F8 console and nowhere else. The operator diagnosing a
+            -- floor watches the SERVER console, so the briefing that explains
+            -- a floor built from hundreds of pieces -- and names the model it
+            -- fell back to -- was written for somebody who never saw it.
+            -- Reported, in the owner's words, as "the floor keeps
+            -- disappearing occasionally in the match": hundreds of pinned
+            -- objects on a busy server is the first thing to rule in or out,
+            -- and nothing on the server console could.
+            --
+            -- The player's F8 keeps it too: it is their crash as much as the
+            -- operator's puzzle.
+            local briefing = {
+                ('arena scenery: THIS CLIENT BUILT THE FLOOR OUT OF %d PIECES%s.')
+                    :format(builtFloor,
+                        floorModel and (' of \'' .. tostring(floorModel) .. '\'') or ''),
+                '  That is the small-prop end of the model chain -- the large prop at the',
+                '  head of it is missing from this build, and the same arena is a handful',
+                '  of pieces on a client that has it. Every piece is a pinned object, so',
+                '  this client is carrying far more of them than anybody else in the round.',
+                '  If a player crashes entering this arena, or the floor flickers or goes',
+                '  missing in patches during a round, this is the first thing to check.',
+                '  Stream the large prop, or give the arena a floor model every one of your',
+                '  players actually has -- see STREAMING.md.',
+                '  Do NOT answer it by lowering platform.maxTiles: the floor needs every',
+                '  one of these pieces to reach its wall, and trimming them puts a hole',
+                '  in the ground inside it.',
+            }
+            if floorWanted and floorModel and floorWanted ~= floorModel then
+                briefing[#briefing + 1] =
+                    ('  The model this arena asks for first is \'%s\'.'):format(tostring(floorWanted))
+            end
+
+            for _, line in ipairs(briefing) do print('[crimson_arena] ' .. line) end
+            ArenaDebugReport(briefing)
         end
     end
 

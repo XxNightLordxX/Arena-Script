@@ -2497,6 +2497,103 @@ function ArenaMatch.Start(matchId)
     return true, nil
 end
 
+--- How long the SERVER'S OWN record of who last hit somebody counts as
+--- evidence about the death that followed it.
+---
+--- FIVE SECONDS, AND IT IS NOT A GUESS ABOUT NETWORKING. It is the longest
+--- gap between the last bullet that landed and the body hitting the floor
+--- that still reads as "that bullet is why they are dead": a bleed-out from
+--- a body shot, or a fighter who took the hit, ran two paces and dropped.
+--- Longer and it starts paying a shooter for somebody else's kill; shorter
+--- and it drops the bleed-outs, which are the deaths a one-shot weapon does
+--- not produce and are therefore not the ones this exists for.
+---
+--- IT IS THE ONLY MEMORY IN THIS FILE THAT CAN HAND OUT A KILL, so it is
+--- read through resolveKiller like every other claim -- same roster, same
+--- teams, same fence, same distance ceiling. Nothing below shortcuts those.
+local DAMAGE_MEMORY_MS = 5000
+
+--- The fighter the SERVER last watched damage this one, or nil.
+---
+--- SWEPT ON EVERY READ, which is `recentSpawns`' pattern a hundred lines
+--- above and is here for the same reason: this table is written once per
+--- bullet by server/dispatch.lua, and a round of two people firing pistols
+--- at each other writes it thousands of times. Nothing else ever comes back
+--- to tidy it, so the read does it -- and because the store hangs off the
+--- match table it goes when the match goes, however the round ended.
+--- @param match table
+--- @param victimSrc integer
+--- @return integer|nil attackerSrc
+local function damagerOf(match, victimSrc)
+    local seen = match.recentDamage
+    if type(seen) ~= 'table' then return nil end
+
+    local now = tonumber(GetGameTimer())
+
+    -- NO CLOCK MEANS NO WITNESS. Everything time-stamped in this file fails
+    -- open the same way -- unwitnessedRun says so in as many words -- and
+    -- failing open here means crediting nobody, which is the behaviour this
+    -- whole block exists to improve on rather than a new harm.
+    if now == nil then return nil end
+
+    for src, row in pairs(seen) do
+        if type(row) ~= 'table' or (now - (tonumber(row.at) or 0)) > DAMAGE_MEMORY_MS then
+            seen[src] = nil
+        end
+    end
+
+    local row = seen[victimSrc]
+    return row and Arena.ToInt(row.by) or nil
+end
+
+--- The server watched one fighter damage another. Remember it.
+---
+--- CALLED ONCE PER LANDED HIT from server/dispatch.lua's weaponDamageEvent
+--- handler, which is the only place in this resource that sees a bullet at
+--- all. The note at the top of that handler has the round that measured why
+--- this is needed; the short version is that a death reported with "nothing
+--- I could name hit me" is the dying client failing to see the blow, and the
+--- server saw it.
+---
+--- IT STORES A FACT, NOT A VERDICT. Being remembered here credits nobody
+--- with anything: OnDeath runs whatever this names through resolveKiller,
+--- which asks the roster, the teams, the fence and the distance ceiling
+--- exactly as it does for a claim the client sent. The entry is keyed by
+--- VICTIM and holds one attacker, so the last person to land a hit is the
+--- only one it can ever name.
+---
+--- KEPT ON THE MATCH TABLE rather than in a module-level store, which is the
+--- rule the roster rows follow and for the same reason: the server recycles
+--- server ids, and a store that outlives the round would let a fresh player
+--- inherit a dead one's witness. This one cannot outlive the match table it
+--- hangs off.
+--- @param victimSrc any
+--- @param attackerSrc any
+--- @return boolean remembered
+function ArenaMatch.RememberDamage(victimSrc, attackerSrc)
+    local victim = Arena.ToInt(victimSrc)
+    local attacker = Arena.ToInt(attackerSrc)
+    if not victim or not attacker then return false end
+    if victim <= 0 or attacker <= 0 or victim == attacker then return false end
+
+    local at = tonumber(GetGameTimer())
+    if at == nil then return false end
+
+    local match = ArenaLobby.GetByPlayer(victim)
+    if not match or match.state ~= 'live' then return false end
+
+    -- BOTH OF THEM IN THIS ROUND. dispatch.lua has already established it --
+    -- mayDamage refuses two people in different matches -- and it is asked
+    -- again here because this function is public and the answer must not
+    -- depend on who called it.
+    if type(match.players) ~= 'table' then return false end
+    if match.players[victim] == nil or match.players[attacker] == nil then return false end
+
+    match.recentDamage = match.recentDamage or {}
+    match.recentDamage[victim] = { by = attacker, at = at }
+    return true
+end
+
 --- One player died. Scores it, and spends a life -- eliminating them when
 --- they have none left -- in every mode EXCEPT a ladder, where a death costs
 --- a tier instead and nobody is ever eliminated.
@@ -2529,6 +2626,62 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     local playingLadder = #ladderOf(match) > 0
 
     local killer, namedAFighter = resolveKiller(match, player, killerSrc)
+
+    -- AND IF THE CLIENT NAMED NOBODY, ASK WHAT THE SERVER SAW.
+    --
+    -- THE REPORT: "as its not giving points for a kill". THE MEASUREMENT: two
+    -- deaths inside the arena in one gun game round, both logged by this
+    -- file's own UNATTRIBUTED line, both with the client's reason code 1 --
+    -- nothing it could name hit them. Not a fall and not the boundary: the
+    -- bodies were inside the fence, and somebody was standing in front of
+    -- them shooting.
+    --
+    -- WHY THE CLIENT CAN MISS A BLOW IT DIED TO. client/match.lua asks four
+    -- readings in turn and every one of them is a question about ENTITIES
+    -- that client currently holds -- the damage event's attacker, the fatal
+    -- blow it remembers, GET_PED_SOURCE_OF_DEATH, the last thing that hurt
+    -- it. All four answer nothing when no CEventNetworkEntityDamage reached
+    -- that client for the killing shot and the engine had not finished
+    -- filling the death in. Reason code 1 is precisely "all four were
+    -- empty". Nothing the client can be taught fixes that, because the
+    -- client is the one that did not see it.
+    --
+    -- THE SERVER SAW IT. weaponDamageEvent arrives on this side for every
+    -- shot that lands, carrying the shooter as the event's own sender --
+    -- which is an identity no client chooses -- and server/dispatch.lua
+    -- resolves the victims to server ids already. RememberDamage above
+    -- writes that down; this reads it.
+    --
+    -- IT IS STRICTLY A SECOND OPINION AND NEVER AN OVERRIDE. It is asked
+    -- only when the client named nobody the roster accepts, so a client that
+    -- DID name somebody still gets the answer it always got, refusal
+    -- included. And what it names goes through resolveKiller, so the fence,
+    -- the distance ceiling, friendly fire, elimination and "are they even in
+    -- this round" all still apply.
+    --
+    -- THIS IS ALSO WHY IT CANNOT BE FARMED. The memory is written by the
+    -- server watching a bullet land, not by anybody asking for it, and a
+    -- player who wants to be named here has to actually shoot the person who
+    -- then actually dies, within five seconds, from inside the arena, on the
+    -- other team. That is a kill.
+    if not killer and namedAFighter ~= true then
+        local witness = damagerOf(match, id)
+        if witness then
+            local seen, sawAFighter = resolveKiller(match, player, witness)
+            if seen then
+                killer, namedAFighter = seen, sawAFighter
+                ArenaDebug('kill credited from the server\'s own record on match %s: %s reported '
+                    .. 'nobody, and the last hit this server watched land on them was %s. %s',
+                    tostring(match.id), tostring(id), tostring(witness), unattributedReason(why))
+            end
+        end
+    end
+
+    -- SPENT, WHOEVER IT NAMED OR DID NOT. One landed hit is evidence about
+    -- ONE death, and leaving it behind would let the next death inside the
+    -- window be credited to the same shooter a second time -- a fighter who
+    -- traded a hit and then fell off the skydome would pay out twice.
+    if type(match.recentDamage) == 'table' then match.recentDamage[id] = nil end
 
     -- WHAT THE KILLER WAS STANDING ON, READ BEFORE THEY MOVE OFF IT.
     --

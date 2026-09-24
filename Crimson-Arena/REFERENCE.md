@@ -725,13 +725,14 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
-#### `server/match.lua` — 9 functions
+#### `server/match.lua` — 10 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaMatch.UnplaceAuto(match)` | Puts back the sides `Begin` handed to players who never picked one, for an exit back to the lobby that lives outside this file -- the host's Stop The Countdown. Answers whether it moved anybody. |
 | `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players are held for -- it re-checks the roster every second and drops the room back to the lobby the moment it no longer qualifies, which is why `ArenaLobby.MayLeave` refuses a voluntary leave for its whole length. A disconnect is never refused. |
 | `ArenaMatch.Start(matchId)` | Teleports everybody in, hands out the loadouts, and starts the frozen countdown that ends with weapons live. |
+| `ArenaMatch.RememberDamage(victimSrc, attackerSrc)` | The server watched one fighter land a hit on another; remember it for five seconds. Called once per landed hit from `server/dispatch.lua`'s `weaponDamageEvent` handler, which is the only place this resource sees a bullet. `OnDeath` reads it ONLY when the dying client named nobody the roster accepts, and runs what it names through the same `resolveKiller` checks as any claim -- so it credits a kill the client failed to witness and cannot be used to invent one. Stores a fact, never a verdict. |
 | `ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)` | One player died. `serverSaw` marks a death the dead-sweep found rather than the client reporting; `why` is for the log alone; `causeHash` is the weapon hash the dying client read off its own ped -- the only way the server can name what killed somebody, used to print the TEAMKILL line and to revoke a sparing the killer's rung would otherwise have earned. |
 | `ArenaMatch.End(matchId, reasonKey, winners)` | Ends a round that was actually fought: decides the winners, settles the money, records it, and sends everybody home with a result. |
 | `ArenaMatch.Abort(matchId, reasonKey)` | The refund-everything path: a resource stop, an admin force-stop, a lobby that emptied out, a round that could not start. |

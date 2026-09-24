@@ -846,7 +846,7 @@ Config.Modes = {
                     'snspistol', 'vintagepistol', 'pistol', 'ceramicpistol',
                     'combatpistol', 'gadgetpistol', 'snspistolmk2', 'pistolxm3',
                     'appistol', 'doubleaction', 'heavypistol', 'tecpistol',
-                    'pistolmk2', 'navyrevolver', 'pistol50', 'revolver', 'revolvermk2',
+                    'pistolmk2', 'pistol50', 'revolver', 'revolvermk2',
                 },
             },
             {

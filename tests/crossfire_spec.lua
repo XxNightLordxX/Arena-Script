@@ -1264,4 +1264,117 @@ t.test('and a fighter\'s own grenade on the platform is still allowed', function
     t.isFalse(f.explode(1, SKY.x, SKY.y, SKY.z), 'a fighter could not use a grenade in their own sky round')
 end)
 
+-- ======================================================================
+-- THE WITNESS THIS HANDLER WRITES DOWN
+--
+-- The server sees every shot that lands, once per bullet, and until now it
+-- read the packet only to decide whether to refuse it and then threw the
+-- rest away. That discarded fact is the only reading of a death which does
+-- NOT depend on the dying client's game having seen the blow -- and the
+-- owner's log has two kills inside his arena that went uncredited for
+-- exactly that reason. server/match.lua's own behaviour is pinned in
+-- killwitness_spec; this is the WIRE, against the real handler.
+-- ======================================================================
+
+--- Installs a stand-in for the module this fixture deliberately does not
+--- load, and hands back the list of calls it receives.
+local function watchMatch(f)
+    local calls = {}
+    f.env.ArenaMatch = {
+        RememberDamage = function(victim, attacker)
+            calls[#calls + 1] = { victim = victim, attacker = attacker }
+            return true
+        end,
+    }
+    return calls
+end
+
+t.test('an ordinary enemy hit is remembered, victim and shooter both', function()
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    local calls = watchMatch(f)
+
+    t.isFalse(f.shoot(1, { 2 }), 'a lawful shot inside one round was refused')
+
+    t.equals(#calls, 1, 'the server saw the hit land and wrote nothing down')
+    t.equals(calls[1].victim, 2, 'the victim was recorded as somebody else')
+    t.equals(calls[1].attacker, 1, 'the shooter was recorded as somebody else')
+end)
+
+t.test('and it is remembered with the crossfire guard switched OFF', function()
+    -- AN OPERATOR WHO TURNS THE GUARD OFF ASKED THIS RESOURCE TO STOP
+    -- CANCELLING OTHER PEOPLE'S DAMAGE. He did not ask for kills to stop
+    -- being credited, and before this the recording sat behind the same
+    -- early return -- so every server with the guard off would have kept
+    -- the bug this memory exists to fix.
+    local f = newFixture({ guard = false })
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    local calls = watchMatch(f)
+
+    t.isFalse(f.shoot(1, { 2 }), 'the guard is off, so nothing may be cancelled')
+    t.equals(#calls, 1, 'a server with the guard off remembered nothing, so kills still vanish')
+
+    -- AND STILL NOTHING ELSE. The promise this spec holds the guard to is
+    -- that switching it off restores the old behaviour exactly -- no
+    -- cancels, no log lines -- and the memory must not have bought a line.
+    t.equals(#f.debugs, 0, 'the guard is off and this handler still wrote to the console')
+end)
+
+t.test('a shot that is REFUSED is not remembered', function()
+    -- The memory must never name somebody whose shot this server would not
+    -- allow: a kill credited off a cancelled bullet is a kill nobody fired.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm2')
+    local calls = watchMatch(f)
+
+    t.isTrue(f.shoot(1, { 2 }), 'crossfire between two rounds was allowed')
+    t.equals(#calls, 0, 'a cancelled shot was remembered as a landed hit')
+end)
+
+t.test('and neither is a team-mate hit that rides through on a spread', function()
+    -- The documented bend: a packet naming a team-mate AND an enemy is let
+    -- through whole, because cancelling it would make standing next to a
+    -- team-mate shotgun-proof. The team-mate half must still not be
+    -- remembered -- friendly fire being unstoppable is not the same as it
+    -- counting.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm1')
+    f.teams('m1', 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    local calls = watchMatch(f)
+
+    t.isFalse(f.shoot(1, { 2, 3 }), 'the documented bend stopped letting the packet through')
+
+    t.equals(#calls, 1, 'the team-mate caught in the spread was remembered as a landed hit')
+    t.equals(calls[1].victim, 3, 'the enemy in the packet was not the one remembered')
+end)
+
+t.test('self-damage is not remembered, however the packet is shaped', function()
+    local f = newFixture()
+    f.enter(1, 'm1')
+    local calls = watchMatch(f)
+
+    t.isFalse(f.shoot(1, { 1 }), 'a fighter could not damage themselves')
+    t.equals(#calls, 0, 'a player was remembered as having shot themselves')
+end)
+
+t.test('and a handler with no match module at all does not throw', function()
+    -- server/match.lua is loaded AFTER this file. A build where it is
+    -- missing, or a shot that arrives before it has loaded, must not turn
+    -- every bullet in the round into a script error.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.env.ArenaMatch = nil
+
+    t.isFalse(f.shoot(1, { 2 }), 'a lawful shot threw with no match module loaded')
+
+    f.env.ArenaMatch = { RememberDamage = 'not a function' }
+    t.isFalse(f.shoot(1, { 2 }), 'a match module of the wrong shape threw')
+end)
+
 os.exit(t.summary())

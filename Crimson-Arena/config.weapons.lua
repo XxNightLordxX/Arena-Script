@@ -197,7 +197,11 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_NAVYREVOLVER',
         label = 'Navy Revolver',
         category = 'sidearm',
-        enabled = true,
+        -- SWITCHED OFF BY THE OWNER. It is also taken out of the gun game
+        -- sidearm pool in config.lua, because a pool naming a weapon that is
+        -- switched off fills fewer tiers than it asks for -- which the boot
+        -- check now says out loud rather than leaving the ladder short.
+        enabled = false,
         ammo = { default = 60, options = { 30, 60, 120, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '.44 Magnum', item = 'ammo-44' } },
         components = {},

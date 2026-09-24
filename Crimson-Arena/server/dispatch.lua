@@ -2650,7 +2650,40 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     --
     -- crossfireGuard.enabled ships true, so friendly fire is enforced out of
     -- the box. config.lua says so beside the switch.
-    if not crossfireEnabled() then return end
+    --
+    -- THE GUARD NO LONGER DECIDES WHETHER THIS HANDLER RUNS, ONLY WHETHER IT
+    -- REFUSES ANYTHING, and that separation is a bug fix rather than a
+    -- tidy-up.
+    --
+    -- MEASURED, on the owner's own server, in the first gun game round
+    -- anybody played: two kills inside the arena were reported by the dying
+    -- client with WHY_NOTHING -- "nothing that hit you was an entity this
+    -- game could name". Nobody was credited, no kill ammo was paid, the
+    -- ladder demoted the victim and did not promote the shooter. From the
+    -- seat of the man who fired the shot that is "it is not giving points for
+    -- a kill", and it is exactly what he reported.
+    --
+    -- THE SERVER WATCHED BOTH OF THOSE SHOTS LAND AND THREW THE FACT AWAY.
+    -- This handler already resolves the shooter and every victim to server
+    -- ids for every shot in the round -- that is what the friendly-fire rule
+    -- below is built out of -- and then returned without writing any of it
+    -- down, because `refusal == nil` for an ordinary enemy hit. The one
+    -- reading of a death that does NOT depend on the dying client's game
+    -- having seen the blow was already in our hands, once per bullet, and we
+    -- dropped it.
+    --
+    -- So it is remembered now, and server/match.lua asks for it when a
+    -- client names nobody. Recording has to happen whether or not the guard
+    -- is switched on: an operator who turned the guard off asked this
+    -- resource to stop CANCELLING other people's damage, which it still
+    -- does not do below, and did not ask for kills to stop counting.
+    --
+    -- crossfire_spec's promise -- "switching the guard off restores the old
+    -- behaviour exactly" -- is about what this handler DOES to the shot: no
+    -- CancelEvent, no log line. Both are still behind `guard`. mayDamage
+    -- answers a question and changes nothing, so asking it costs an operator
+    -- with the guard off nothing he can observe.
+    local guard = crossfireEnabled()
 
     if next(active) == nil then return end
 
@@ -2661,6 +2694,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     if type(hits) ~= 'table' then return end
 
     if #hits > MAX_HITS then
+        if not guard then return end
         ArenaDebug('crossfire: refused a damage packet from %s naming %d entities.', tostring(attacker), #hits)
         CancelEvent()
         return
@@ -2676,13 +2710,28 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         if victim then
             local ok, reason, kind = mayDamage(attacker, victim)
             if ok then
-                if victim ~= attacker then allowed = allowed + 1 end
+                if victim ~= attacker then
+                    allowed = allowed + 1
+
+                    -- THE WITNESS, WRITTEN DOWN ONE HIT AT A TIME. See the
+                    -- note at the top of this handler for the round that
+                    -- measured why. Guarded by name because server/match.lua
+                    -- is loaded after this file; a missing module must not
+                    -- turn every bullet in the round into an error.
+                    if type(ArenaMatch) == 'table'
+                        and type(ArenaMatch.RememberDamage) == 'function'
+                    then
+                        ArenaMatch.RememberDamage(victim, attacker)
+                    end
+                end
             else
                 refusal = refusal or { victim = victim, reason = reason }
                 if kind ~= 'team' then crossfire = true end
             end
         end
     end
+
+    if not guard then return end
 
     if refusal == nil then return end
 

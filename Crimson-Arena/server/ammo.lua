@@ -2696,6 +2696,41 @@ local function inventoryTags(ox)
     return false
 end
 
+--- Does this ox_inventory have an item by this name AT ALL, whatever kind it
+--- is. Two return values: whether the name is known, and whether the registry
+--- could actually be read.
+---
+--- NOT inventoryKnowsItem, AND THE DIFFERENCE IS THE WHOLE POINT. That one
+--- asks "is this a COMPONENT", because writing a non-component onto a weapon
+--- leaves it undrawable -- so it answers false for a perfectly good
+--- `weapon`-tagged item. Asking it about WEAPON_PISTOL would report every
+--- weapon on the server as missing. Measured: the first version of the boot
+--- report did exactly that, and its own all-present control caught it.
+---
+--- WHAT IS BEING ASKED HERE IS NARROWER. ox_inventory's AddItem needs the name
+--- to exist and nothing more; the tag does not matter, because the arena is
+--- handing the item over rather than fitting it to something.
+--- @param name string
+--- @return boolean known
+--- @return boolean readable
+local function inventoryHasItem(name)
+    local ox = inventory()
+    if ox == nil then return true, false end
+
+    local ok, item = pcall(function() return ox:Items(name) end)
+    if not ok then return true, false end
+
+    -- nil AND false BOTH MEAN "NO SUCH ITEM", for the ox_inventory version
+    -- reasons set out at length in inventoryKnowsItem just below.
+    if item == nil or item == false then return false, true end
+
+    -- Anything that is not a table means this registry cannot be interrogated,
+    -- which is the let-it-through case rather than a missing name.
+    if type(item) ~= 'table' then return true, false end
+
+    return true, true
+end
+
 local function inventoryKnowsItem(name)
     local ox = inventory()
     if ox == nil then return true end
@@ -8249,6 +8284,122 @@ end
 --- most worth reading is the one where the answer changed after start-up,
 --- and a report only a restart can print cannot tell anyone about it. Everything the thread below prints, it prints from here.
 --- @return string[]
+--- WHAT THIS ARENA HANDS OUT, CHECKED AGAINST WHAT ox_inventory HAS.
+---
+--- THE HOLE THIS FILLS, reported from a live server: "the host chose 4 weapons
+--- and all it had was the vests and bandages". Every weapon was refused by
+--- ox_inventory because its data has no item by that name, every supply landed
+--- because it does, and the round ran with nobody armed.
+---
+--- IT WAS ALREADY SAID -- AT THE WRONG TIME. giveWeapon names a refused weapon
+--- the moment it is refused, and issueWeapons says "was issued NOTHING" after
+--- them all. Both are correct and both arrive with a fighter already standing
+--- in the arena empty-handed, which is the one moment an operator can do
+--- nothing about it. A name that is wrong is wrong at boot, which is what the
+--- attachment report beneath this one has always said about attachments.
+---
+--- ALL THREE KINDS, because the failure is the same one and the symptom is
+--- not. A missing WEAPON item leaves a fighter unarmed; a missing AMMO item
+--- arms them with nothing to fire; a missing SUPPLY item quietly drops the
+--- plates. The live report showed exactly this split -- supplies known,
+--- weapons not -- so a check covering only one kind would have passed it.
+---
+--- UNREADABLE IS NOT CLEAN, the same rule the attachment report follows:
+--- inventoryKnowsItem waves every name through when ox_inventory will not
+--- answer Items(), so a report that then said "all present" would be inventing
+--- an all-clear out of not having looked.
+--- @return string[] lines
+function ArenaAmmo.WeaponItemReport()
+    local lines = {}
+    local function say(...) lines[#lines + 1] = ('%s'):format(string.format(...)) end
+
+    -- GROUPED BY KIND rather than listed flat, because the repair is different
+    -- for each: a weapon and its ammo live in ox_inventory/data/weapons.lua,
+    -- a supply is an ordinary item.
+    local kinds = {
+        { key = 'weapon',  label = 'weapon',  names = {} },
+        { key = 'ammo',    label = 'ammo',    names = {} },
+        { key = 'supply',  label = 'supply',  names = {} },
+    }
+    local seen = {}
+    local function add(kind, name)
+        if not Arena.IsKey(name) or seen[name] then return end
+        seen[name] = true
+        for _, row in ipairs(kinds) do
+            if row.key == kind then row.names[#row.names + 1] = name return end
+        end
+    end
+
+    for _, weapon in ipairs((Config.Loadouts or {}).weapons or {}) do
+        if type(weapon) == 'table' and weapon.enabled ~= false then
+            add('weapon', weapon.weapon)
+            for _, entry in ipairs(weapon.ammoTypes or {}) do
+                if type(entry) == 'table' then add('ammo', entry.item) end
+            end
+        end
+    end
+    for _, entry in ipairs(((Config.Loadouts or {}).supplies or {}).items or {}) do
+        if type(entry) == 'table' then add('supply', entry.item) end
+    end
+
+    local total = 0
+    for _, row in ipairs(kinds) do total = total + #row.names end
+    if total == 0 then
+        say('issued items: the config hands nothing out.')
+        return lines
+    end
+
+    if inventory() == nil then
+        say('issued items: %d name(s) configured, none checked -- ox_inventory is not running. '
+            .. 'Without it nobody is issued anything at all.', total)
+        return lines
+    end
+
+    local missing, checked, unreadable = {}, 0, false
+    for _, row in ipairs(kinds) do
+        for _, name in ipairs(row.names) do
+            checked = checked + 1
+            local known, readable = inventoryHasItem(name)
+            if not readable then unreadable = true end
+            if readable and not known then
+                missing[#missing + 1] = { name = name, label = row.label }
+            end
+        end
+    end
+
+    if unreadable then
+        say('issued items: %d name(s) configured, NONE checked -- this ox_inventory would not '
+            .. 'answer Items(). A name it does not know is handed over and refused, and the '
+            .. 'fighter gets nothing of that kind.', total)
+        return lines
+    end
+
+    if #missing == 0 then
+        say('issued items: %d of %d name(s) checked against ox_inventory, all present.',
+            checked, total)
+        return lines
+    end
+
+    table.sort(missing, function(a, b)
+        if a.label ~= b.label then return a.label < b.label end
+        return a.name < b.name
+    end)
+
+    say('issued items: %d of %d name(s) are NOT items in this ox_inventory. Anything handed '
+        .. 'over under these names is REFUSED, and the fighter is given nothing in its place:',
+        #missing, total)
+    for _, row in ipairs(missing) do
+        say('  %-8s %s', row.label, row.name)
+    end
+    say('  A fighter issued only refused names stands in the arena with an empty loadout -- the')
+    say('  symptom is "the host picked weapons and everybody got only the vests and bandages",')
+    say('  because the supplies are ordinary items this ox_inventory does happen to know.')
+    say('  Fix: a WEAPON or AMMO name must exist in ox_inventory/data/weapons.lua, spelled')
+    say('       exactly as in Config.Loadouts.weapons -- WEAPON_PISTOL, ammo-9. A SUPPLY name')
+    say('       is an ordinary item in ox_inventory/data/items.lua.')
+    return lines
+end
+
 function ArenaAmmo.AttachmentReport()
     local lines = {}
     local function say(fmt, ...)
@@ -8450,6 +8601,10 @@ CreateThread(function()
         Wait(1000)
     end
 
+    -- WHAT IS HANDED OUT BEFORE WHAT IS FITTED TO IT. A missing weapon item
+    -- empties the whole loadout; a missing attachment costs a scope. The
+    -- bigger failure is read first so it is not buried under the smaller one.
+    for _, line in ipairs(ArenaAmmo.WeaponItemReport()) do ArenaLog('%s', line) end
     for _, line in ipairs(ArenaAmmo.AttachmentReport()) do ArenaLog('%s', line) end
 end)
 

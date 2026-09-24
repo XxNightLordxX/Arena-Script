@@ -1778,4 +1778,100 @@ t.test('and naming a kind in BOTH lists is reported as the contradiction it is',
     t.contains(report, 'suppressor', 'the contradiction did not name the kind')
 end)
 
+
+-- ======================================================================
+-- WHAT THE ARENA HANDS OUT, CHECKED AT BOOT
+--
+-- Reported from a live server: "the host chose 4 weapons and all it had was
+-- the vests and bandages", and "nobody had any of those 4 weapons". Every
+-- weapon name was refused by this ox_inventory because its weapon data has no
+-- item by that name; every supply name landed because its item list does. The
+-- round ran with nobody armed.
+--
+-- IT WAS ALREADY SAID, AT THE WRONG TIME. giveWeapon names each refusal and
+-- issueWeapons says "was issued NOTHING" after them all -- both correct, both
+-- arriving with a fighter already standing in the arena empty-handed. The
+-- attachment check beneath these tests had said for a long time that a name
+-- which is wrong is wrong at boot; weapons had no such check.
+-- ======================================================================
+
+t.test('THE START-UP CHECK names an issued WEAPON ox_inventory does not have', function()
+    local f = newKit({
+        knownItems = {
+            -- An ox_inventory with the ordinary items and NO weapon data,
+            -- which is the shape the live report had.
+            armour = { name = 'armour' },
+            bandage = { name = 'bandage' },
+        },
+        mutate = function(config)
+            config.Loadouts.weapons = {
+                { key = 'w1', weapon = 'WEAPON_TEST', label = 'Test', category = 'sidearm',
+                  enabled = true, ammo = { default = 60, options = { 60 }, max = 60 },
+                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-9' } },
+                  components = {}, tint = 0 },
+            }
+        end,
+    })
+
+    local report = table.concat(f.ammo.WeaponItemReport(), '\n')
+    t.contains(report, 'NOT items in this ox_inventory',
+        'a missing weapon item was reported as a clean boot')
+    t.contains(report, 'WEAPON_TEST', 'the weapon that will be refused is not named')
+    t.contains(report, 'ammo-9', 'the ammunition item was not checked')
+    t.contains(report, 'vests and bandages',
+        'the report does not connect itself to the symptom an operator actually sees')
+end)
+
+t.test('and reports all present when ox_inventory has every name', function()
+    local f = newKit({
+        knownItems = {
+            WEAPON_TEST = { name = 'WEAPON_TEST', weapon = true },
+            ['ammo-9'] = { name = 'ammo-9', ammo = true },
+        },
+        mutate = function(config)
+            config.Loadouts.weapons = {
+                { key = 'w1', weapon = 'WEAPON_TEST', label = 'Test', category = 'sidearm',
+                  enabled = true, ammo = { default = 60, options = { 60 }, max = 60 },
+                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-9' } },
+                  components = {}, tint = 0 },
+            }
+            config.Loadouts.supplies.items = {}
+        end,
+    })
+
+    local report = table.concat(f.ammo.WeaponItemReport(), '\n')
+    t.contains(report, 'all present', 'a healthy inventory was reported as broken: ' .. report)
+    t.isNil(report:find('NOT items', 1, true), 'a healthy inventory named a missing item')
+end)
+
+t.test('and an ox_inventory that will not answer Items() is NOT reported as clean', function()
+    -- inventoryKnowsItem waves every name through when the registry cannot be
+    -- read, so a report that then said "all present" would be inventing an
+    -- all-clear out of not having looked. The attachment report already
+    -- refuses to do that; this one has to as well.
+    local f = newKit({ fail = { noRegistry = true } })
+    local report = table.concat(f.ammo.WeaponItemReport(), '\n')
+    t.isNil(report:find('all present', 1, true),
+        'an unreadable registry was reported as all present: ' .. report)
+    t.contains(report, 'NONE checked', 'the report did not say it had not looked')
+end)
+
+t.test('and a DISABLED weapon is not reported, because it is never handed out', function()
+    local f = newKit({
+        knownItems = { armour = { name = 'armour' } },
+        mutate = function(config)
+            config.Loadouts.weapons = {
+                { key = 'off', weapon = 'WEAPON_SWITCHEDOFF', label = 'Off', category = 'sidearm',
+                  enabled = false, ammo = { default = 60, options = { 60 }, max = 60 },
+                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-off' } },
+                  components = {}, tint = 0 },
+            }
+            config.Loadouts.supplies.items = {}
+        end,
+    })
+    local report = table.concat(f.ammo.WeaponItemReport(), '\n')
+    t.isNil(report:find('WEAPON_SWITCHEDOFF', 1, true),
+        'a switched-off weapon was reported as a missing item')
+end)
+
 os.exit(t.summary())

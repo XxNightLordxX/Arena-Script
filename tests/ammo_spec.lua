@@ -2834,4 +2834,5 @@ t.test('with ox_inventory absent it refuses instead of pretending', function()
         'a reward was reported granted on a server with no inventory to grant it into')
 end)
 
+
 os.exit(t.summary())

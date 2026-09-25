@@ -3804,10 +3804,40 @@ function Arena.ValidateConfig()
                 -- taken.
                 if type(raw.gunGameClasses) == 'table' then
                     for _, class in ipairs(raw.gunGameClasses) do
+                        -- A TIER COUNT THAT IS NOT ONE. A deleted `tiers` line,
+                        -- a word, or a negative number is read as 0, and 0 is
+                        -- the documented way to leave a class out -- so the
+                        -- class vanished from every ladder with nothing said,
+                        -- and neither count above noticed, because both read
+                        -- it as 0. 0 itself stays quiet: that one is meant.
+                        -- Behind the table check, because a class that is not
+                        -- a table cannot be asked for its tiers.
+                        if type(class) == 'table' then
+                            local asked = Arena.ToInt(class.tiers)
+                            if asked == nil or asked < 0 then
+                                local shown = 'no tiers value'
+                                if class.tiers ~= nil then
+                                    shown = ('tiers = %s'):format(type(class.tiers) == 'string'
+                                        and ("'" .. class.tiers .. "'") or tostring(class.tiers))
+                                end
+                                complain(('Config.Modes["%s"] gun game class "%s" has %s. That is read as 0, so the class is left out of every ladder -- set tiers to how many rungs it should fill, or to 0 to leave it out on purpose.')
+                                    :format(mode.key, tostring(class.key), shown))
+                            end
+                        end
+
                         if type(class) == 'table' and type(class.weapons) == 'table' then
-                            local missing, switchedOff = {}, {}
+                            local missing, switchedOff, notKeys, usable = {}, {}, {}, 0
                             for _, key in ipairs(class.weapons) do
-                                if Arena.IsKey(key) then
+                                if not Arena.IsKey(key) then
+                                    notKeys[#notKeys + 1] = type(key) == 'string'
+                                        and ("'" .. key .. "'") or tostring(key)
+                                elseif Arena.GetWeaponByKey(key) then
+                                    -- Asked the way the ladder itself asks,
+                                    -- so a key listed twice in the catalogue,
+                                    -- once switched off, counts as the weapon
+                                    -- that is actually drawn.
+                                    usable = usable + 1
+                                else
                                     local entry = nil
                                     for _, candidate in ipairs(Config.Loadouts.weapons or {}) do
                                         if candidate.key == key then entry = candidate break end
@@ -3819,15 +3849,41 @@ function Arena.ValidateConfig()
                                     end
                                 end
                             end
-                            if #missing > 0 then
-                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon key(s) that are not in config.weapons.lua at all: %s. They are skipped, so this class fills fewer tiers than it asks for.')
-                                    :format(mode.key, tostring(class.key), #missing,
-                                        table.concat(missing, ', ')))
+
+                            -- SHORT MEANS FEWER USABLE WEAPONS THAN TIERS ASKED
+                            -- FOR, which is exactly when Arena.GunGameClasses
+                            -- builds fewer rungs. A class with weapons to spare
+                            -- loses nothing to one that is missing or off.
+                            local wanted = math.max(0, Arena.ToInt(class.tiers) or 0)
+                            local short = usable < wanted
+
+                            if #notKeys > 0 then
+                                complain(('Config.Modes["%s"] gun game class "%s" lists %d pool entr(ies) that are not weapon keys: %s. A pool holds weapon keys in quotes, spelled as in config.weapons.lua -- these are skipped.')
+                                    :format(mode.key, tostring(class.key), #notKeys,
+                                        table.concat(notKeys, ', ')))
                             end
-                            if #switchedOff > 0 then
-                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon(s) that are switched off: %s. A disabled weapon is not drawn, so this class fills fewer tiers than it asks for.')
+                            -- A KEY THAT NAMES NOTHING IS ALWAYS SAID, short or
+                            -- not: it is a typo or a weapon since deleted, and
+                            -- the weapon the operator meant is never drawn.
+                            -- Only the consequence depends on whether the
+                            -- class had one to spare.
+                            if #missing > 0 then
+                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon key(s) that are not in config.weapons.lua at all: %s. %s')
+                                    :format(mode.key, tostring(class.key), #missing,
+                                        table.concat(missing, ', '),
+                                        short and 'They are skipped, so this class fills fewer tiers than it asks for.'
+                                            or 'They are skipped. The class still has enough weapons for its tiers, but a key that names nothing is usually a typo or a weapon since deleted.'))
+                            end
+                            -- A SWITCHED-OFF WEAPON ONLY WHEN IT COSTS A TIER.
+                            -- `enabled = false` in config.weapons.lua is the
+                            -- documented, one-edit way to take a weapon out of
+                            -- the arena, pools included. Complaining about it on
+                            -- every restart, with a consequence that was not
+                            -- true, taught operators to scroll past this list.
+                            if #switchedOff > 0 and short then
+                                complain(('Config.Modes["%s"] gun game class "%s" names %d weapon(s) that are switched off: %s. A disabled weapon is not drawn, and this class is left with %d usable weapon(s) for the %d tier(s) it asks for.')
                                     :format(mode.key, tostring(class.key), #switchedOff,
-                                        table.concat(switchedOff, ', ')))
+                                        table.concat(switchedOff, ', '), usable, wanted))
                             end
                         end
                     end

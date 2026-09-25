@@ -1081,6 +1081,17 @@ local function pushHud(match)
         if row.remaining then remaining = remaining + 1 end
     end
 
+    -- THE SIDES STILL IN THE ROUND, by the same rule decideOnKills applies
+    -- when the clock stops. With three or more teams a side can leave
+    -- entirely while the round goes on, and its banked kills kept it at the
+    -- top of everybody's tally -- "Crimson 3" over the people still fighting
+    -- -- when the clock was always going to give the round to somebody else.
+    -- Declared out here because the table below calls it while it is built.
+    local standingSides = {}
+    for _, player in pairs(match.players) do
+        if Arena.IsKey(player.team) and stillIn(player) then standingSides[player.team] = true end
+    end
+
     local common = {
         remaining = remaining,
         total = #players,
@@ -1124,7 +1135,15 @@ local function pushHud(match)
         teamScores = (function()
             if #ladderOf(match) > 0 then return nil end
             if not Arena.ModeUsesTeams(match.modeKey) then return nil end
-            return teamKills(match)
+            -- ONLY SIDES STILL IN IT, as above. Never empty here: a round
+            -- with nobody left in it has already ended before this is sent,
+            -- and a side that reached the limit before it left has ended
+            -- the round on that same sweep.
+            local scores = teamKills(match)
+            for team in pairs(scores) do
+                if not standingSides[team] then scores[team] = nil end
+            end
+            return scores
         end)(),
         -- THE KILLS NOBODY ON THE BOARD CAN ACCOUNT FOR.
         --
@@ -1151,7 +1170,8 @@ local function pushHud(match)
             local banked, any = {}, false
             for team, kills in pairs(match.departedKills or {}) do
                 local count = math.max(0, Arena.ToInt(kills) or 0)
-                if Arena.IsKey(team) and count > 0 then
+                -- A side no longer on the tally has nothing to explain.
+                if Arena.IsKey(team) and count > 0 and standingSides[team] then
                     banked[team] = count
                     any = true
                 end

@@ -4778,4 +4778,107 @@ t.test('CONTROL: a ladder that builds exactly what it asks for says nothing', fu
         .. table.concat(problems, ' | '):sub(1, 300))
 end)
 
+-- ======================================================================
+-- THE AUDIT: WHAT THE POOL CHECK SAID THAT WAS NOT TRUE, AND WHAT IT MISSED
+--
+-- config.weapons.lua tells an operator that `enabled = false` is the whole
+-- job of taking a weapon out of the arena, pools included. Doing exactly
+-- that drew a complaint on every restart -- "this class fills fewer tiers
+-- than it asks for" -- about classes that had weapons to spare and lost
+-- nothing. And a class whose `tiers` line was deleted, or held a word or a
+-- negative number, vanished from every ladder without a word.
+-- ======================================================================
+
+local function switchOff(config, keys)
+    local off = {}
+    for _, key in ipairs(keys) do off[key] = true end
+    for _, weapon in ipairs(config.Loadouts.weapons) do
+        if off[weapon.key] then weapon.enabled = false end
+    end
+end
+
+t.test('THE AUDIT: a weapon switched off the documented way, in a class with some to spare, draws no complaint', function()
+    local problems, s = problemsWith(function(config) switchOff(config, { 'revolver' }) end)
+    t.equals(#s.arena.LadderTiersFor('gungame'), 30, 'the fixture lost a rung, so this is not the spare-weapon case')
+    t.equals(#problems, 0, 'a documented one-line edit drew a complaint: '
+        .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('but one that costs a tier is named, with what the class is left with', function()
+    -- Heavy asks for 2 tiers off 3 weapons. One off costs nothing -- the
+    -- boundary -- and two off costs a rung.
+    local one, s1 = problemsWith(function(config) switchOff(config, { 'mg' }) end)
+    t.equals(#s1.arena.LadderTiersFor('gungame'), 30, 'one heavy weapon off cost a rung')
+    t.equals(#one, 0, 'a class left with exactly enough was reported short: '
+        .. table.concat(one, ' | '):sub(1, 300))
+
+    local two, s2 = problemsWith(function(config) switchOff(config, { 'mg', 'combatmg' }) end)
+    t.equals(#s2.arena.LadderTiersFor('gungame'), 29, 'two heavy weapons off did not cost a rung')
+    t.isTrue(mentions(two, 'names 2 weapon(s) that are switched off: mg, combatmg'),
+        'the weapons that cost the rung were not named: ' .. table.concat(two, ' | '):sub(1, 300))
+    t.isTrue(mentions(two, 'left with 1 usable weapon(s) for the 2 tier(s)'),
+        'what the class is left with was not said: ' .. table.concat(two, ' | '):sub(1, 300))
+end)
+
+t.test('and a weapon listed twice in the catalogue, once switched off, is counted as the one drawn', function()
+    -- The ladder draws the first ENABLED entry for a key. The check read the
+    -- first entry of any kind, so it could report a weapon that is drawn.
+    local problems, s = problemsWith(function(config)
+        switchOff(config, { 'mg', 'combatmg' })
+        for _, weapon in ipairs(config.Loadouts.weapons) do
+            if weapon.key == 'mg' then
+                local copy = {}
+                for field, value in pairs(weapon) do copy[field] = value end
+                copy.enabled = true
+                table.insert(config.Loadouts.weapons, copy)
+                break
+            end
+        end
+    end)
+    t.equals(#s.arena.LadderTiersFor('gungame'), 30, 'the enabled duplicate is not what the ladder draws')
+    t.isFalse(mentions(problems, 'switched off'),
+        'a weapon that is drawn was reported switched off: ' .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('and a key that names nothing is still named, without claiming a tier it did not cost', function()
+    local problems = problemsWith(function(config)
+        table.insert(config.Modes.gungame.gunGameClasses[2].weapons, 'a_weapon_that_was_deleted')
+    end)
+    t.isTrue(mentions(problems, 'a_weapon_that_was_deleted'), 'the dead key is no longer named')
+    t.isFalse(mentions(problems, 'fills fewer tiers'),
+        'a class with weapons to spare was said to fill fewer tiers: ' .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
+t.test('THE AUDIT: a class whose tier count is deleted, a word, or negative is named', function()
+    local cases = {
+        { label = 'deleted', value = nil, says = 'has no tiers value' },
+        { label = 'a word', value = 'abc', says = "has tiers = 'abc'" },
+        { label = 'negative', value = -1, says = 'has tiers = -1' },
+    }
+    for _, case in ipairs(cases) do
+        local problems, s = problemsWith(function(config)
+            config.Modes.gungame.gunGameClasses[5].tiers = case.value
+        end)
+        t.equals(#s.arena.LadderTiersFor('gungame'), 23, 'the fixture did not drop the rifle class')
+        t.isTrue(mentions(problems, 'gun game class "rifle" ' .. case.says),
+            ('a rifle class with its tiers %s vanished without a word: %s')
+                :format(case.label, table.concat(problems, ' | '):sub(1, 300)))
+    end
+
+    -- 0 IS THE DOCUMENTED WAY TO LEAVE A CLASS OUT, and a count written in
+    -- quotes still reads as that number. Neither is a mistake.
+    local off = problemsWith(function(config) config.Modes.gungame.gunGameClasses[5].tiers = 0 end)
+    t.equals(#off, 0, 'a class left out on purpose drew a complaint: ' .. table.concat(off, ' | '):sub(1, 300))
+    local quoted = problemsWith(function(config) config.Modes.gungame.gunGameClasses[5].tiers = '7' end)
+    t.equals(#quoted, 0, 'a tier count in quotes drew a complaint: ' .. table.concat(quoted, ' | '):sub(1, 300))
+end)
+
+t.test('and a pool entry that is not a weapon key is named', function()
+    local problems = problemsWith(function(config)
+        table.insert(config.Modes.gungame.gunGameClasses[2].weapons, 42)
+    end)
+    t.isTrue(mentions(problems, 'not weapon keys: 42'),
+        'a number in a pool was skipped without a word: ' .. table.concat(problems, ' | '):sub(1, 300))
+end)
+
 os.exit(t.summary())

@@ -1680,6 +1680,62 @@ t.test('and a score limit reached by a side that has since left does not end the
 end)
 
 
+t.test('THE AUDIT: a side that has left entirely drops off everybody\'s tally', function()
+    -- crimson leads 3-2-1 and both of its fighters leave. The round goes on
+    -- between ash and bone, and the clock is going to give it to ash -- so
+    -- "Crimson 3" at the top of the tally is a lead nobody can lose to.
+    local s = withThirdTeam()
+    s.playSides(6, threeWay)
+    s.kill(3, 1); s.revive(3)
+    s.kill(5, 1); s.revive(5)
+    s.kill(6, 2); s.revive(6)
+    s.kill(1, 3); s.revive(1)
+    s.kill(2, 3); s.revive(2)
+    s.kill(4, 5); s.revive(4)
+    s.settle(1)
+    t.equals(((s.hudOf(3) or {}).teamScores or {}).crimson, 3, 'the fixture did not put crimson on 3')
+
+    -- ONE of the two leaves. Crimson is still in the round, and its banked
+    -- kills still count and are still explained.
+    s.drop(1)
+    s.settle(1)
+    local hud = s.hudOf(3)
+    t.equals(hud.teamScores.crimson, 3,
+        'a side with a fighter still in it lost its banked kills from the tally')
+    t.equals((hud.departedScores or {}).crimson, 2, 'the banked kills are no longer explained')
+
+    -- And the other. Nobody is left on crimson.
+    s.drop(2)
+    s.settle(1)
+    hud = s.hudOf(3)
+    t.isNil(hud.teamScores.crimson, 'a side that has left entirely still leads everybody\'s tally')
+    t.equals(hud.teamScores.ash, 2, 'the sides still fighting lost their own numbers')
+    t.equals(hud.teamScores.bone, 1, 'the sides still fighting lost their own numbers')
+    t.isNil(hud.departedScores, 'kills banked by a side that has gone are still being explained')
+
+    -- DOWN IS NOT GONE. Both bone fighters are waiting to respawn, and under
+    -- a kill count nobody runs out of lives, so bone is still in the round.
+    s.kill(5, 3)
+    s.kill(6, 4)
+    t.isFalse(s.rowOf(5).alive == true or s.rowOf(6).alive == true, 'the fixture did not put bone down')
+    s.settle(1)
+    hud = s.hudOf(3)
+    -- Read off the board sent WITH that tally, because the respawn can land
+    -- in the same step once the tally has gone out.
+    local bone = {}
+    for _, row in ipairs(hud.scoreboard or {}) do
+        if row.team == 'bone' then bone[#bone + 1] = row.alive and 'up' or 'down' end
+    end
+    t.equals(table.concat(bone, ','), 'down,down', 'bone was not down when the tally went out, so this proves nothing')
+    t.equals(hud.teamScores.bone, 1, 'a side waiting to respawn dropped off the tally')
+
+    -- The tally and the clock agree about who is ahead.
+    s.expire()
+    s.settle(3)
+    t.equals(listed(s.winners()), '3,4', 'the clock gave the round to a side the tally did not show leading')
+end)
+
+
 -- ======================================================================
 -- LEAVING, AND WHAT THE HOST LEAVING DOES NOT DO
 --

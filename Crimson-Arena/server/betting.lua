@@ -1568,7 +1568,11 @@ local function returnSideBet(bet, matchId)
     bet.settled = true
     bet.settledAs = 'refund'
     trace('returned side-bet of %d to %s on match %s', bet.amount, tostring(bet.src), tostring(matchId))
-    ArenaNotifyKey(bet.src, 'notify.spectator_bet_refunded', 'info', money(bet.amount))
+    -- AN ENTRY STAKE RIDING AS A BET is announced as the stake it is, the way
+    -- a won or lost one already is. A draw hands it back through here, and
+    -- "Side-bet back" went to fighters who never placed a side-bet.
+    ArenaNotifyKey(bet.src, bet.fromEntryFee == true and 'notify.stake_refunded'
+        or 'notify.spectator_bet_refunded', 'info', money(bet.amount))
     return true
 end
 
@@ -1719,8 +1723,9 @@ end
 --- round away and there is no longer anybody who can win it.
 ---
 --- 'match.aborted' is Abort's own default, for a caller that names no
---- reason. 'match.ended_abandoned' is DELIBERATELY ABSENT: that is
---- everybody walking out, which is the case the forfeit exists for.
+--- reason. 'match.ended_abandoned' is absent, and that now matters only to
+--- a single player's refund below: RefundAll hands every forfeit back on
+--- every reason it is given -- see the note there.
 local ADMIN_STOP_REASONS = {
     ['notify.match_stopped_by_admin'] = true,
     ['notify.resource_stopping'] = true,
@@ -1782,9 +1787,10 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
     -- pressing Stop used to burn the whole pot -- 200,000 at the shipped
     -- ceiling -- with nobody credited and nothing to show for it.
     --
-    -- ONLY an admin stop. A lobby that empties, a round that ends, a single
-    -- player walking out: the forfeit stands, because there is still a round
-    -- for the money to be won in. See ADMIN_STOP_REASONS.
+    -- ONLY an admin stop, HERE. A single player walking out: the forfeit
+    -- stands, because there is still a round for the money to be won in.
+    -- RefundAll clears the flag before it reaches this for every stake --
+    -- a lobby that empties hands forfeits back too. See the note there.
     if stake.forfeited and not adminStop(reasonKey) then
         stake.settled = true
         stake.settledAs = 'forfeit'

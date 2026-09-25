@@ -396,6 +396,23 @@ t.test('and so does the shipped config, which asks for no cut at all', function(
         'the shipped config warns about a rake it does not ask for')
 end)
 
+t.test('THE MATRIX: and so is a pot split that is never used', function()
+    -- The third setting only ComputePayouts reads, and the only one of the
+    -- three that said nothing. 'per_kill' under includeEntryPot is never
+    -- consulted: the pool pays whoever backed the winner.
+    local said = complaintsFrom(function(config) config.Betting.payout = 'per_kill' end)
+    t.contains(said, 'IT IS NOT USED', 'a per-kill split under includeEntryPot passed without a word')
+    t.contains(said, 'includeEntryPot', 'the complaint does not name the switch that disables the split')
+end)
+
+t.test('and neither a split the pot really makes nor the shipped one is complained about', function()
+    t.notContains(complaintsFrom(function(config)
+        config.Betting.payout = 'per_kill'
+        config.Betting.betPayout.includeEntryPot = false
+    end), 'IT IS NOT USED', 'a split the pot really makes was complained about')
+    t.notContains(complaintsFrom(nil), 'IT IS NOT USED', 'the shipped config warns about the split it ships')
+end)
+
 t.test('ApplyHouseCut treats an out-of-range percent as its nearest legal end', function()
     -- ValidateConfig complains about both of these, but complaining is all
     -- it does -- the maths still has to answer, and it answers by clamping

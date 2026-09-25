@@ -1709,6 +1709,47 @@ t.test('THE MATRIX: and with two sides, the one left standing wins it even with 
     t.equals(s.moneyInCirculation(), opening, 'money was destroyed or created by the round')
 end)
 
+t.test('THE MATRIX: an entry fee handed back on a draw is called a stake, not a side-bet', function()
+    -- With includeEntryPot on, as shipped, an entry stake rides in the book
+    -- as a bet on its fighter -- and a draw hands it back through the bet
+    -- refund, which announced "Side-bet back" to somebody who never placed
+    -- one. The money was right; the sentence was not.
+    local s = newServer(function(config)
+        config.Betting.enabled = true
+        config.Match.lives = 1
+    end)
+    s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 1000,
+        account = 'cash', winCondition = 'last_standing' })
+    local id = s.lobby.All()[1].id
+    s.fire('joinMatch', 2, { matchId = id, account = 'cash' })
+    -- AND A REAL SIDE-BET, from somebody watching, which IS one and must
+    -- still be called one.
+    s.fire('placeSpectatorBet', 5, { matchId = id, pick = '1', amount = 500, account = 'cash' })
+    for src = 1, 2 do s.fire('setReady', src, { ready = true }) end
+    s.match.Start(id)
+    s.settle(1)
+    t.equals((s.lobby.Get(id) or {}).state, 'live', 'the fixture round never went live')
+
+    local before, watcherBefore = #s.noticesTo(1), #s.noticesTo(5)
+    s.kill(1, 2)
+    s.kill(2, 1)
+    s.settle(3)
+    t.equals(s.endedWith(), 'match.ended_draw', 'the fixture round was not a draw')
+
+    local watcherTold = {}
+    local seen = s.noticesTo(5)
+    for index = watcherBefore + 1, #seen do watcherTold[#watcherTold + 1] = seen[index] end
+    t.isTrue(table.concat(watcherTold, ' | '):find('Side-bet back', 1, true) ~= nil,
+        'a watcher\'s side-bet coming back on a draw was not called one: ' .. table.concat(watcherTold, ' | '))
+
+    local told = {}
+    local all = s.noticesTo(1)
+    for index = before + 1, #all do told[#told + 1] = all[index] end
+    local said = table.concat(told, ' | ')
+    t.isTrue(said:find('Stake back', 1, true) ~= nil, 'the fighter was not told their stake came back: ' .. said)
+    t.isNil(said:find('Side-bet back', 1, true), 'a fighter who placed no side-bet was told one came back: ' .. said)
+end)
+
 
 t.test('THE AUDIT: a side that has left entirely drops off everybody\'s tally', function()
     -- crimson leads 3-2-1 and both of its fighters leave. The round goes on

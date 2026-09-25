@@ -4881,4 +4881,50 @@ t.test('and a pool entry that is not a weapon key is named', function()
         'a number in a pool was skipped without a word: ' .. table.concat(problems, ' | '):sub(1, 300))
 end)
 
+-- ======================================================================
+-- THE MATRIX: A TIE ON TIER IS BROKEN ONE WAY, EVERYWHERE
+--
+-- decideOnLadder breaks a tie on tier by the kills that CLIMBED. The board
+-- on every fighter's screen, and the placements on the results card, broke
+-- it by RAW kills. The two only part company once a kill stops climbing --
+-- a per-victim cap -- and then the fighter shown in front all round was not
+-- the one the clock paid.
+--
+-- Written onto the rows, because the subject is how a tie is ranked, not
+-- how one is reached.
+-- ======================================================================
+
+t.test('THE MATRIX: two climbers level on tier are shown in the order the clock crowns them', function()
+    local s = newServer()
+    s.play(3)
+    local one, two = s.row(1), s.row(2)
+    one.ladderKills, one.tiersLost, one.kills = 3, 1, 3   -- tier 2, three that climbed
+    two.ladderKills, two.tiersLost, two.kills = 2, 0, 6   -- tier 2, two that climbed, six raw
+    s.settle(1)
+
+    local board = s.board()
+    t.isNotNil(board, 'no board was pushed')
+    t.equals(board[1].tier, board[2].tier, 'the fixture did not leave the two level on tier')
+    t.equals(board[1].id, 1, 'the board put in front the climber the clock will not crown')
+
+    s.match_().endsAt = os.time() - 1
+    s.settle(3)
+    t.equals(table.concat(s.winners(), ','), '1', 'the fixture no longer has the clock crowning player 1')
+end)
+
+t.test('and the results card places the rest by the same rule', function()
+    local s = newServer()
+    s.play(4)
+    local one, two, three = s.row(1), s.row(2), s.row(3)
+    one.ladderKills, one.tiersLost, one.kills = 3, 0, 3       -- tier 3, the winner
+    two.ladderKills, two.tiersLost, two.kills = 3, 1, 3       -- tier 2, three that climbed
+    three.ladderKills, three.tiersLost, three.kills = 2, 0, 6 -- tier 2, two that climbed, six raw
+    s.match_().endsAt = os.time() - 1
+    s.settle(3)
+
+    t.equals(table.concat(s.winners(), ','), '1', 'the fixture no longer has player 1 winning')
+    t.equals((s.resultFor(2) or {}).placement, 2, 'the climber ahead on the tie-break was not placed second')
+    t.equals((s.resultFor(3) or {}).placement, 3, 'raw kills out-placed the kills that climbed')
+end)
+
 os.exit(t.summary())

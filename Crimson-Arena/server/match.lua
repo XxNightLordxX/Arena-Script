@@ -925,6 +925,13 @@ local function assignFinalPlacements(match, winners)
         if ladder > 0 then
             local aTier, bTier = tierScore(a), tierScore(b)
             if aTier ~= bTier then return aTier > bTier end
+            -- LEVEL ON TIER: the kills that CLIMBED, as decideOnLadder breaks
+            -- it. Raw kills part company with them once a kill stops climbing
+            -- -- a per-victim cap -- and ranked the rest differently from the
+            -- rule that picked the winner.
+            local aClimbed = math.max(0, Arena.ToInt(a.ladderKills) or 0)
+            local bClimbed = math.max(0, Arena.ToInt(b.ladderKills) or 0)
+            if aClimbed ~= bClimbed then return aClimbed > bClimbed end
         end
         local aKills, bKills = Arena.ToInt(a.kills) or 0, Arena.ToInt(b.kills) or 0
         if aKills ~= bKills then return aKills > bKills end
@@ -939,6 +946,9 @@ end
 local function scoreboardOf(players, tiers)
     local ladder = math.max(0, Arena.ToInt(tiers) or 0)
     local rows = {}
+    -- The kills that climbed, by row, for the sort below and nothing else:
+    -- the screen has no column for them, so they are not sent.
+    local climbedBy = {}
     for _, player in ipairs(players) do
         rows[#rows + 1] = {
             id = player.src,
@@ -969,10 +979,16 @@ local function scoreboardOf(players, tiers)
             alive = player.alive == true,
             remaining = stillIn(player),
         }
+        climbedBy[rows[#rows]] = math.max(0, Arena.ToInt(player.ladderKills) or 0)
     end
 
     table.sort(rows, function(a, b)
         if a.tier ~= b.tier then return (a.tier or 0) > (b.tier or 0) end
+        -- LEVEL ON TIER: the kills that climbed come first, as decideOnLadder
+        -- breaks the tie. Raw kills first put a fighter in front all round
+        -- whom the clock would not pay, once a per-victim cap stopped some
+        -- kills climbing.
+        if ladder > 0 and climbedBy[a] ~= climbedBy[b] then return climbedBy[a] > climbedBy[b] end
         if a.kills ~= b.kills then return a.kills > b.kills end
         if a.deaths ~= b.deaths then return a.deaths < b.deaths end
         return a.id < b.id

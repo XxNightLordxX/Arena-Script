@@ -1179,8 +1179,8 @@ Config.Betting = {
         -- disagree about money rather than about arithmetic.
         --
         -- A fighter who walks out of a LIVE round forfeits their stake. If
-        -- the round then ends with NO winner -- a draw, a time-up, everyone
-        -- gone -- the two settings answer differently:
+        -- it then ends in a draw or a time-up with NO winner, the two differ
+        -- (if EVERYONE leaves, every stake is refunded under either):
         --
         --   ON  (shipped): the forfeit is destroyed. It cannot be refunded,
         --       because a forfeit you get back on a draw is a forfeit you can
@@ -1250,9 +1250,9 @@ Config.Betting = {
     -- on and none is taken; the console says so at start-up.
     houseCutPercent = 0,
 
-    -- HOW THE POT IS SPLIT.
+    -- HOW THE POT IS SPLIT, when it settles on its own (see includeEntryPot).
     --   'winner_takes_all' -- one player (or the winning team, split evenly)
-    --   'per_kill'         -- divided by share of total kills
+    --   'per_kill'         -- by share of kills; unused while includeEntryPot is on
     payout = 'winner_takes_all',
 
     -- Below this head count the match still runs, but the pot is refunded

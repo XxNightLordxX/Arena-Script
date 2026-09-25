@@ -4167,6 +4167,16 @@ function Arena.ValidateConfig()
                 :format(tostring(odds), math.floor(1000 * odds), 1000 - math.floor(1000 * odds), tail))
         end
 
+        -- AND THE SPLIT ITSELF, the third setting only Arena.ComputePayouts
+        -- reads. With includeEntryPot on the pool pays whoever backed the
+        -- winner and 'per_kill' is never consulted -- the only one of the three
+        -- that said nothing about it.
+        local split = Config.Betting.payout
+        if pooled and split ~= nil and split ~= 'winner_takes_all' then
+            complain(('Config.Betting.payout is \'%s\' but betPayout.includeEntryPot is on, so IT IS NOT USED: the entry fees become bets in the pool and are paid to whoever backed the winner. Set includeEntryPot = false to split the pot by payout, or payout = \'winner_takes_all\' to stop asking for a split that is not made.')
+                :format(tostring(split)))
+        end
+
         local floorCount = Arena.ToInt(Config.Betting.minPlayersToPayOut) or 0
         local smallest = math.max(2, Arena.ToInt(Config.Match.minPlayers) or 2)
         if floorCount > smallest and pooled then

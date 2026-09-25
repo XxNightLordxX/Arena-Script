@@ -865,7 +865,20 @@ local function evaluate(match)
         and reachedScoreLimit(match, teamMode)
     then
         local winners = decideOnKills(match, teamMode)
-        return winners, #winners > 0 and 'match.ended_score_limit' or 'match.ended_draw'
+        if #winners > 0 then return winners, 'match.ended_score_limit' end
+
+        -- NOBODY STILL IN REACHED IT, AND ONE SIDE IS ALL THAT IS LEFT. The
+        -- limit counts a side's banked kills, so a side can reach it and walk
+        -- out before the sweep sees it. If the side left standing had not
+        -- scored, the decider found nobody to crown and the round was called
+        -- a draw -- and the leavers' forfeited stakes were destroyed with it
+        -- -- while the same side with a single kill won it outright. A side
+        -- alone in the round wins it as the last one standing, which the
+        -- rule below this one would have said at this same sweep had the
+        -- limit not been counted first. Two or more still standing and level
+        -- is still a draw.
+        local alone = (teamMode and Arena.Count(standingTeams) == 1) or (not teamMode and standing == 1)
+        if not alone then return {}, 'match.ended_draw' end
     end
 
     if not playingLadder then

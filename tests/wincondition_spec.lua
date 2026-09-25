@@ -1679,6 +1679,36 @@ t.test('and a score limit reached by a side that has since left does not end the
     t.equals(listed(s.winners()), '3,4', 'the pot did not go to the best side still standing')
 end)
 
+t.test('THE MATRIX: and with two sides, the one left standing wins it even with no kills of its own', function()
+    -- crimson reaches the limit and both of its fighters walk out before the
+    -- sweep sees it. Ash has not scored, and is the only side in the round.
+    -- It used to be a draw -- and the two stakes crimson forfeited by leaving
+    -- were destroyed with it -- while the same round with ash on ONE kill
+    -- went to ash.
+    local s = newServer(function(config) config.Betting.enabled = true end)
+    local opening = s.moneyInCirculation()
+    s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 1000,
+        account = 'cash', winCondition = 'score_limit', scoreLimit = 2 })
+    local id = s.lobby.All()[1].id
+    for src = 2, 4 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+    for src = 1, 4 do s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' }) end
+    for src = 1, 4 do s.fire('setReady', src, { ready = true }) end
+    s.match.Start(id)
+    s.settle(1)
+    t.equals((s.lobby.Get(id) or {}).state, 'live', 'the fixture round never went live')
+
+    s.kill(2, 1); s.revive(2)
+    s.kill(4, 3); s.revive(4)
+    s.drop(1)
+    s.drop(3)
+    s.settle(3)
+
+    t.equals(s.endedWith(), 'match.ended_last_standing',
+        'a round with one side left in it was not given to that side')
+    t.equals(listed(s.winners()), '2,4', 'the side left standing was not paid')
+    t.equals(s.moneyInCirculation(), opening, 'money was destroyed or created by the round')
+end)
+
 
 t.test('THE AUDIT: a side that has left entirely drops off everybody\'s tally', function()
     -- crimson leads 3-2-1 and both of its fighters leave. The round goes on

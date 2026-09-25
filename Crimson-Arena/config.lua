@@ -493,10 +493,10 @@ Config.Match = {
         -- says so at start-up if this is 0 or below.
         outsideTicks = 8,
 
-        -- HOW MANY ONE-SECOND CHECKS IN A ROW a fighter's body must read as
-        -- dead, with no death reported, before the server books the death
-        -- itself. It names nobody, so the only credit it can carry is the
-        -- server's own record of a hit landing in the last five seconds. A
+        -- HOW MANY ONE-SECOND CHECKS IN A ROW a body must read as dead, with
+        -- no death reported, before the server books the death itself. It
+        -- can credit only the last fighter the server saw land a hit in the 5s
+        -- before the body FIRST read dead -- never a shot into the corpse. A
         -- life is spent either way, which is the half a silent client skipped.
         --
         -- 0 switches this half off and leaves the fence.
@@ -978,12 +978,12 @@ Config.Modes = {
         -- for ever, by sending nothing. Putting the burden on the SPARING
         -- instead closes that: silence proves nothing, so silence is charged.
         --
-        -- WHAT THAT COSTS HONEST PLAYERS, said plainly rather than buried: a
-        -- fall, a drowning, a suicide, a boundary bleed and a kill claim the
-        -- server refuses all still take a tier. The only way out is naming a
-        -- real opponent on a real gun -- which hands THEM the kill, the rung
-        -- and the kill reward. The tier still moves; it moves to somebody
-        -- else.
+        -- WHAT THAT COSTS HONEST PLAYERS, said plainly: a fall, a drowning, a
+        -- suicide, a boundary bleed and a refused kill claim all take a tier.
+        -- The only way out is a real opponent on a real gun, who takes the
+        -- kill, the rung and the reward: the tier moves to them. Past their
+        -- maxTiersPerVictim it moves to nobody, so it spares you only if the
+        -- server itself saw THAT opponent's shot land in the last 5 seconds.
         --
         -- ONLY A GUN SPARES YOU, so on the shipped ladder the melee rung is
         -- rung 1 and every rung above it is a firearm. An operator who fills
@@ -1050,9 +1050,9 @@ Config.Modes = {
             { key = 'bandage', count = 5 },
         },
 
-        -- HOW MANY TIERS ONE KILLER MAY TAKE OFF ANY SINGLE PLAYER, per
-        -- round. Kills past this still count everywhere else -- scoreboard,
-        -- leaderboard, payout -- they just stop moving the killer up.
+        -- HOW MANY TIERS ONE KILLER MAY TAKE OFF ANY SINGLE PLAYER, per round.
+        -- Kills past it still count everywhere else but move nobody up -- and
+        -- spare the victim only if the server SAW that killer's shot land.
         --
         -- THIS IS THE ANTI-COLLUSION RULE. The server cannot see a kill
         -- happen; it is told who died and who they say killed them. With no

@@ -52,7 +52,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - `Config.Match.maxPlayers = 0` — any number of players in one match. Several matches can run side by side (`maxConcurrentMatches = 0` for no ceiling).
 - Modes: **Free For All**, **Team Deathmatch** and **Gun Game** — all three ship enabled.
-- **Gun Game is a ladder, not a deathmatch.** Nobody is eliminated: every kill moves you one rung up, and a death moves you one down unless the server saw the fighter who killed you holding a gun (`Config.Modes.gungame.demoteOnMeleeOnly`, which ships on), and the round ends on its own clock (`Config.Modes.gungame.roundTimeSeconds`, 480s) or when somebody tops the ladder. It ignores `winCondition` and `lives` entirely, and issues its own kit rather than letting anybody pick one. The rungs are drawn from ordered weapon-class pools, so the shape of the climb is the same every round and the guns on it are not.
+- **Gun Game is a ladder, not a deathmatch.** Nobody is eliminated: every kill moves you one rung up, and a death moves you one down unless the server saw the fighter who killed you holding a gun (`Config.Modes.gungame.demoteOnMeleeOnly`, which ships on; once they have taken `maxTiersPerVictim` off you, it must also have seen their shot land), and the round ends on its own clock (`Config.Modes.gungame.roundTimeSeconds`, 480s) or when somebody tops the ladder. It ignores `winCondition` and `lives` entirely, and issues its own kit rather than letting anybody pick one. The rungs are drawn from ordered weapon-class pools, so the shape of the climb is the same every round and the guns on it are not.
 - Win conditions: `last_standing` (default), `most_kills`, `score_limit`. A tie is a draw and refunds rather than picking one of two equal scores.
 - Lives, respawn delay, a round clock (`roundTimeSeconds = 0` for none), a lobby countdown players are held for, and a frozen start countdown.
 - Per-arena boundary sphere: a warning, then damage per tick until the player comes back. `boundary.enabled = false` for an open arena.
@@ -68,8 +68,11 @@ Everything below is in the shipped code. Where something is off by default, or i
     somebody who wanders off during a paid round will lose it.
   - **Whether they died.** A body that reads as dead for `deadTicks` checks in
     a row with nothing reported has the death booked by the server, so a
-    client that simply never reports one cannot be immortal. **Nobody is
-    credited with the kill** — the server saw a corpse, not a shot.
+    client that simply never reports one cannot be immortal. **The kill goes
+    to the last fighter the server itself saw land a hit in the five seconds
+    before the body first read dead** — through the same distance, fence and
+    team checks as any kill — **and to nobody otherwise**: a fall credits
+    nobody, and neither does a shot into the body while it is being counted.
   - Both act only on something seen several checks running, and never on a
     body the server cannot see, so a player whose game is still loading is not
     mistaken for a cheat.

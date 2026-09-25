@@ -5174,4 +5174,71 @@ t.test('and it can only SPARE: the rung a dead killer fell on never takes a spar
     t.equals(s.row(3).tier, 2, 'the rung the killer died on took away a sparing the rung they hold gives')
 end)
 
+-- ======================================================================
+-- THE CAP AND THE SPARING
+--
+-- "The tier still moves, it just moves to somebody else." A kill past
+-- maxTiersPerVictim moves no tier to anybody, so it cannot be the thing
+-- that spares the victim -- unless the server itself watched that killer's
+-- shot land, which killwitness_spec tests on a clock that holds still.
+-- This fixture's clock moves a minute on every read, so every hit it could
+-- record has expired: what is left is the claim alone.
+-- ======================================================================
+
+t.test('THE CAP: naming an opponent who has capped you spares nothing, because no tier moved', function()
+    local s = newServer(sevenTiers)
+    s.play(5)
+    s.trade(2, 3)
+    s.trade(2, 3)
+    s.trade(4, 3)
+    s.trade(4, 3)
+    s.trade(4, 2)
+    s.trade(5, 2)
+    t.equals((s.row(3).ladderVictims or {})[2], 2, 'player 3 has not capped player 2')
+    t.equals(s.row(2).tier, 3, 'player 2 has no tiers to lose')
+    t.isTrue(s.arena.IsMeleeWeapon(s.match_().ladder[s.row(3).tier]) ~= true,
+        'player 3 is not on a gun rung, so this proves nothing')
+
+    -- A FALL, A SUICIDE, A KNIFE -- REPORTED AS 3's KILL, with no cause.
+    s.fire('reportDeath', 2, { killerServerId = 3 })
+
+    t.equals(s.row(3).kills, 5, 'the claim was not credited as a kill, so this proves nothing')
+    t.equals(s.row(3).ladderKills, 4, 'the capped kill moved player 3 up')
+    t.equals(s.row(2).tier, 2, 'THE DEFECT: the victim kept their tier and no tier moved to anybody')
+    t.equals(s.row(2).tiersLost, 1, 'and was not charged for it')
+
+    -- THE CONTROL: an uncapped opponent on a gun rung still spares, and
+    -- takes the tier.
+    s.revive(2)
+    s.trade(4, 5)
+    local before = s.row(5).tier
+    s.fire('reportDeath', 2, { killerServerId = 5 })
+    t.equals(s.row(2).tier, 2, 'an uncapped gun kill took a tier')
+    t.equals(s.row(5).tier, before + 1, 'and the tier did not move to the killer')
+end)
+
+t.test('CONTROL: with the cap off, as shipped, every gun kill still spares and still climbs', function()
+    -- maxTiersPerVictim ships 0, so creditsTier never refuses and the rule
+    -- above can never be reached: the same kills, the same claim, and the
+    -- victim keeps their tier while the killer takes one.
+    local s = newServer(function(config)
+        sevenTiers(config)
+        config.Modes.gungame.maxTiersPerVictim = 0
+    end)
+    s.play(5)
+    s.trade(2, 3)
+    s.trade(2, 3)
+    s.trade(4, 3)
+    s.trade(4, 3)
+    s.trade(4, 2)
+    s.trade(5, 2)
+    t.equals(s.row(2).tier, 3, 'player 2 has no tiers to lose')
+    local before = s.row(3).tier
+
+    s.fire('reportDeath', 2, { killerServerId = 3 })
+
+    t.equals(s.row(2).tier, 3, 'with no cap, a gun kill took the victim\'s tier')
+    t.equals(s.row(3).tier, before + 1, 'with no cap, the killer did not climb')
+end)
+
 os.exit(t.summary())

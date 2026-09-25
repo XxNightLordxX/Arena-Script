@@ -1508,7 +1508,12 @@ local function readsAsDead(src)
     if not ped or ped == 0 then return false end
 
     local health = tonumber(GetEntityHealth(ped))
-    return health ~= nil and health <= 0
+    if health == nil then return false end
+
+    -- AND WHETHER THE BODY COULD BE READ AT ALL, as a second answer: the dead
+    -- sweep's witness below keeps its copy through a reading that saw
+    -- nothing, and lets it go only on one that saw a living body.
+    return health <= 0, true
 end
 
 local function strike(store, src, sighted, needed)
@@ -1531,6 +1536,7 @@ local function runServerChecks(match)
 
     match.fenceStrikes = match.fenceStrikes or {}
     match.deadStrikes = match.deadStrikes or {}
+    match.deadWitness = match.deadWitness or {}
 
     -- A DEAD FIGHTER IS NOT A SUSPECT, AND SKIPPING THEM IS NOT THE SAME AS
     -- CLEARING THEM.
@@ -1557,6 +1563,7 @@ local function runServerChecks(match)
         else
             match.fenceStrikes[src] = nil
             match.deadStrikes[src] = nil
+            match.deadWitness[src] = nil
         end
     end
 
@@ -1565,6 +1572,9 @@ local function runServerChecks(match)
     end
     for src in pairs(match.deadStrikes) do
         if (match.players or {})[src] == nil then match.deadStrikes[src] = nil end
+    end
+    for src in pairs(match.deadWitness) do
+        if (match.players or {})[src] == nil then match.deadWitness[src] = nil end
     end
 
     for _, src in ipairs(roster) do
@@ -1576,12 +1586,50 @@ local function runServerChecks(match)
                     tostring(src), past, tostring(match.id), outsideTicks)
                 ArenaNotifyKey(src, 'notify.fence_removed', 'error')
                 ArenaMatch.RemovePlayer(src, 'notify.fence_removed', true, true)
-            elseif deadTicks > 0
-                and strike(match.deadStrikes, src, readsAsDead(src), deadTicks)
-            then
-                ArenaLog('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
-                    tostring(src), tostring(match.id), deadTicks)
-                ArenaMatch.OnDeath(src, nil, true)
+            elseif deadTicks > 0 then
+                local dead, readable = readsAsDead(src)
+
+                -- WHAT THE SERVER HAD SEEN HIT THEM, TAKEN WHEN THE BODY
+                -- FIRST READS DEAD -- NOT WHEN THE DEATH IS BOOKED, and the
+                -- gap between the two is the defect this fixes.
+                --
+                -- Booking waits for deadTicks readings in a row -- three to
+                -- four seconds at the shipped four -- and the damage memory
+                -- is five seconds wide. Asked at booking, a fighter who took
+                -- the last hit two seconds before they dropped had already
+                -- aged out of it, so a victim whose report never arrived cost
+                -- the shooter a kill the same death paid when it was
+                -- reported; at six ticks not even a one-shot kill survived.
+                -- And the body still reads alive to RememberDamage until the
+                -- booking, so whoever shot the CORPSE in those seconds was the
+                -- last hit on record and took the kill.
+                --
+                -- A COPY OF THE ROW, NOT A NOTE TO LOOK LATER: damagerOf
+                -- sweeps the whole memory against its own clock whenever any
+                -- other death reads it. And a copy is written even when there
+                -- is nothing to copy -- that empty copy is what stops a shot
+                -- into the body of somebody who FELL from being paid, since
+                -- OnDeath reads nothing else for a death booked here.
+                --
+                -- KEPT UNTIL THE BODY READS ALIVE. A reading that could not
+                -- see the body at all resets the count -- that is the fence's
+                -- own rule and it stays -- but it is no evidence they got up,
+                -- so the copy and the moment it was taken stay with it. A
+                -- hitch that read dead once and then alive leaves nothing
+                -- behind for a later death to be paid out of.
+                if dead and match.deadWitness[src] == nil then
+                    local row = type(match.recentDamage) == 'table' and match.recentDamage[src] or nil
+                    if type(row) ~= 'table' then row = {} end
+                    match.deadWitness[src] = { by = row.by, at = row.at, seenAt = tonumber(GetGameTimer()) }
+                elseif readable and not dead then
+                    match.deadWitness[src] = nil
+                end
+
+                if strike(match.deadStrikes, src, dead, deadTicks) then
+                    ArenaLog('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
+                        tostring(src), tostring(match.id), deadTicks)
+                    ArenaMatch.OnDeath(src, nil, true, nil, nil, match.deadWitness[src])
+                end
             end
         end
     end
@@ -2710,6 +2758,42 @@ local function damagerOf(match, victimSrc)
     return row and Arena.ToInt(row.by) or nil
 end
 
+--- The fighter the dead sweep's copy of this memory names, or nil.
+---
+--- THE SAME FIVE SECONDS, MEASURED TO WHEN THE BODY FIRST READ DEAD rather
+--- than to whenever the sweep got round to booking it -- which is what the
+--- window above has always said it was: the last bullet that landed and the
+--- body hitting the floor. runServerChecks takes the copy and says why.
+--- @param held table|nil -- { by, at, seenAt }
+--- @return integer|nil attackerSrc
+local function heldWitness(held)
+    if type(held) ~= 'table' then return nil end
+    local at, seenAt = tonumber(held.at), tonumber(held.seenAt)
+    if not at or not seenAt or (seenAt - at) > DAMAGE_MEMORY_MS then return nil end
+    return Arena.ToInt(held.by)
+end
+
+--- Did the server watch THIS fighter land a hit on this victim in the last
+--- five seconds -- whoever landed one after them?
+---
+--- NOT THE SAME QUESTION AS damagerOf, and asking that one instead was a
+--- defect. The row keeps one attacker, overwritten on every hit, because
+--- crediting a kill wants the LAST hand on the victim. Asked "was it this
+--- killer", it answered no for an honest victim whose killer's shot landed
+--- and was followed by anybody else's round into the body. So the row also
+--- keeps, per attacker, the last time each of them landed one.
+--- @param match table
+--- @param victimSrc integer
+--- @param attackerSrc integer
+--- @return boolean
+local function sawLandedBy(match, victimSrc, attackerSrc)
+    local row = type(match.recentDamage) == 'table' and match.recentDamage[victimSrc] or nil
+    if type(row) ~= 'table' or type(row.hitters) ~= 'table' then return false end
+
+    local at, now = tonumber(row.hitters[attackerSrc]), tonumber(GetGameTimer())
+    return at ~= nil and now ~= nil and (now - at) <= DAMAGE_MEMORY_MS
+end
+
 --- The server watched one fighter damage another. Remember it.
 ---
 --- CALLED ONCE PER LANDED HIT from server/dispatch.lua's weaponDamageEvent
@@ -2723,8 +2807,10 @@ end
 --- with anything: OnDeath runs whatever this names through resolveKiller,
 --- which asks the roster, the teams, the fence and the distance ceiling
 --- exactly as it does for a claim the client sent. The entry is keyed by
---- VICTIM and holds one attacker, so the last person to land a hit is the
---- only one it can ever name.
+--- VICTIM and names one attacker, so the last person to land a hit is the
+--- only one it can ever CREDIT. Beside it, `hitters` holds when each attacker
+--- last landed one, which is asked only whether a killer the victim named
+--- really hit them -- see sawLandedBy.
 ---
 --- KEPT ON THE MATCH TABLE rather than in a module-level store, which is the
 --- rule the roster rows follow and for the same reason: the server recycles
@@ -2761,10 +2847,20 @@ function ArenaMatch.RememberDamage(victimSrc, attackerSrc)
     -- shooting their corpse. Reproduced by the audit of this code. The
     -- killing hit is always recorded before the death is booked, so refusing
     -- hits on the dead costs no real kill.
+    --
+    -- NOT YET BOOKED IS NOT DEAD HERE: a body the dead sweep is still
+    -- counting reads alive, so hits on it ARE written. The copy the sweep
+    -- took at the first dead reading is what keeps them from being paid.
     if match.players[victim].alive ~= true then return false end
 
     match.recentDamage = match.recentDamage or {}
-    match.recentDamage[victim] = { by = attacker, at = at }
+    local row = match.recentDamage[victim]
+    if type(row) ~= 'table' or type(row.hitters) ~= 'table' then
+        row = { hitters = {} }
+        match.recentDamage[victim] = row
+    end
+    row.by, row.at = attacker, at
+    row.hitters[attacker] = at
     return true
 end
 
@@ -2872,7 +2968,9 @@ end
 --- @param why any -- why the reporter named nobody; A LOG LINE AND NOTHING ELSE
 --- @return boolean counted
 --- @param causeHash integer? -- the weapon hash the dying client reported
-function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
+--- @param witnessed table? -- the dead sweep's copy of the damage memory,
+--- taken when the body first read dead; nil from every other caller
+function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed)
     local id = Arena.ToInt(src)
     if not id then return false end
 
@@ -2963,25 +3061,51 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     local claimedRoster = claimed ~= nil and claimed ~= id and match.players[claimed] ~= nil
     local byWitness = false
     if not killer and namedAFighter ~= true and not claimedRoster then
-        local witness = damagerOf(match, id)
+        -- A DEATH THE DEAD SWEEP BOOKED READS ITS OWN COPY AND NOTHING ELSE:
+        -- the last hit before the body first read dead, not whatever the
+        -- memory holds by the time the booking came round. Falling back to
+        -- the memory here paid whoever shot the corpse during the count
+        -- whenever the copy was empty or too old -- a fall, a drowning, a
+        -- grenade of their own. runServerChecks says why the copy exists.
+        local witness
+        if type(witnessed) == 'table' then
+            witness = heldWitness(witnessed)
+        else
+            witness = damagerOf(match, id)
+        end
         if witness then
             local seen, sawAFighter = resolveKiller(match, player, witness)
             if seen then
                 killer, namedAFighter = seen, sawAFighter
                 byWitness = true
+                -- A DEATH THE SWEEP BOOKED HAS NO CLIENT REASON AT ALL, and
+                -- must not be put down to an older client that sent one.
                 ArenaDebug('kill credited from the server\'s own record on match %s: %s reported '
                     .. 'nobody, and the last hit this server watched land on them was %s. %s',
                     tostring(match.id), tostring(id), tostring(witness),
-                    unattributedReason(why, claimed, refused))
+                    serverSaw == true
+                        and 'Their client never reported the death; the server\'s own dead sweep booked it.'
+                        or unattributedReason(why, claimed, refused))
             end
         end
     end
+
+    -- WHETHER THE SERVER SAW THIS KILLER'S SHOT LAND, for the gun game's
+    -- sparing below -- asked before the spend, which would answer no. A
+    -- killer the memory itself supplied was seen by definition.
+    local killerSeen = playingLadder and killer ~= nil
+        and (byWitness or sawLandedBy(match, id, killer.src))
 
     -- SPENT, WHOEVER IT NAMED OR DID NOT. One landed hit is evidence about
     -- ONE death, and leaving it behind would let the next death inside the
     -- window be credited to the same shooter a second time -- a fighter who
     -- traded a hit and then fell off the skydome would pay out twice.
     if type(match.recentDamage) == 'table' then match.recentDamage[id] = nil end
+
+    -- AND SO IS THE DEAD SWEEP'S COPY, whichever path booked the death. A
+    -- respawn can beat the sweep's next pass, and a copy that outlived its
+    -- death would pay that shooter again for the next one.
+    if type(match.deadWitness) == 'table' then match.deadWitness[id] = nil end
 
     -- WHAT THE KILLER WAS STANDING ON, READ BEFORE THEY MOVE OFF IT.
     --
@@ -3392,6 +3516,14 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- firearm rung -- and that hands them a kill, a rung and a killReward.
     -- The tier still moves, it just moves to somebody else.
     --
+    -- UNLESS THAT OPPONENT HAS HIT THE CAP ON THIS VICTIM, and then it moves
+    -- to nobody: creditsTier refuses them the rung. Naming a capped opponent
+    -- on a gun used to spare you anyway, so every fall and suicide could be
+    -- reported as their kill for free. A kill that moved no tier now spares
+    -- only when the server itself watched THAT killer land a hit in the last
+    -- five seconds -- the honest victim, shot by a capped fighter, is spared
+    -- as before; a claim the server saw nothing behind is charged.
+    --
     -- SO A FALL, A DROWNING, A SUICIDE AND A REFUSED KILL CLAIM ALL STILL
     -- COST A TIER. That is not the literal sentence "you only drop a level
     -- if you die to melee", and the difference is deliberate: the literal
@@ -3404,6 +3536,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- bare-handed-respawn regression this file already documents. DO NOT.
     local spared = playingLadder
         and killedWithAGun
+        and (tierCredited ~= false or killerSeen)
         and (Arena.GetModeByKey(match.modeKey) or {}).demoteOnMeleeOnly ~= false
 
     if playingLadder and not spared then

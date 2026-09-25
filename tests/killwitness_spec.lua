@@ -539,6 +539,237 @@ t.test('and a shooter who is out of the round is refused', function()
 end)
 
 -- ======================================================================
+-- A CLAIM THAT NAMED SOMEBODY IS NOT A DEATH NOBODY WAS NAMED FOR
+--
+-- THE REPORTS: a last-life trade, a killer who walked out a moment before
+-- the victim's report landed, and a team-mate's blade. In each the dying
+-- client named its killer, the roster refused the claim on purpose -- and
+-- the operator's only always-on line said UNATTRIBUTED, "nobody named",
+-- "an older client", "this resource to blame", while the victim was told
+-- nothing could be pinned on anybody and to go and tell the server owner.
+--
+-- EVERY TEST HERE BUT ONE RUNS WITH Config.Debug OFF. The debug lines
+-- already said "kill refused"; the defect was that the line an operator
+-- cannot switch off said the opposite. The one exception is about a debug
+-- line, and leaves the shipped setting on so it can read it.
+-- ======================================================================
+
+--- How many times this fighter was told nothing could be pinned on anybody.
+local function unattributedNotices(server, src)
+    local count = 0
+    for _, message in ipairs(server.sent) do
+        if message.event == 'crimson_arena:client:notify' and message.target == src then
+            local text = tostring((message.payload or {}).description or '')
+            if text:find('Nothing could be pinned on anybody', 1, true) then count = count + 1 end
+        end
+    end
+    return count
+end
+
+--- The first console line carrying this fragment, or nil.
+local function lineSaying(server, fragment)
+    for _, line in ipairs(server.console) do
+        if line:find(fragment, 1, true) then return line end
+    end
+    return nil
+end
+
+t.test('THE LAST-LIFE TRADE: the second report named its killer, and is not logged as naming nobody', function()
+    -- THREE FIGHTERS, so the round is still live when the second report
+    -- lands -- which is what a real trade looks like: both reports arrive
+    -- milliseconds apart, inside one sweep.
+    local server = newServer(function(config)
+        config.Match.lives = 1
+        config.Debug = false
+    end)
+    local id = server.play(3)
+
+    server.diesNaming(1, 2)
+    t.equals(server.rowOf(1).lives, 0, 'the first death did not spend their last life, so this is no trade')
+    server.wait(250)
+    server.diesNaming(2, 1)
+
+    t.isTrue(server.match.IsLive(id), 'the round ended between the two reports')
+    t.equals(server.rowOf(2).deaths, 1, 'the second death was not booked, so nothing was tested')
+    t.equals(killsOf(server, 1), 0, 'a fighter who was already out was credited a kill')
+    t.equals(killsOf(server, 2), 1, 'the first kill of the trade was lost')
+
+    local line = lineSaying(server, 'KILL NOT CREDITED')
+    t.isNotNil(line, 'THE DEFECT: no always-on line says the claim was named and refused')
+    t.contains(line, '2 died in match', 'the line does not say who died')
+    t.contains(line, 'naming 1 as their killer', 'the line does not say whom they named')
+    t.contains(line, 'already out of the round', 'the line does not say why the claim was refused')
+    t.contains(line, 'By name: "Fighter 2" and "Fighter 1"', 'the line does not name the two fighters')
+    t.isTrue(not server.said('UNATTRIBUTED'),
+        'THE DEFECT: a death whose client named its killer was logged as nobody named')
+    t.isTrue(not server.said('older client'), 'THE DEFECT: an up-to-date client was blamed for its age')
+    t.equals(unattributedNotices(server, 2), 0,
+        'THE DEFECT: the victim was told nothing could be pinned on anybody')
+end)
+
+t.test('A KILLER WHO WALKED OUT: the log says the victim named them, and says nothing it cannot know', function()
+    -- GUN GAME, because it is the one mode where an honest client reaches
+    -- this: nobody is eliminated there, so a leaver is the only named
+    -- fighter the roster refuses. And the server watched the hit land too,
+    -- which must not rescue a kill for somebody no longer in the round.
+    local server = newServer(function(config)
+        config.Modes.gungame.enabled = true
+        config.Debug = false
+    end)
+    local id = server.play(3, 'gungame')
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.fire('leaveMatch', 1, {})
+    t.isNil(server.rowOf(1), 'the leaver is still on the roster, so this tests nothing')
+    t.isTrue(server.match.IsLive(id), 'the round ended when they left')
+
+    -- THE OWNER'S RULING STILL HOLDS: a death with no killer costs a tier.
+    -- Stood on rung 2 so the charge can be seen at all.
+    server.rowOf(2).tier = 2
+    server.wait(250)
+    server.diesNaming(2, 1)
+
+    t.equals(server.rowOf(2).deaths, 1, 'the death was not booked, so nothing was tested')
+    t.equals(server.rowOf(2).tier, 1, 'the refused claim spared the victim a tier the ruling charges')
+    t.equals(killsOf(server, 3), 0, 'somebody the victim did not name was credited')
+
+    local line = lineSaying(server, 'KILL NOT CREDITED')
+    t.isNotNil(line, 'THE DEFECT: no always-on line says the victim named a killer who had left')
+    t.contains(line, '2 died in match', 'the line does not say who died')
+    t.contains(line, 'naming 1 as their killer', 'the line does not say whom they named')
+    -- NOT "has left": the row is gone, and a server id that never was in the
+    -- round reads exactly the same from here.
+    t.contains(line, 'or were never in it', 'the line asserts a departure the server cannot know')
+    t.isTrue(not server.said('UNATTRIBUTED'), 'THE DEFECT: the named leaver was logged as nobody named')
+    t.isTrue(not server.said('older client'), 'THE DEFECT: an up-to-date client was blamed for its age')
+    t.equals(unattributedNotices(server, 2), 0,
+        'THE DEFECT: the victim was told nothing could be pinned on anybody')
+end)
+
+t.test('AN HONEST TEAM-KILL: the TEAMKILL line speaks for it, alone', function()
+    -- It printed TEAMKILL, and then UNATTRIBUTED "nobody named" about the
+    -- same death, and told the victim to report a bug.
+    local server = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+        config.Debug = false
+    end)
+    server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
+
+    server.diesNaming(2, 1)
+
+    t.isTrue(server.said('TEAMKILL'), 'the TEAMKILL line was lost')
+    t.isTrue(not server.said('UNATTRIBUTED'),
+        'THE DEFECT: TEAMKILL was contradicted by UNATTRIBUTED for the same death')
+    t.isTrue(not server.said('KILL NOT CREDITED'), 'the refusal was said twice for one team-kill')
+    t.equals(unattributedNotices(server, 2), 0,
+        'THE DEFECT: the victim was told nothing could be pinned on anybody')
+end)
+
+t.test('and a team-mate who is already out still gets a line, because TEAMKILL stays quiet for them', function()
+    -- TEAMKILL deliberately says nothing about an eliminated team-mate, so
+    -- without a line of its own this death would be logged nowhere.
+    local server = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+        config.Debug = false
+    end)
+    server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
+
+    local out = server.rowOf(1)
+    out.lives = 0
+    out.alive = false
+    server.diesNaming(2, 1)
+
+    t.equals(server.rowOf(2).deaths, 1, 'the death was not booked, so nothing was tested')
+    t.isTrue(not server.said('TEAMKILL'), 'TEAMKILL spoke for a team-mate who was out, so this tests nothing')
+    local line = lineSaying(server, 'KILL NOT CREDITED')
+    t.isNotNil(line, 'THE DEFECT: no always-on line says the named team-mate claim was refused')
+    t.contains(line, 'naming 1 as their killer', 'the line does not say whom they named')
+    t.isTrue(not server.said('UNATTRIBUTED'), 'THE DEFECT: the named team-mate was logged as nobody named')
+    t.equals(unattributedNotices(server, 2), 0,
+        'THE DEFECT: the victim was told nothing could be pinned on anybody')
+end)
+
+t.test('a server id that is nobody in the round is still logged, always on', function()
+    -- The one a modded client reaches. It named nobody REAL, but it did put
+    -- an id on the wire, and the always-on line must not go quiet for it.
+    local server = newServer(function(config) config.Debug = false end)
+    server.play(3)
+
+    server.diesNaming(2, 99)
+
+    t.equals(server.rowOf(2).deaths, 1, 'the death was not booked, so nothing was tested')
+    local line = lineSaying(server, 'KILL NOT CREDITED')
+    t.isNotNil(line, 'THE DEFECT: a claim naming a stranger had no always-on line of its own')
+    t.contains(line, 'naming 99 as their killer', 'the line does not say whom they named')
+    t.contains(line, 'or were never in it', 'the line asserts a departure the server cannot know')
+    t.isTrue(not server.said('UNATTRIBUTED'), 'the stranger claim was logged twice')
+end)
+
+t.test('and a stranger claim the memory DID explain is reported as neither', function()
+    -- The witness credited somebody, so this death is not unattributed and
+    -- its claim is not the story: no refused-claim line, and the debug line
+    -- that says where the credit came from must not blame an older client
+    -- for a report that did carry an id.
+    local server = newServer()
+    server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.diesNaming(2, 99)
+
+    t.equals(killsOf(server, 3), 1, 'the witness was not asked, so this tests nothing')
+    t.isTrue(not server.said('KILL NOT CREDITED'), 'a death the server DID account for was reported as refused')
+    t.isTrue(not server.said('UNATTRIBUTED'), 'a death the server DID account for was reported as unattributed')
+    t.isTrue(server.said('kill credited from the server'), 'the debug line naming the witness is gone')
+    t.isTrue(not server.said('older client'),
+        'THE DEFECT: the witness line blamed an older client for a report that named an id')
+end)
+
+t.test('CONTROL: a report naming nobody -- no id, its own id, nought, negative -- is still UNATTRIBUTED', function()
+    for label, payload in pairs({
+        none = { why = 1 },
+        self = { killerServerId = 2 },
+        zero = { killerServerId = 0 },
+        negative = { killerServerId = -1 },
+    }) do
+        local server = newServer(function(config) config.Debug = false end)
+        server.play(3)
+
+        server.fire('reportDeath', 2, payload)
+
+        t.equals(server.rowOf(2).deaths, 1, label .. ': the death was not booked, so nothing was tested')
+        t.isTrue(server.said('UNATTRIBUTED'), label .. ': a death that named nobody lost its always-on line')
+        t.isTrue(not server.said('KILL NOT CREDITED'), label .. ': a report naming nobody was read as naming somebody')
+        t.equals(unattributedNotices(server, 2), 1, label .. ': the victim was not told')
+    end
+end)
+
+t.test('a refused claim does not spend the notice a real unattributed death is owed', function()
+    -- The notice goes out once a round. Spent on a death whose client DID
+    -- name its killer, it was gone when a genuine one came.
+    local server = newServer(function(config) config.Debug = false end)
+    local id = server.play(3)
+
+    server.fire('leaveMatch', 1, {})
+    server.wait(250)
+    server.diesNaming(2, 1)
+    t.equals(unattributedNotices(server, 2), 0,
+        'THE DEFECT: the victim was told nothing could be pinned on anybody')
+
+    server.settle(1)
+    t.isTrue(server.match.IsLive(id), 'the round ended between the two deaths')
+    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so they cannot die again')
+    server.wait(250)
+    server.diesNamingNobody(2)
+
+    t.equals(server.rowOf(2).deaths, 2, 'the second death was not booked, so nothing was tested')
+    t.equals(unattributedNotices(server, 2), 1, 'the genuine unattributed death was never told')
+end)
+
+-- ======================================================================
 -- WHAT THE MEMORY ITSELF WILL AND WILL NOT WRITE DOWN
 -- ======================================================================
 

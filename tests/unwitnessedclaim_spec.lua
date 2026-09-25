@@ -154,8 +154,12 @@ local function run(label, payloadFor, deaths, opts)
     end
 
     local unattributedLog, unattributedDebug, pricedLog, unverified = 0, 0, 0, 0
+    local notCredited, olderClient, teamkill = 0, 0, 0
     for i = base + 1, #s.logs do
         local line = s.logs[i]
+        if line:find('KILL NOT CREDITED', 1, true) then notCredited = notCredited + 1 end
+        if line:find('older client', 1, true) then olderClient = olderClient + 1 end
+        if line:find('TEAMKILL', 1, true) then teamkill = teamkill + 1 end
         if line:find('UNATTRIBUTED', 1, true) then
             if line:find('%[debug%]') then unattributedDebug = unattributedDebug + 1
             else unattributedLog = unattributedLog + 1 end
@@ -178,7 +182,8 @@ local function run(label, payloadFor, deaths, opts)
     if false then print(('%-28s arena=%-12s resupplies=%2d  pricedLOG=%2d  UNATTRIB(log)=%2d UNATTRIB(dbg)=%2d  toasts=%d  unverified=%2d  respawnWaits=%s')
         :format(label, arenaKey, #s.refreshes - refreshBase, pricedLog, unattributedLog, unattributedDebug,
             toasts, unverified, table.concat(respawnNotices, ','))) end
-    return { resupplies = #s.refreshes - refreshBase, priced = pricedLog, unattrib = unattributedLog, toasts = toasts }
+    return { resupplies = #s.refreshes - refreshBase, priced = pricedLog, unattrib = unattributedLog, toasts = toasts,
+        notCredited = notCredited, olderClient = olderClient, teamkill = teamkill }
 end
 
 
@@ -292,6 +297,64 @@ t.test('DEFECT: naming an ELIMINATED fighter did the same', function()
         end,
     })
     t.equals(r.priced, PRICED, 'naming somebody already out bought a free, silent death')
+end)
+
+
+-- ---------------------------------------------------------------------------
+-- AND WHAT THE LOG SAYS ABOUT THEM, WHICH IS A DIFFERENT QUESTION.
+--
+-- Everything above pins the PRICE, and the price is right: a claim the roster
+-- refuses counts as naming nobody, however it was refused. What was wrong was
+-- the WORDS. Every one of these deaths was logged UNATTRIBUTED "with nobody
+-- named", blamed on "an older client", and the victim was told nothing could
+-- be pinned on anybody -- when the client had named a real fighter and the
+-- roster had turned the claim down on purpose. An honest client reaches three
+-- of them: a last-life trade, a killer who walked out, a team-mate's blade.
+
+t.test('a claim naming an id the roster refuses: the same price, and none of it called "nobody named"', function()
+    local cases = {
+        { label = 'left', payload = { killerServerId = 3 }, opts = {
+            round = teamRound,
+            prepare = function(match) match.players[3].leftArena = true end,
+        } },
+        { label = 'eliminated', payload = { killerServerId = 3 }, opts = {
+            round = teamRound,
+            prepare = function(match)
+                local out = match.players[3]
+                out.alive = false
+                out.lives = 0
+            end,
+        } },
+        { label = 'stranger', payload = { killerServerId = 999 }, opts = {} },
+    }
+    for _, case in ipairs(cases) do
+        local r = run(case.label, function() return case.payload end, DEATHS, case.opts)
+        t.equals(r.priced, PRICED, case.label .. ': the price moved, and it was not meant to')
+        t.equals(r.notCredited, DEATHS, case.label .. ': THE DEFECT: the refused claim had no line of its own')
+        t.equals(r.unattrib, 0, case.label .. ': THE DEFECT: a named claim was logged as nobody named')
+        t.equals(r.olderClient, 0, case.label .. ': THE DEFECT: a report that named an id was blamed on an older client')
+        t.equals(r.toasts, 0, case.label .. ': THE DEFECT: the victim was told nothing could be pinned on anybody')
+    end
+end)
+
+t.test('and a TEAM-MATE: the TEAMKILL line says it, once a death, and nothing contradicts it', function()
+    local r = run('mate', function() return { killerServerId = 4 } end, DEATHS, { round = teamRound })
+    t.equals(r.priced, PRICED, 'the price moved, and it was not meant to')
+    t.equals(r.teamkill, DEATHS, 'a team-kill went without its TEAMKILL line')
+    t.equals(r.notCredited, 0, 'the refusal was said twice for one team-kill')
+    t.equals(r.unattrib, 0, 'THE DEFECT: TEAMKILL was contradicted by UNATTRIBUTED for the same death')
+    t.equals(r.olderClient, 0, 'THE DEFECT: a report that named an id was blamed on an older client')
+    t.equals(r.toasts, 0, 'THE DEFECT: the victim was told nothing could be pinned on anybody')
+end)
+
+t.test('CONTROL: a report that names nobody is still UNATTRIBUTED, and still told once', function()
+    for label, payload in pairs({ none = {}, self = { killerServerId = 2 }, zero = { killerServerId = 0 } }) do
+        local r = run(label, function() return payload end, DEATHS)
+        t.equals(r.priced, PRICED, label .. ': the price moved, and it was not meant to')
+        t.equals(r.unattrib, DEATHS, label .. ': a death that named nobody lost its always-on line')
+        t.equals(r.notCredited, 0, label .. ': a report naming nobody was read as naming somebody')
+        t.equals(r.toasts, 1, label .. ': the once-a-round notice was not sent, or sent every time')
+    end
 end)
 
 os.exit(t.summary())

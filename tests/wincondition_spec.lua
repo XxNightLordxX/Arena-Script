@@ -345,6 +345,10 @@ local env = Sandbox.newArenaEnv({
     --- made against what reached the console rather than the return value.
     server.console = console
 
+    --- Every client event this server sent, in order -- for the notices a
+    --- fighter was shown, which reach nothing else a test can read.
+    server.sent = sent
+
     --- Every wallet movement the fixture has seen, with its reason.
     ---
     --- Exposed for the property test at the foot of this file: money is the
@@ -480,6 +484,38 @@ t.test('and a mutual kill is a draw, not a race between two corpses', function()
 
     t.equals(server.endedWith(), 'match.ended_draw', 'a double knockout crowned somebody')
     t.equals(listed(server.winners()), '', 'a draw produced winners')
+end)
+
+t.test('and the second report of that trade is logged as a refused claim, not as nobody named', function()
+    -- THE MATRIX FOUND IT HERE: a team round down to one fighter a side, one
+    -- life each, both dead in one tick. The result was right -- a draw -- and
+    -- the log was not. The second report names a fighter the first report
+    -- has just eliminated, so the roster refuses it, and the operator's
+    -- always-on line said UNATTRIBUTED "with nobody named ... an older client
+    -- ... this resource to blame", and the fighter was told nothing could be
+    -- pinned on anybody. Their client had named its killer.
+    local server = newServer(function(config) config.Debug = false end)
+    server.play(2, true)
+    server.kill(2, 1)
+    server.kill(1, 2)
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_draw', 'the trade was not a draw, so this is not the matrix case')
+
+    local log = server.log()
+    t.contains(log, 'KILL NOT CREDITED: 1 died in match',
+        'THE DEFECT: no always-on line says the second report named its killer and was refused')
+    t.notContains(log, 'UNATTRIBUTED', 'THE DEFECT: the second death of the trade was logged as nobody named')
+
+    local told = 0
+    for _, message in ipairs(server.sent) do
+        if message.event == 'crimson_arena:client:notify' and message.target == 1
+            and tostring((message.payload or {}).description or ''):find('Nothing could be pinned', 1, true)
+        then
+            told = told + 1
+        end
+    end
+    t.equals(told, 0, 'THE DEFECT: the fighter was told nothing could be pinned on anybody')
 end)
 
 -- ======================================================================

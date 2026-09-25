@@ -1723,7 +1723,42 @@ local UNATTRIBUTED_REASON = {
     [4] = 'The client says a player hit them but their character was not on its network list by then -- too far off, or gone.',
 }
 
-local function unattributedReason(why)
+--- WHY THE ROSTER TURNED DOWN A KILLER THE CLIENT DID NAME, keyed by
+--- rosterKiller's own reason.
+---
+--- THESE ARE NOT "NAMED NOBODY", AND THEY WERE BEING REPORTED AS IF THEY
+--- WERE. The client sends a reason code only when it names nobody -- see
+--- handleDeath in client/match.lua -- so a named claim the roster refused
+--- arrived with no code at all, and the fallback below told the operator it
+--- came from "an older client than this resource". It did not. An honest
+--- client in a last-life trade names a fighter who is out by the time its
+--- report lands; one whose killer walked out a moment earlier names somebody
+--- no longer on the roster; a team-mate's blade names the team-mate. Each of
+--- those is the roster refusing a claim it should refuse.
+---
+--- 'not_on_roster' DOES NOT SAY "LEFT". ArenaLobby.Leave deletes the row, so
+--- the server cannot tell a fighter who walked out from a server id that was
+--- never in the round -- which a modded client can name -- and a line in the
+--- operator's log must not assert what the server cannot know.
+---
+--- 'nobody' AND 'self' ARE DELIBERATELY ABSENT. Neither names anybody, and
+--- the honest client never puts its own id on the wire, so both still read
+--- as naming nobody, with whatever reason code the client sent.
+local REFUSED_CLAIM = {
+    not_on_roster = 'is not on this round\'s roster -- they left it before the report arrived, or were never in it',
+    team = 'is on their own side, and friendly fire is off',
+    out_of_round = 'was already out of the round -- eliminated, or sent back to the lobby -- when the report arrived',
+}
+
+local function unattributedReason(why, claimed, refused)
+    -- A NAMED CLAIM IS ASKED ABOUT FIRST, because it carries no reason code
+    -- and the fallback at the bottom would call it an older client.
+    local named = REFUSED_CLAIM[refused]
+    if named then
+        return ('The client named %s as their killer, who %s -- a claim the roster refuses, '
+            .. 'which counts as naming nobody.'):format(tostring(claimed), named)
+    end
+
     local code = Arena.ToInt(why)
     return (code and UNATTRIBUTED_REASON[code])
         or 'The client gave no reason, which means it is an older client than this resource.'
@@ -1924,14 +1959,25 @@ end
 --- honest player catches those: crossfire from outside the boundary is real,
 --- and a long shot across a big arena is the good kind of kill. Those must
 --- not price a death as unwitnessed, so they stay where they are.
+---
+--- AND IT SAYS WHICH REFUSAL IT WAS, because "refused" had come to mean
+--- "named nobody" everywhere downstream. The last-life trade, the killer who
+--- walked out before the report landed and the team-mate's blade all name a
+--- real fighter, and OnDeath logged every one of them as UNATTRIBUTED --
+--- "nobody named ... an older client ... this resource to blame" -- and told
+--- the victim nothing could be pinned on anybody. The reason is what lets it
+--- tell those apart from a client that really named nobody. It changes no
+--- answer: the killer is nil on every one of these paths, as it always was.
 --- @return table|nil killer
+--- @return string|nil refused -- 'nobody', 'self', 'not_on_roster', 'team' or 'out_of_round'
 local function rosterKiller(match, victim, killerSrc)
     local killerId = Arena.ToInt(killerSrc)
-    if not killerId or killerId <= 0 or killerId == victim.src then return nil end
+    if not killerId or killerId <= 0 then return nil, 'nobody' end
+    if killerId == victim.src then return nil, 'self' end
 
     local killer = match.players[killerId]
-    if not killer then return nil end
-    if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil end
+    if not killer then return nil, 'not_on_roster' end
+    if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil, 'team' end
 
     -- AND ARE THEY STILL IN THE FIGHT. A fighter who is out of the round --
     -- eliminated, or already sent back to the lobby ped -- was being
@@ -1950,7 +1996,7 @@ local function rosterKiller(match, victim, killerSrc)
     if killer.leftArena == true or Arena.IsEliminated(killer) then
         ArenaDebug('kill refused on match %s: %s named %s, who is out of the round.',
             tostring(match.id), tostring(victim.src), tostring(killerId))
-        return nil
+        return nil, 'out_of_round'
     end
 
     return killer
@@ -1958,13 +2004,16 @@ end
 
 --- @return table|nil killer
 --- @return boolean named -- did the claim name a fighter the ROSTER accepts
+--- @return string|nil refused -- rosterKiller's reason, when it was the one that said no
 local function resolveKiller(match, victim, killerSrc)
     -- THE SECOND RETURN IS NOT A CONVENIENCE. OnDeath needs both answers --
     -- "is this a kill" and "did they name anybody" -- and asking rosterKiller
     -- a second time down there would log the refusal twice and re-read state
-    -- this function has already moved past. One call, both answers.
-    local killer = rosterKiller(match, victim, killerSrc)
-    if not killer then return nil, false end
+    -- this function has already moved past. One call, both answers. THE THIRD
+    -- IS THE SAME ARGUMENT: OnDeath's log line needs to know WHICH refusal,
+    -- and this call is the one that already knows.
+    local killer, refused = rosterKiller(match, victim, killerSrc)
+    if not killer then return nil, false, refused end
 
     local killerId = killer.src
     -- AND WERE THEY ANYWHERE NEAR. Everything above this line is a question
@@ -2776,7 +2825,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
 
     local playingLadder = #ladderOf(match) > 0
 
-    local killer, namedAFighter = resolveKiller(match, player, killerSrc)
+    local killer, namedAFighter, refused = resolveKiller(match, player, killerSrc)
 
     -- AND IF THE CLIENT NAMED NOBODY, ASK WHAT THE SERVER SAW.
     --
@@ -2842,7 +2891,8 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
                 byWitness = true
                 ArenaDebug('kill credited from the server\'s own record on match %s: %s reported '
                     .. 'nobody, and the last hit this server watched land on them was %s. %s',
-                    tostring(match.id), tostring(id), tostring(witness), unattributedReason(why))
+                    tostring(match.id), tostring(id), tostring(witness),
+                    unattributedReason(why, claimed, refused))
             end
         end
     end
@@ -2926,6 +2976,10 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
             if Arena.IsUnarmedHash(causeHash) then killedWithAGun = false end
         end
     end
+
+    -- WHETHER THE TEAMKILL LINE BELOW HAS ALREADY SPOKEN FOR THIS DEATH, so
+    -- the refused-claim line further down does not say the same thing twice.
+    local announcedTeamKill = false
 
     if killer then
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
@@ -3018,6 +3072,8 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
             and Config.Teams.friendlyFire ~= true
             and accused.leftArena ~= true and not Arena.IsEliminated(accused)
         then
+            announcedTeamKill = true
+
             -- FISTS BY NAME RATHER THAN BY NUMBER. They are not in the
             -- catalogue and never will be, so WeaponByHash answers nil and the
             -- line below would otherwise report the most common melee teamkill
@@ -3092,9 +3148,13 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- none of them priced, none of them logged. A free, silent death on
     -- demand, at whatever rate the client liked.
     --
-    -- The honest client never sends any of these: it sends no id at all when
-    -- it has nobody to name, and client/match.lua will not put the victim's
-    -- own id on the wire. So there is one expression, it lives in
+    -- The honest client never sends any of these AT THAT RATE: it sends no
+    -- id at all when it has nobody to name, and client/match.lua will not put
+    -- the victim's own id on the wire. It DOES name a fighter eliminated a
+    -- moment earlier, one who walked out, or a team-mate whose blade landed
+    -- -- once in a while, nowhere near the rate the price is set at, and the
+    -- refused-claim line below (or TEAMKILL above) says which it was. So
+    -- there is one expression, it lives in
     -- rosterKiller, and this reads the answer resolveKiller already got from
     -- it rather than asking again. DO NOT write this test out by hand again
     -- -- that is the whole history of this bug.
@@ -3113,11 +3173,53 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
                 tostring(id), tostring(match.id), inWindow,
                 UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
                     * math.max(1, respawnDelaySeconds()),
-                unattributedReason(why))
+                unattributedReason(why, claimed, refused))
         else
             ArenaDebug('death named nobody on match %s: %s, %d in the window -- a fall or the boundary, by the rate of it, so full resupply and the normal wait. %s',
-                tostring(match.id), tostring(id), inWindow, unattributedReason(why))
+                tostring(match.id), tostring(id), inWindow, unattributedReason(why, claimed, refused))
         end
+    end
+
+    -- A CLAIM THAT NAMED A REAL FIGHTER AND WAS REFUSED IS REPORTED AS WHAT
+    -- IT IS, and not as the failure the UNATTRIBUTED line below exists for.
+    --
+    -- THE REPORTS: a mutual last-life trade -- the second report names a
+    -- fighter who was eliminated a moment earlier -- a killer who walked out
+    -- before the victim's report landed, and a team-mate's blade. In all
+    -- three the client named its killer, and the operator's only always-on
+    -- line said "nobody named", blamed "an older client" and then "this
+    -- resource", and the victim was told nothing could be pinned on anybody
+    -- and to go and tell the server owner. None of it was true: the client
+    -- did its job, the roster refused the claim on purpose, and the operator
+    -- hunting real missing kills was sent after a fault that was not there.
+    --
+    -- ALWAYS ON, wherever the body fell -- a named claim is worth an
+    -- operator seeing, and a modded client naming a stranger's id lands here
+    -- too. (A refusal for distance or the fence is not one of these: the
+    -- roster accepted that killer, and it stays where it always was.) STILL
+    -- THE SAME PRICE: the gate above reads `nobodyNamed`, which this does not
+    -- touch.
+    -- NO NOTICE TO THE VICTIM, which leaves the once-a-round latch unspent
+    -- for a death that really does go unattributed later in the round. AND
+    -- NOT AFTER A TEAMKILL LINE, which has already said all of this and more.
+    local claimRefused = nobodyNamed and REFUSED_CLAIM[refused] ~= nil
+    if claimRefused and not announcedTeamKill then
+        -- AND BY NAME, cleaned, as the KILL line names people -- looked up
+        -- inside a pcall, because this runs before the respawn below and a
+        -- name is not worth a player. The claimed killer may be off the
+        -- roster; the framework may still know them, and '?' is the answer
+        -- when nothing does.
+        local okNames, names = pcall(function()
+            local accusedRow = match.players[claimed]
+            return ('"%s" and "%s"'):format(ArenaLogText(player.name or ArenaPlayerName(id)),
+                ArenaLogText(accusedRow and accusedRow.name or ArenaPlayerName(claimed)))
+        end)
+        ArenaLog('KILL NOT CREDITED: %s died in match %s naming %s as their killer, who %s. The roster '
+            .. 'refused the claim, so nobody was credited, no kill ammo was paid and the score did not '
+            .. 'move. The client did name somebody -- this is the rule working, not a kill the '
+            .. 'server failed to see. By name: %s.',
+            tostring(id), tostring(match.id), tostring(claimed), REFUSED_CLAIM[refused],
+            okNames and names or 'not available')
     end
 
     -- AND SAY SO WHERE THE OPERATOR WILL SEE IT. Everything above prices the
@@ -3143,7 +3245,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- LADDERS TOO, which the pricing above deliberately skips. A gun game
     -- kill that cannot be attributed costs the killer their promotion, so it
     -- is at least as worth reporting there as anywhere else.
-    if serverSaw ~= true and nobodyNamed then
+    if serverSaw ~= true and nobodyNamed and not claimRefused then
         local past = metresOutside(match, id)
         local where = past and past > 0
             and ('%.0fm outside the fence, which is what a fall or the boundary looks like'):format(past)

@@ -2078,6 +2078,43 @@ t.test('CONTROL: a REFUSED leave is not reported as a successful one', function(
         'a player who was never in a match was told they had left one')
 end)
 
+t.test('THE AUDIT: and a REFUSED leave from the panel BUTTON is not reported as a success either', function()
+    -- The CONTROL above drives the command. The button has an `if ok` of
+    -- its own in main.lua, and nothing had ever sent it a real refusal.
+    local s = newServer()
+    local id = s.lobby.Create(1, 'trailerpark', 'ffa', 0, 3, false, 'cash', 900)
+    for src = 2, 4 do s.lobby.Join(src, id, nil, 'cash') end
+
+    s.env.ArenaBetting.IsEnabled = function() return true end
+    s.env.ArenaBetting.HoldsSideBet = function(_, src) return src == 2 end
+    t.equals(s.lobby.MayLeave(2), false, 'the fixture did not actually hold player 2')
+
+    --- EVERY notice the action produced, not just the last. A success sent
+    --- before the refusal would hide behind it in a last-only check.
+    local function noticesFrom(src, act)
+        local before = #s.noticesTo(src)
+        act()
+        local all, out = s.noticesTo(src), {}
+        for index = before + 1, #all do out[#out + 1] = all[index] end
+        return out
+    end
+
+    local held = noticesFrom(2, function() s.fire('leaveMatch', 2) end)
+    t.isTrue(s.lobby.Get(id).players[2] ~= nil, 'the held player left anyway')
+    t.equals(#held, 1, 'the held player was not told exactly one thing: ' .. table.concat(held, ' | '))
+    for _, said in ipairs(held) do
+        t.isTrue(said ~= 'You are out of the arena.', 'a refused leave was announced as a successful one')
+    end
+
+    -- Somebody in no match at all. The button is only on a panel that is in
+    -- one, so being told nothing is fine; being told they left is not.
+    local stranger = noticesFrom(6, function() s.fire('leaveMatch', 6) end)
+    for _, said in ipairs(stranger) do
+        t.isTrue(said ~= 'You are out of the arena.',
+            'a player who was never in a match was told they had left one')
+    end
+end)
+
 t.test('the kills of a fighter who left are named, not left unaccounted', function()
     -- THE BOARD AND THE LINE ABOVE IT DISAGREED, and both were right.
     -- teamKills BANKS a departing fighter's kills so a side does not lose
@@ -2547,7 +2584,7 @@ end
 --- Runs the whole sweep and returns everything it caught.
 local function sweep()
     local caught = {}
-    local probes = 0
+    local probes, realId = 0, 0
 
     for _, stage in ipairs(HOSTILE_STAGES) do
         for _, attacker in ipairs(HOSTILE_ATTACKERS) do
@@ -2575,9 +2612,22 @@ local function sweep()
 
                     -- The real match id, spliced in: a cheat reads it off
                     -- their own screen, so withholding it tests nothing.
+                    --
+                    -- INTO A COPY. Written into the shared payload, the first
+                    -- probe's id stuck: every later probe saw a matchId that
+                    -- was no longer 'X', skipped the splice, and sent the
+                    -- first world's id to a world where no such match exists.
+                    -- Every authority check keyed on the match id was being
+                    -- asked about nothing, and passed.
                     local payload = shot.value
-                    if type(payload) == 'table' and payload.matchId == 'X' then
-                        payload.matchId = id
+                    if type(payload) == 'table' then
+                        local copy = {}
+                        for field, value in pairs(payload) do copy[field] = value end
+                        payload = copy
+                        if payload.matchId == 'X' then
+                            payload.matchId = id
+                            realId = realId + 1
+                        end
                     end
 
                     local ok, err = pcall(function() s.fire(event, attacker.src, payload) end)
@@ -2610,7 +2660,13 @@ local function sweep()
                         if now.winCondition ~= was.winCondition then caughtIt('changed how it is won') end
                         if now.lives ~= was.lives then caughtIt('changed the lives') end
                         if now.hostSource ~= was.host then caughtIt('TOOK THE MATCH OVER') end
-                        if not attacker.insider and now.players[attacker.src] then
+                        -- EXCEPT AN OUTSIDER JOINING A LOBBY, which is what a
+                        -- lobby is for -- and which this sweep only ever saw
+                        -- once it sent the real id. Joining a LIVE round is
+                        -- still a hole.
+                        if not attacker.insider and now.players[attacker.src]
+                            and not (event == 'joinMatch' and not stage.live)
+                        then
                             caughtIt('AN OUTSIDER GOT IN')
                         end
                         for src = 1, 3 do
@@ -2629,12 +2685,23 @@ local function sweep()
         end
     end
 
-    return caught, probes
+    return caught, probes, realId
 end
 
 t.test('a hostile client cannot crash, enrich itself or take what is not its own', function()
-    local caught, probes = sweep()
+    local caught, probes, realId = sweep()
     t.isTrue(probes >= 1000, ('the sweep barely ran: only %d probe(s)'):format(probes))
+
+    -- EVERY PAYLOAD MEANT TO NAME THE MATCH DID, in every probe that sent it.
+    -- Counted, because the sweep once sent a stale id in all but one of them
+    -- and still read as green.
+    local naming = 0
+    for _, shot in ipairs(HOSTILE_PAYLOADS) do
+        if type(shot.value) == 'table' and shot.value.matchId == 'X' then naming = naming + 1 end
+    end
+    t.isTrue(naming > 0, 'no hostile payload names a match, so no authority check is being asked anything')
+    t.equals(realId, naming * #HOSTILE_STAGES * #HOSTILE_ATTACKERS * #HOSTILE_EVENTS,
+        'probes meant to name the real match sent some other id')
 
     if #caught > 0 then
         local head = {}

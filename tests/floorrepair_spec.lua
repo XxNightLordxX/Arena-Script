@@ -400,19 +400,28 @@ t.test('it tells the SERVER console, in one event', function()
     -- this client talk to the server in the same pass -- the outline reason
     -- is one -- so a bare count of events would have been asserting their
     -- behaviour and not this one's.
-    local carrying = 0
+    --
+    -- AND THE REST OF THE REPORT IN THE SAME EVENT AS ITS FIRST LINE. Counting
+    -- the events that say PUT BACK could not see a report split in two: the
+    -- first half still arrives once, and the half the server drops -- the
+    -- half that says what to look for -- was only ever looked for anywhere.
+    local carrying = {}
     for _, sent in ipairs(c.toServer) do
         local payload = sent.payload or {}
         local lines = type(payload.lines) == 'table' and payload.lines
             or (type(payload.line) == 'string' and { payload.line } or {})
         for _, line in ipairs(lines) do
-            if line:find('PUT BACK', 1, true) then carrying = carrying + 1 break end
+            if line:find('PUT BACK', 1, true) then carrying[#carrying + 1] = lines break end
         end
     end
-    t.equals(carrying, 1, 'the repair report was split across several events')
-    t.isTrue(c.saidToServer('PUT BACK'), 'the repair was not reported to the server at all')
-    t.isTrue(c.saidToServer('something else on this server is removing them'),
-        'the report does not say what an operator should go and look for')
+    t.equals(#carrying, 1, 'the repair was not reported to the server exactly once')
+
+    local culprit = false
+    for _, line in ipairs(carrying[1]) do
+        if line:find('something else on this server is removing them', 1, true) then culprit = true end
+    end
+    t.isTrue(culprit, 'the event carrying PUT BACK does not also say what an operator should go and '
+        .. 'look for -- the report was split, and the server keeps only one event a second')
 end)
 
 t.test('and it does not walk the arena more often than its interval', function()

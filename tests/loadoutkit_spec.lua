@@ -1798,6 +1798,19 @@ end)
 -- which is wrong is wrong at boot; weapons had no such check.
 -- ======================================================================
 
+--- Whether the report lists a name on a row of its own, under its kind.
+---
+--- A bare search for the name proves nothing: the report's own help text
+--- quotes WEAPON_PISTOL and ammo-9 as examples, so a report that never
+--- checked a single ammunition item still "contained" ammo-9.
+local function hasRow(report, label, name)
+    local want = ('  %-8s %s'):format(label, name)
+    for line in (report .. '\n'):gmatch('(.-)\n') do
+        if line == want then return true end
+    end
+    return false
+end
+
 t.test('THE START-UP CHECK names an issued WEAPON ox_inventory does not have', function()
     local f = newKit({
         knownItems = {
@@ -1810,7 +1823,7 @@ t.test('THE START-UP CHECK names an issued WEAPON ox_inventory does not have', f
             config.Loadouts.weapons = {
                 { key = 'w1', weapon = 'WEAPON_TEST', label = 'Test', category = 'sidearm',
                   enabled = true, ammo = { default = 60, options = { 60 }, max = 60 },
-                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-9' } },
+                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-test' } },
                   components = {}, tint = 0 },
             }
         end,
@@ -1820,7 +1833,8 @@ t.test('THE START-UP CHECK names an issued WEAPON ox_inventory does not have', f
     t.contains(report, 'NOT items in this ox_inventory',
         'a missing weapon item was reported as a clean boot')
     t.contains(report, 'WEAPON_TEST', 'the weapon that will be refused is not named')
-    t.contains(report, 'ammo-9', 'the ammunition item was not checked')
+    t.isTrue(hasRow(report, 'ammo', 'ammo-test'),
+        'the ammunition item was not checked: ' .. report)
     t.contains(report, 'vests and bandages',
         'the report does not connect itself to the symptom an operator actually sees')
 end)
@@ -1845,6 +1859,29 @@ t.test('and reports all present when ox_inventory has every name', function()
     local report = table.concat(f.ammo.WeaponItemReport(), '\n')
     t.contains(report, 'all present', 'a healthy inventory was reported as broken: ' .. report)
     t.isNil(report:find('NOT items', 1, true), 'a healthy inventory named a missing item')
+end)
+
+t.test('THE AUDIT: and names a SUPPLY ox_inventory does not have, on a row of its own', function()
+    local f = newKit({
+        knownItems = {
+            WEAPON_TEST = { name = 'WEAPON_TEST', weapon = true },
+            ['ammo-test'] = { name = 'ammo-test', ammo = true },
+            armour = { name = 'armour' },
+        },
+        mutate = function(config)
+            config.Loadouts.weapons = {
+                { key = 'w1', weapon = 'WEAPON_TEST', label = 'Test', category = 'sidearm',
+                  enabled = true, ammo = { default = 60, options = { 60 }, max = 60 },
+                  ammoTypes = { { key = 'standard', label = 'Std', item = 'ammo-test' } },
+                  components = {}, tint = 0 },
+            }
+        end,
+    })
+
+    local report = table.concat(f.ammo.WeaponItemReport(), '\n')
+    t.isTrue(hasRow(report, 'supply', 'bandage'), 'a missing supply item was not named: ' .. report)
+    t.isFalse(hasRow(report, 'supply', 'armour'), 'a supply this ox_inventory has was named as missing')
+    t.isFalse(hasRow(report, 'ammo', 'ammo-test'), 'an ammunition item this ox_inventory has was named as missing')
 end)
 
 t.test('and an ox_inventory that will not answer Items() is NOT reported as clean', function()

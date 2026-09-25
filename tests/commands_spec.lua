@@ -359,19 +359,26 @@ t.test('the admin-only commands say so, and the one anybody may run does NOT', f
     -- BOTH DIRECTIONS, because each is a different lie to a different reader.
     -- An admin command without the tag sends a player off to be refused; a
     -- player command carrying it stops them trying at all.
-    local ADMIN_ONLY = { arenaadmin = true, arenaconsole = true }
+    --
+    -- THE PLAYER COMMANDS ARE THE ONES LISTED, and every other command must
+    -- carry the tag. Listing the ADMIN commands instead let a new admin
+    -- command with no tag pass: it was simply not on the list, so it was
+    -- checked as a player command -- and "no tag" is what a player command
+    -- is supposed to have. A new player command has to be added here, and
+    -- the failure names it.
+    local PLAYER_OK = { arenaleave = true }
 
     local client = loadClient()
     t.isTrue(#client.suggested > 0, 'no suggestions were raised at all')
 
     for _, entry in ipairs(client.suggested) do
         local name = tostring(entry.command):gsub('^/', '')
-        if ADMIN_ONLY[name] then
-            t.contains(entry.help, '(admin)',
-                tostring(entry.command) .. ' does not tell a player it is admin-only')
-        else
+        if PLAYER_OK[name] then
             t.isNil(entry.help:find('(admin)', 1, true),
                 tostring(entry.command) .. ' is marked admin-only, but anybody may run it')
+        else
+            t.contains(entry.help, '(admin)',
+                tostring(entry.command) .. ' does not tell a player it is admin-only')
         end
     end
 end)

@@ -1334,6 +1334,21 @@ t.test('a shot that is REFUSED is not remembered', function()
     t.equals(#calls, 0, 'a cancelled shot was remembered as a landed hit')
 end)
 
+t.test('THE AUDIT: a packet the guard CANCELS records nothing, even for the enemy it named', function()
+    -- The recording used to happen inside the loop, before the cancel was
+    -- decided. A packet naming an enemy AND somebody outside the round is
+    -- cancelled whole -- the enemy takes no damage -- and the enemy was
+    -- written down as hit anyway.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.enter(2, 'm1')
+    f.enter(3, 'm2')
+    local calls = watchMatch(f)
+
+    t.isTrue(f.shoot(1, { 2, 3 }), 'a packet reaching into another round was not cancelled')
+    t.equals(#calls, 0, 'THE DEFECT: a cancelled packet was remembered as a landed hit')
+end)
+
 t.test('and neither is a team-mate hit that rides through on a spread', function()
     -- The documented bend: a packet naming a team-mate AND an enemy is let
     -- through whole, because cancelling it would make standing next to a

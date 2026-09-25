@@ -312,7 +312,7 @@ t.test('a client that DID name somebody is not second-guessed', function()
     t.equals(killsOf(server, 3), 0, 'the memory took a kill off the fighter the client named')
 end)
 
-t.test('and a claim the ROSTER refuses does not fall through to the memory', function()
+t.test('a claim naming somebody who is NOT IN THIS ROUND still falls through to the memory', function()
     -- A CLAIM THAT NAMED SOMEBODY AND WAS REFUSED IS NOT A CLAIM THAT NAMED
     -- NOBODY, and this is the distinction the fallback is gated on. A client
     -- naming a fighter who has left is refused by rosterKiller -- and if
@@ -330,6 +330,53 @@ t.test('and a claim the ROSTER refuses does not fall through to the memory', fun
     server.diesNaming(2, 99)
     t.equals(killsOf(server, 3), 1,
         'a claim naming a stranger threw away the witness the server had')
+end)
+
+t.test('THE AUDIT: a claim naming a TEAM-MATE keeps its refusal, and the TEAMKILL line still prints', function()
+    -- "REFUSAL INCLUDED". The first version of the fallback asked only
+    -- whether the claim had been ACCEPTED, so a claim naming a team-mate --
+    -- refused under friendly fire -- read as "nobody named" and fell
+    -- through: an enemy who had landed any hit in the last five seconds was
+    -- paid for the team-kill, and the TEAMKILL line was never printed.
+    local server = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+    end)
+    server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
+
+    -- The enemy tagged them; their own team-mate finished them.
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.diesNaming(2, 1)
+
+    t.equals(killsOf(server, 3), 0, 'THE DEFECT: the enemy was paid for a team-kill through the memory')
+    t.equals(killsOf(server, 1), 0, 'a team-kill was credited with friendly fire off')
+    t.isTrue(server.said('TEAMKILL'), 'THE DEFECT: the TEAMKILL line was swallowed by the fallback')
+end)
+
+t.test('THE AUDIT: shots into a corpse do not pay for that fighter\'s next death', function()
+    -- The rest of a burst lands on the body. Those hits used to be written
+    -- down after the death had spent the entry, and the last of them could
+    -- outlive the respawn -- so a fighter who then stepped off an edge was
+    -- paid out to whoever had been shooting their corpse.
+    local server = newServer()
+    local id = server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.diesNamingNobody(2)
+    t.equals(killsOf(server, 1), 1, 'the real kill was not credited, so this tests nothing')
+
+    t.isTrue(server.rowOf(2).alive ~= true, 'the fixture did not leave them dead')
+    t.isTrue(not server.match.RememberDamage(2, 1), 'THE DEFECT: a hit on a corpse was written down')
+
+    server.settle(1)
+    t.isTrue(server.match.IsLive(id), 'the round ended between the two deaths')
+    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so they cannot die again')
+    server.wait(250)
+    server.diesNamingNobody(2)
+
+    t.equals(server.rowOf(2).deaths, 2, 'the second death was not booked, so nothing was tested')
+    t.equals(killsOf(server, 1), 1, 'THE DEFECT: shots into a corpse paid for the next life\'s death')
 end)
 
 -- ======================================================================

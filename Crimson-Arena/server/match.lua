@@ -2589,6 +2589,16 @@ function ArenaMatch.RememberDamage(victimSrc, attackerSrc)
     if type(match.players) ~= 'table' then return false end
     if match.players[victim] == nil or match.players[attacker] == nil then return false end
 
+    -- A CORPSE IS NOT A VICTIM. The rest of a burst lands on the body, or
+    -- somebody keeps firing into it, and every one of those hits used to be
+    -- written down AFTER the death had already spent the entry. The last of
+    -- them then outlived the respawn, so a fighter who stepped off an edge
+    -- early in their next life could be paid out to whoever had been
+    -- shooting their corpse. Reproduced by the audit of this code. The
+    -- killing hit is always recorded before the death is booked, so refusing
+    -- hits on the dead costs no real kill.
+    if match.players[victim].alive ~= true then return false end
+
     match.recentDamage = match.recentDamage or {}
     match.recentDamage[victim] = { by = attacker, at = at }
     return true
@@ -2653,18 +2663,35 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- writes that down; this reads it.
     --
     -- IT IS STRICTLY A SECOND OPINION AND NEVER AN OVERRIDE. It is asked
-    -- only when the client named nobody the roster accepts, so a client that
-    -- DID name somebody still gets the answer it always got, refusal
-    -- included. And what it names goes through resolveKiller, so the fence,
-    -- the distance ceiling, friendly fire, elimination and "are they even in
-    -- this round" all still apply.
+    -- only when the client named NOBODY ON THE ROSTER -- no id, nought, its
+    -- own id, or somebody who is not in this round at all. A client that
+    -- named a fighter in this round gets the answer it always got, refusal
+    -- included, and what the memory names goes through resolveKiller, so the
+    -- fence, the distance ceiling, friendly fire, elimination and "are they
+    -- even in this round" all still apply.
     --
-    -- THIS IS ALSO WHY IT CANNOT BE FARMED. The memory is written by the
-    -- server watching a bullet land, not by anybody asking for it, and a
-    -- player who wants to be named here has to actually shoot the person who
-    -- then actually dies, within five seconds, from inside the arena, on the
-    -- other team. That is a kill.
-    if not killer and namedAFighter ~= true then
+    -- "REFUSAL INCLUDED" IS WHAT THE claimedRoster TEST BELOW IS FOR, and
+    -- the first version of this block did not have it. It asked only whether
+    -- the claim had been ACCEPTED. A claim naming a TEAM-MATE is refused by
+    -- rosterKiller, so it read as "nobody named" and fell through to the
+    -- memory: an enemy who had landed any hit in the last five seconds was
+    -- paid for the team-kill, and the TEAMKILL line further down -- the one
+    -- thing that tells an operator their friendly-fire setting is being
+    -- tested -- was silently skipped. Reproduced by the audit of this code.
+    --
+    -- WHAT THIS CAN AND CANNOT BE TRUSTED FOR. The event's SENDER is an
+    -- identity no client chooses, but what the packet says it hit is the
+    -- shooter's own client talking. A modified client can therefore plant an
+    -- entry against an opponent without landing a real bullet, and take the
+    -- credit for a death it did not cause -- a drowning, a fall inside the
+    -- fence, the victim's own grenade -- if that death comes inside the five
+    -- seconds and names nobody. The same roster, team, fence, distance and
+    -- alive checks bound it, the newest entry is the one that counts, and it
+    -- earns nothing a real shot would not. It is the same trust this file
+    -- already extends to a dying client's own claim, and no stronger.
+    local claimed = Arena.ToInt(killerSrc)
+    local claimedRoster = claimed ~= nil and claimed ~= id and match.players[claimed] ~= nil
+    if not killer and namedAFighter ~= true and not claimedRoster then
         local witness = damagerOf(match, id)
         if witness then
             local seen, sawAFighter = resolveKiller(match, player, witness)

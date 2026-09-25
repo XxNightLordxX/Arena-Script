@@ -495,9 +495,9 @@ Config.Match = {
 
         -- HOW MANY ONE-SECOND CHECKS IN A ROW a fighter's body must read as
         -- dead, with no death reported, before the server books the death
-        -- itself. Nobody is credited with the kill -- the server did not see
-        -- one -- so this costs a life and nothing else, which is exactly the
-        -- half a silent client was skipping.
+        -- itself. It names nobody, so the only credit it can carry is the
+        -- server's own record of a hit landing in the last five seconds. A
+        -- life is spent either way, which is the half a silent client skipped.
         --
         -- 0 switches this half off and leaves the fence.
         deadTicks = 4,

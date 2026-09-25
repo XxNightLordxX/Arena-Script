@@ -1181,9 +1181,10 @@ local function handleDeath(ped, attacker)
         -- Config.Debug is supposed to have stopped. The first one carries
         -- every fact the fortieth would have.
         ArenaLogOnce('unattributed-death',
-            'your death could not be pinned on anybody, so nobody was credited '
-            .. 'for it -- %s. Cause of death hash %s, attacker %s, source of death %s. If somebody '
-            .. 'shot you, tell the server owner and quote this line. (Said once a session.)',
+            'your game could not tell who killed you -- %s. The server may still credit the kill '
+            .. 'from its own record of the last hit on you. Cause of death hash %s, attacker %s, '
+            .. 'source of death %s. If somebody shot you and got nothing for it, tell the server '
+            .. 'owner and quote this line. (Said once a session.)',
             WHY_TEXT[why] or 'reason unknown',
             tostring(cause), tostring(attacker), tostring(ofDeath))
     end

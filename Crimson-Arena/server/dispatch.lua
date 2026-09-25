@@ -2704,6 +2704,10 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
 
     local packet = {}
 
+    -- WHO THIS PACKET LAWFULLY HIT, collected rather than recorded on the
+    -- spot. See the witness block below the loop for why.
+    local lawful = {}
+
     for _, entry in ipairs(hits) do
         local netId = tonumber(entry)
         local victim = netId and ownerOfNetId(netId, packet) or nil
@@ -2712,17 +2716,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
             if ok then
                 if victim ~= attacker then
                     allowed = allowed + 1
-
-                    -- THE WITNESS, WRITTEN DOWN ONE HIT AT A TIME. See the
-                    -- note at the top of this handler for the round that
-                    -- measured why. Guarded by name because server/match.lua
-                    -- is loaded after this file; a missing module must not
-                    -- turn every bullet in the round into an error.
-                    if type(ArenaMatch) == 'table'
-                        and type(ArenaMatch.RememberDamage) == 'function'
-                    then
-                        ArenaMatch.RememberDamage(victim, attacker)
-                    end
+                    lawful[#lawful + 1] = victim
                 end
             else
                 refusal = refusal or { victim = victim, reason = reason }
@@ -2731,11 +2725,38 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         end
     end
 
+    -- THE WITNESS, WRITTEN DOWN ONLY FOR DAMAGE THAT ACTUALLY LANDS. See the
+    -- note at the top of this handler for the round that measured why the
+    -- server records hits at all.
+    --
+    -- AFTER THE LOOP, NOT INSIDE IT, and that move is a fix. Recorded inside
+    -- the loop, a packet that named an enemy AND somebody this guard refuses
+    -- -- a spectator of the round, a player in another round -- was
+    -- cancelled whole a few lines further down, so the enemy took no damage,
+    -- and was remembered as hit anyway. If that enemy then died with nobody
+    -- to name inside the window, the shooter was paid for a bullet the
+    -- server itself had thrown away. Reproduced by the audit of this code.
+    --
+    -- The cancel below is decided by exactly this expression; it is worked
+    -- out once here so the two can never disagree.
+    --
+    -- Guarded by name because server/match.lua is loaded after this file; a
+    -- missing module must not turn every bullet in the round into an error.
+    local cancelled = guard and refusal ~= nil and (crossfire or allowed == 0)
+    if not cancelled
+        and type(ArenaMatch) == 'table'
+        and type(ArenaMatch.RememberDamage) == 'function'
+    then
+        for _, victim in ipairs(lawful) do
+            ArenaMatch.RememberDamage(victim, attacker)
+        end
+    end
+
     if not guard then return end
 
     if refusal == nil then return end
 
-    if crossfire or allowed == 0 then
+    if cancelled then
         ArenaDebug('crossfire: %s may not damage %s -- %s.',
             tostring(attacker), tostring(refusal.victim), refusal.reason or 'refused')
         CancelEvent()

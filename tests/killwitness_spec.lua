@@ -354,6 +354,26 @@ t.test('THE AUDIT: a claim naming a TEAM-MATE keeps its refusal, and the TEAMKIL
     t.isTrue(server.said('TEAMKILL'), 'THE DEFECT: the TEAMKILL line was swallowed by the fallback')
 end)
 
+t.test('and the TEAMKILL line cleans the names it prints, like the KILL line', function()
+    -- A name is written by the player wearing it; printed raw, a line break
+    -- in one starts a forged console line of its own.
+    local server = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+    end)
+    server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    server.rowOf(1).name = 'Mate\n[crimson_arena] match m1 ended ^1'
+    server.diesNaming(2, 1)
+
+    local found
+    for _, line in ipairs(server.console) do
+        if line:find('TEAMKILL:', 1, true) then found = line end
+    end
+    t.isNotNil(found, 'the TEAMKILL line did not print, so this tests nothing')
+    t.isNil(found:find('\n', 1, true), 'a team-mate\'s name put a line break into the console')
+    t.isNil(found:find('^', 1, true), 'a team-mate\'s name put a colour code into the console')
+end)
+
 t.test('THE AUDIT: shots into a corpse do not pay for that fighter\'s next death', function()
     -- The rest of a burst lands on the body. Those hits used to be written
     -- down after the death had spent the entry, and the last of them could
@@ -759,6 +779,116 @@ t.test('and with no shot fired at all, nobody is credited -- the control', funct
     server.diesNamingNobody(2)
 
     t.equals(server.rowOf(1).kills, 0, 'a kill was credited for a bullet nobody fired')
+end)
+
+-- ======================================================================
+-- THE KILL LOG: WHO KILLED WHOM, WRITTEN DOWN
+--
+-- THE OWNER'S ASK: "so when someone kills etc that it actually logs who
+-- killed them". Before this nothing did. A credited kill added one to a
+-- count, and every record downstream -- the board, the results, the
+-- leaderboard, the webhook -- kept counts and nothing else.
+-- ======================================================================
+
+--- Every KILL line on the console. Anchored on the prefix, because
+--- "TEAMKILL:" contains "KILL:" and is a different line.
+local function killLines(server)
+    local out = {}
+    for _, line in ipairs(server.console) do
+        if line:sub(1, #'[crimson_arena] KILL: ') == '[crimson_arena] KILL: ' then out[#out + 1] = line end
+    end
+    return out
+end
+
+t.test('THE KILL LOG: a kill the victim names is written down with both names, Debug off', function()
+    -- ALWAYS ON: it is a record, and turning Debug off to quieten a busy
+    -- console must not take the answer to "who killed me" with it.
+    local server = newServer(function(config) config.Debug = false end)
+    server.play(2)
+    server.diesNaming(2, 1)
+
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the kill was not written down exactly once')
+    t.contains(lines[1], '"Fighter 1" (1 CID001) killed "Fighter 2" (2 CID002)',
+        'the line does not name both people')
+    t.contains(lines[1], "named by the victim's own client", 'the line does not say how the kill was credited')
+    t.contains(lines[1], 'the victim has 2 lives left', 'the line does not say what the death cost')
+
+    server.settle(3)
+    t.isTrue(server.rowOf(2).alive == true, 'the victim did not come back after the line was written')
+end)
+
+t.test('and one credited from the server\'s own record says so', function()
+    local server = newServer()
+    server.play(2)
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.diesNamingNobody(2)
+
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the witnessed kill was not written down')
+    t.contains(lines[1], "credited from the server's own record of the last hit (the client named nobody)",
+        'the line does not say the server supplied the killer')
+end)
+
+t.test('CONTROL: a claim that is refused writes no KILL line', function()
+    -- The line reads only the killer that was CREDITED. A claim naming
+    -- yourself, or somebody who is not in the round, credits nobody.
+    local server = newServer()
+    server.play(2)
+    server.diesNaming(2, 2)
+    server.settle(3)
+    server.wait(1000)
+    server.diesNaming(1, 99)
+    t.equals(#killLines(server), 0, 'a refused claim was written down as a kill')
+end)
+
+t.test('and a name chosen to forge a console line stays one quoted line', function()
+    local server = newServer()
+    server.play(2)
+    server.rowOf(1).name = 'Evil\n[crimson_arena] match m1 ended ^1"x"\27[2J'
+    server.diesNaming(2, 1)
+
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the kill was not written down exactly once')
+    t.isNil(lines[1]:find('\n', 1, true), 'a name put a line break into the console')
+    t.isNil(lines[1]:find('\27', 1, true), 'a name put an escape sequence into the console')
+    t.isNil(lines[1]:find('^', 1, true), 'a name put a colour code into the console')
+    t.isNil(lines[1]:find('"x"', 1, true), 'a name closed the quotes it is printed inside')
+end)
+
+t.test('and the last life says the victim is out', function()
+    local server = newServer(function(config) config.Match.lives = 1 end)
+    server.play(3)
+    server.diesNaming(2, 1)
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the kill was not written down')
+    t.contains(lines[1], 'the victim is eliminated', 'the line does not say the victim is out')
+end)
+
+t.test('and a gun game kill says what it did to both tiers', function()
+    local server = newServer(function(config) config.Modes.gungame.enabled = true end)
+    server.play(2, 'gungame')
+    server.diesNaming(2, 1)
+
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the ladder kill was not written down')
+    t.contains(lines[1], 'the killer goes from tier 1 to 2/', 'the line does not say the killer climbed')
+    t.contains(lines[1], 'The killer was holding "', 'the line does not name the weapon the kill was made with')
+end)
+
+t.test('a line that cannot be built never costs the victim their respawn', function()
+    -- It runs before the respawn is scheduled, and nothing above OnDeath
+    -- catches a throw: without its pcall, one bad log line would leave the
+    -- victim dead for the rest of the round.
+    local server = newServer()
+    server.play(2)
+    server.env.ArenaLogText = function() error('the scrubber fell over') end
+    server.diesNaming(2, 1)
+
+    t.isTrue(server.said('KILL line for match'), 'the failure was not reported')
+    t.equals(server.rowOf(1).kills, 1, 'the kill itself was lost with the line')
+    server.settle(3)
+    t.isTrue(server.rowOf(2).alive == true, 'THE VICTIM WAS LEFT DEAD because a log line failed')
 end)
 
 os.exit(t.summary())

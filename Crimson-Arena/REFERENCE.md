@@ -555,12 +555,13 @@ listed; the source documents them where they are.
 | `ArenaCompat.Mute(src, active)` | Calls every detected adapter's mute, if it has one. |
 | `ArenaCompat.Report()` | The startup block, as lines. |
 
-#### `server/util.lua` — 24 functions
+#### `server/util.lua` — 25 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaLog(fmt, ...)` | Console line an operator will always see. |
 | `ArenaDebug(fmt, ...)` | The chatty half. |
+| `ArenaLogText(text, cap)` | Text somebody else chose -- a player's name above all -- made safe to put inside a console line: control characters (C0, DEL, UTF-8 C1 and the Unicode line separators) become spaces, every `^` colour code goes, a `"` becomes a `'`, and it is cut to `cap` bytes (48 by default) on a character boundary. The KILL and TEAMKILL lines print every name through it. |
 | `ArenaNotify(src, description, notifyType)` | One player-visible message, handed to client/ui.lua to place. |
 | `ArenaToast(src, message, notifyType)` | A message that shows even while the arena panel is open, for the moments a closing panel would swallow the only thing the player needed to read. |
 | `ArenaToastKey(src, localeKey, notifyType, ...)` | The same, from a locale key. |

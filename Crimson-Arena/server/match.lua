@@ -2653,6 +2653,98 @@ function ArenaMatch.RememberDamage(victimSrc, attackerSrc)
     return true
 end
 
+--- What the victim's client said killed them, for the KILL line: the
+--- catalogue label, fists, or the raw hash when it names nothing this arena
+--- lists. It is the CLIENT'S word and is printed as such -- it decides nothing
+--- here that it did not already decide below.
+--- @param causeHash integer|nil
+--- @return string
+local function reportedWeapon(causeHash)
+    if causeHash == nil then return 'nothing' end
+    local weapon = Arena.WeaponByHash(causeHash)
+    if weapon then return ('"%s"'):format(ArenaLogText(weapon.label or weapon.key)) end
+    if Arena.IsUnarmedHash(causeHash) then return 'fists' end
+    return ('cause hash %s, not a weapon this arena lists'):format(tostring(Arena.ToInt(causeHash)))
+end
+
+--- The tier a fighter's SCORE has earned, out of `height` -- the reading the
+--- board and decideOnLadder both use, so the log cannot disagree with either
+--- when an inventory swap was refused and the weapon in hand lags behind.
+local function earnedTier(player, height)
+    return (tierForScore(tierScore(player), height))
+end
+
+local KILL_LINE = 'KILL: "%s" (%s %s) killed "%s" (%s %s) in match %s [%s] -- %s. The victim reports %s. %s'
+
+--- ONE LINE PER CREDITED KILL, naming both people.
+---
+--- THE OWNER'S ASK: "so when someone kills ... it actually logs who killed
+--- them". Before this nothing did. A credited kill added one to a count and
+--- one to another, and every record downstream -- the board, the results,
+--- the leaderboard, the webhook -- kept counts and nothing else. The only
+--- lines that ever named two people were a debug line and TEAMKILL.
+---
+--- ALWAYS ON, like TEAMKILL and UNATTRIBUTED, because it is a record and not
+--- a diagnostic: turning Config.Debug off to quieten a busy console must not
+--- take the answer to "who killed me" with it. One line per kill, and the
+--- 'KILL:' prefix keeps it apart from TEAMKILL:, UNATTRIBUTED: and DEATH:.
+---
+--- EVERY NAME THROUGH ArenaLogText, and nothing a player chose ever reaches
+--- the format string itself.
+--- @param match table
+--- @param killer table -- the credited killer's roster row
+--- @param victim table -- the victim's roster row
+--- @param kill table -- { via, causeHash, killedFrom, killerTierWas, victimTierWas, tierCredited, spared, remaining }
+local function logKill(match, killer, victim, kill)
+    local ladder = ladderOf(match)
+    local outcome
+
+    if #ladder > 0 then
+        local height = #ladder
+        local gained
+        if kill.tierCredited == false then
+            gained = ('the killer stays on tier %d/%d -- this victim has already paid out their tiers')
+                :format(kill.killerTierWas or 0, height)
+        else
+            gained = ('the killer goes from tier %d to %d/%d%s'):format(kill.killerTierWas or 0,
+                earnedTier(killer, height), height, topped(killer, height) and ', LADDER TOPPED' or '')
+        end
+        local now = earnedTier(victim, height)
+        local lost
+        if kill.spared then
+            lost = ('the victim keeps tier %d/%d, spared by a gun kill'):format(kill.victimTierWas or 0, height)
+        elseif now == kill.victimTierWas then
+            lost = ('the victim stays on tier %d/%d, the bottom of the ladder'):format(now, height)
+        else
+            lost = ('the victim goes from tier %d to %d/%d'):format(kill.victimTierWas or 0, now, height)
+        end
+        local held = kill.killedFrom
+            and ('"%s"'):format(ArenaLogText(kill.killedFrom.label or kill.killedFrom.key)) or 'nothing known'
+        outcome = ('The killer was holding %s: %s; %s.'):format(held, gained, lost)
+    else
+        local fate
+        if not Arena.WinConditionSpendsLives(match.winCondition) then
+            fate = 'respawns'
+        elseif (kill.remaining or 0) > 0 then
+            fate = ('has %d li%s left'):format(kill.remaining, kill.remaining == 1 and 'fe' or 'ves')
+        else
+            fate = 'is eliminated'
+        end
+        outcome = ('The killer is on %d kill(s); the victim %s.'):format(Arena.ToInt(killer.kills) or 0, fate)
+    end
+
+    if Arena.ModeUsesTeams(match.modeKey) and Arena.IsKey(killer.team) and killer.team == victim.team then
+        outcome = outcome .. ' They are team-mates: friendly fire is on.'
+    end
+
+    ArenaLog(KILL_LINE,
+        ArenaLogText(killer.name or ArenaPlayerName(killer.src)), tostring(killer.src),
+        ArenaLogText(killer.citizenid, 16),
+        ArenaLogText(victim.name or ArenaPlayerName(victim.src)), tostring(victim.src),
+        ArenaLogText(victim.citizenid, 16),
+        tostring(match.id), ArenaLogText(match.modeKey, 24), kill.via, reportedWeapon(kill.causeHash), outcome)
+end
+
 --- One player died. Scores it, and spends a life -- eliminating them when
 --- they have none left -- in every mode EXCEPT a ladder, where a death costs
 --- a tier instead and nobody is ever eliminated.
@@ -2740,12 +2832,14 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- already extends to a dying client's own claim, and no stronger.
     local claimed = Arena.ToInt(killerSrc)
     local claimedRoster = claimed ~= nil and claimed ~= id and match.players[claimed] ~= nil
+    local byWitness = false
     if not killer and namedAFighter ~= true and not claimedRoster then
         local witness = damagerOf(match, id)
         if witness then
             local seen, sawAFighter = resolveKiller(match, player, witness)
             if seen then
                 killer, namedAFighter = seen, sawAFighter
+                byWitness = true
                 ArenaDebug('kill credited from the server\'s own record on match %s: %s reported '
                     .. 'nobody, and the last hit this server watched land on them was %s. %s',
                     tostring(match.id), tostring(id), tostring(witness), unattributedReason(why))
@@ -2785,8 +2879,13 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     -- of the rule below: nothing was positively seen, so nothing is spared.
     local ladder = ladderOf(match)
     local killedWithAGun = false
+    -- WHERE BOTH STOOD BEFORE THIS DEATH MOVED ANYTHING, for the KILL line.
+    local killerTierWas = (playingLadder and killer ~= nil) and earnedTier(killer, #ladder) or nil
+    local victimTierWas = playingLadder and earnedTier(player, #ladder) or nil
+    local killedFrom, tierCredited = nil, nil
     if playingLadder and killer ~= nil then
         local rung = ladder[Arena.ClampInt(killer.tier, 1, #ladder) or 1]
+        killedFrom = rung
         killedWithAGun = rung ~= nil and Arena.IsMeleeWeapon(rung) ~= true
 
         -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
@@ -2832,7 +2931,8 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
         killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
 
         if playingLadder then
-            if creditsTier(match, killer, player) then
+            tierCredited = creditsTier(match, killer, player)
+            if tierCredited then
                 killer.ladderKills = (Arena.ToInt(killer.ladderKills) or 0) + 1
                 settleTier(match, killer, 'notify.gungame_promoted')
                 payKillReward(match, killer)
@@ -2928,12 +3028,15 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
             local usedLabel = weapon and weapon.label
                 or (Arena.IsUnarmedHash(causeHash) and 'fists')
                 or ('cause hash ' .. tostring(causeHash))
-            ArenaLog('TEAMKILL: %s was killed by their own team-mate %s with %s in match %s. '
+            -- NAMES THROUGH THE SCRUBBER, in quotes, like the KILL line: a name
+            -- is written by the player wearing it, and printed raw it could
+            -- start a forged console line of its own.
+            ArenaLog('TEAMKILL: "%s" was killed by their own team-mate "%s" with %s in match %s. '
                 .. 'Friendly fire is off, so the kill was credited to nobody -- but the damage '
                 .. 'landed, which for melee is a hole this server cannot close: the engine does '
                 .. 'not raise weaponDamageEvent for it, so there is nothing to cancel.',
-                tostring(player.name or id), tostring(accused.name or killerSrc),
-                usedLabel,
+                ArenaLogText(player.name or id), ArenaLogText(accused.name or killerSrc),
+                ArenaLogText(usedLabel),
                 tostring(match.id))
         end
     end
@@ -3150,6 +3253,27 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     else
         remaining = (Arena.ToInt(player.lives) or 1) - 1
         player.lives = remaining
+    end
+
+    -- THE KILL LINE, once everything it reports has been decided.
+    --
+    -- INSIDE A pcall, AND THAT IS NOT OPTIONAL. This runs before the respawn
+    -- is scheduled below, and nothing above this function catches a throw: a
+    -- fault in building one log line would leave the victim dead for the rest
+    -- of the round. Measured, when an earlier draft called a helper that did
+    -- not exist. A record is worth having; it is not worth a player.
+    if killer then
+        local via = (not byWitness) and "named by the victim's own client"
+            or (serverSaw == true and "credited from the server's own record of the last hit (dead sweep, no report)")
+            or "credited from the server's own record of the last hit (the client named nobody)"
+        local ok, err = pcall(logKill, match, killer, player, {
+            via = via, causeHash = causeHash, killedFrom = killedFrom,
+            killerTierWas = killerTierWas, victimTierWas = victimTierWas,
+            tierCredited = tierCredited, spared = spared, remaining = remaining,
+        })
+        if not ok then
+            ArenaLog('KILL line for match %s could not be written: %s', tostring(match.id), tostring(err))
+        end
     end
 
     if remaining > 0 then

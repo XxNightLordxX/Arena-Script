@@ -32,6 +32,43 @@ function ArenaDebug(fmt, ...)
     print(('[crimson_arena] [debug] %s'):format(compose(fmt, ...)))
 end
 
+--- Text somebody ELSE chose -- a player's name above all -- made safe to put
+--- inside a console line: one line, bounded, and unable to pass for the
+--- server.
+---
+--- A NAME IS WRITTEN BY THE PLAYER WEARING IT. Printed raw, a '\n' in one
+--- starts a fresh line that carries no attribution and reads as this
+--- resource's own ("[crimson_arena] match ended ..."); an ESC is taken by an
+--- ANSI console as a command to clear it or retitle it; FiveM's own '^1'
+--- colour codes repaint whatever follows; and a '"' closes the quotes the
+--- name is printed inside. So every control character goes -- the C0 range
+--- and DEL, the C1 range as UTF-8 writes it, and the Unicode line and
+--- paragraph separators -- along with every '^', and a '"' becomes a "'".
+---
+--- CUT ON A CHARACTER, NOT A BYTE. A name cut through the middle of a
+--- multi-byte character leaves a broken sequence at the end of the line;
+--- the part-character is dropped with the cut.
+--- @param text any
+--- @param cap integer|nil -- longest it may be, in bytes; 48 by default
+--- @return string
+function ArenaLogText(text, cap)
+    if text == nil then return '?' end
+    local out = tostring(text)
+
+    local limit = Arena.ToInt(cap) or 48
+    if limit < 1 then limit = 48 end
+    if #out > limit then
+        out = out:sub(1, limit):gsub('[\192-\255][\128-\191]*$', '') .. '...'
+    end
+
+    out = out:gsub('\194[\128-\159]', ' ')
+    out = out:gsub('\226\128[\168\169]', ' ')
+    out = out:gsub('[%z\1-\31\127]', ' ')
+    out = out:gsub('%^', '')
+    out = out:gsub('"', "'")
+    return out
+end
+
 function ArenaNotify(src, description, notifyType, toast)
     local target = tonumber(src)
     if not target or target <= 0 then

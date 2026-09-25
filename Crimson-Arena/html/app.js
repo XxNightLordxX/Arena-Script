@@ -4595,6 +4595,21 @@
             text = 'Most kills when the clock stops';
             var tally = hudTeamScores(hud);
             if (tally !== '') text += '  -  ' + tally + hudDepartedNote(hud);
+        } else if (rule === 'last_standing' && hud.timeLeft !== null && hud.timeLeft !== undefined) {
+            /* AND A CLOCK DECIDES last_standing TOO, on the same side totals,
+               whenever it runs out with two sides still in it -- the shipped
+               default, with a 600-second clock. The server sent the totals
+               under every rule and this line drew them under none of this
+               one, so a team round the clock gave to the side with the
+               leaver's banked kills was decided on a number nobody saw.
+
+               WORDED AS WHAT HAPPENS AT THE CLOCK, not as a target: staying
+               alive still wins it first. No clock (timeLeft absent) and no
+               sides (a free-for-all) draw nothing, as before. */
+            var atTheClock = hudTeamScores(hud);
+            if (atTheClock !== '') {
+                text = 'Most kills if the clock runs out  -  ' + atTheClock + hudDepartedNote(hud);
+            }
         }
 
         node.textContent = text;
@@ -5660,6 +5675,27 @@
                 letterSpacing: '0.08em',
                 textTransform: 'uppercase',
                 color: teamColor(winningTeam)
+            }));
+        }
+
+        /* AND THE SIDE TOTALS IT WAS DECIDED ON, drawn the way the overlay
+           draws them. The rows below list who is still here, so a round the
+           clock gave to a side on a leaver's banked kills read "Crimson takes
+           it" over rows where crimson had none -- the overlay had shown 3-2
+           all round and the card showed nothing that explained it. The
+           winning side goes first, in the slot the overlay gives the
+           reader's own: a card is read as a result, and a watcher has no
+           side. The server sends this only for a team round with two or
+           more sides still in it. */
+        var sideTally = hudTeamScores({
+            teamScores: results.teamScores,
+            team: keyOr(results.winningTeam, null)
+        });
+        if (sideTally !== '') {
+            root.appendChild(styled(makeEl('div', null, sideTally + hudDepartedNote(results)), {
+                marginTop: '0.2rem',
+                textAlign: 'center',
+                color: 'var(--text-muted)'
             }));
         }
 

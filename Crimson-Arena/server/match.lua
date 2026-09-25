@@ -655,6 +655,48 @@ local function teamKills(match)
     return scores
 end
 
+--- The side totals as a SCREEN shows them, and the kills in them that no row
+--- on the board can account for.
+---
+--- ONLY SIDES STILL IN THE ROUND, by the same rule decideOnKills applies when
+--- the clock stops. With three or more teams a side can leave entirely while
+--- the round goes on, and its banked kills kept it at the top of the tally --
+--- "Crimson 3" over the people still fighting -- when the clock was always
+--- going to give the round to somebody else.
+---
+--- ONE FUNCTION FOR THE OVERLAY AND THE RESULTS CARD. The overlay drew this
+--- tally all round and the card drew nothing, so a round the clock decided
+--- on a leaver's banked kills ended on a number the card never showed: its
+--- rows gave the losing side more kills than the winning one. Both read it
+--- here, so the two cannot disagree about which sides are on it.
+--- @param match table
+--- @return table<string, integer> scores -- per side, sides still in only
+--- @return table<string, integer>|nil banked -- departed kills on those sides; nil when there are none
+local function standingTally(match)
+    local standing = {}
+    for _, player in pairs(match.players) do
+        if Arena.IsKey(player.team) and stillIn(player) then standing[player.team] = true end
+    end
+
+    local scores = teamKills(match)
+    for team in pairs(scores) do
+        if not standing[team] then scores[team] = nil end
+    end
+
+    -- A side no longer on the tally has nothing to explain.
+    local banked, any = {}, false
+    for team, kills in pairs(match.departedKills or {}) do
+        local count = math.max(0, Arena.ToInt(kills) or 0)
+        if Arena.IsKey(team) and count > 0 and standing[team] then
+            banked[team] = count
+            any = true
+        end
+    end
+    if not any then banked = nil end
+
+    return scores, banked
+end
+
 --- EVERY member of a side, alive or not.
 ---
 --- Arena.ComputePayouts splits the pot evenly across the winners it is
@@ -1111,15 +1153,10 @@ local function pushHud(match)
     end
 
     -- THE SIDES STILL IN THE ROUND, by the same rule decideOnKills applies
-    -- when the clock stops. With three or more teams a side can leave
-    -- entirely while the round goes on, and its banked kills kept it at the
-    -- top of everybody's tally -- "Crimson 3" over the people still fighting
-    -- -- when the clock was always going to give the round to somebody else.
+    -- when the clock stops -- read through standingTally, which the results
+    -- card reads too, so the overlay and the card cannot disagree about it.
     -- Declared out here because the table below calls it while it is built.
-    local standingSides = {}
-    for _, player in pairs(match.players) do
-        if Arena.IsKey(player.team) and stillIn(player) then standingSides[player.team] = true end
-    end
+    local sideScores, sideBanked = standingTally(match)
 
     local common = {
         remaining = remaining,
@@ -1168,11 +1205,7 @@ local function pushHud(match)
             -- with nobody left in it has already ended before this is sent,
             -- and a side that reached the limit before it left has ended
             -- the round on that same sweep.
-            local scores = teamKills(match)
-            for team in pairs(scores) do
-                if not standingSides[team] then scores[team] = nil end
-            end
-            return scores
+            return sideScores
         end)(),
         -- THE KILLS NOBODY ON THE BOARD CAN ACCOUNT FOR.
         --
@@ -1196,17 +1229,7 @@ local function pushHud(match)
         departedScores = (function()
             if #ladderOf(match) > 0 then return nil end
             if not Arena.ModeUsesTeams(match.modeKey) then return nil end
-            local banked, any = {}, false
-            for team, kills in pairs(match.departedKills or {}) do
-                local count = math.max(0, Arena.ToInt(kills) or 0)
-                -- A side no longer on the tally has nothing to explain.
-                if Arena.IsKey(team) and count > 0 and standingSides[team] then
-                    banked[team] = count
-                    any = true
-                end
-            end
-            if not any then return nil end
-            return banked
+            return sideBanked
         end)(),
     }
 
@@ -2539,8 +2562,12 @@ function ArenaMatch.Start(matchId)
     -- asked yet". DO NOT write `false`.
     match.blade = nil
 
-    -- Last round's leavers must not score for this one.
+    -- Last round's leavers must not score for this one, nor be recorded
+    -- under its verdict: ArenaLobby.Leave keeps a row that could not count
+    -- yet for RecordMatch to decide, and the verdict it waits for is the
+    -- round they walked out of, not this one.
     match.departedKills = nil
+    match.departedRows = nil
 
     match.ladderSpread = #players
     match.spawnCursor = #players
@@ -3580,6 +3607,31 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         if first ~= second then return first < second end
         return a.id < b.id
     end)
+
+    -- THE SIDE TOTALS THE ROUND WAS DECIDED ON, which the card never carried.
+    --
+    -- A team round on the clock is decided on each side's kills INCLUDING
+    -- those banked from fighters who walked out, and the board under the
+    -- card lists only who is still here. MEASURED: a crimson fighter took
+    -- three kills and disconnected, the clock gave crimson the round 3-2,
+    -- and every card read "Crimson takes it" over rows where ash had two
+    -- kills and crimson none. The overlay had shown 3-2 all round; the card
+    -- and the Discord log showed nothing that explained it.
+    --
+    -- BUILT HERE, ONCE, before anybody is sent home, off the same function
+    -- the overlay reads -- so it keeps the overlay's rule that a side with
+    -- nobody left in the round is off the tally.
+    --
+    -- ONLY WHEN TWO OR MORE SIDES ARE STILL IN IT. A round ended with one
+    -- side standing was won by staying alive, not on a count, and a tally of
+    -- one side compares nothing -- "Ash 0" under "Ash takes it" would read as
+    -- the card being broken. A ladder has no tally at all.
+    local tally, banked = nil, nil
+    if teamMode and #ladderOf(match) == 0 then
+        local scores, departed = standingTally(match)
+        if Arena.Count(scores) >= 2 then tally, banked = scores, departed end
+    end
+
     local returnCoords = toPoint(Config.Lobby.returnCoords)
     local names = {}
 
@@ -3595,11 +3647,23 @@ function ArenaMatch.End(matchId, reasonKey, winners)
             reason = locale(endReason),
             won = won[player.src] == true,
             winningTeam = teamMode and wonSide or nil,
-            placement = player.placement,
+            -- NO PLACING ON A ROUND NOBODY WON. The deciders refuse to break
+            -- a tie at the top -- two players level on kills, or on tier and
+            -- ladder kills, is a draw and the pot goes back -- but the
+            -- placement still numbered them 1 and 2 on deaths and then on
+            -- server id. MEASURED: two fighters on exactly two kills and one
+            -- death each were told "Placed #1" and "Placed #2" under "Nobody
+            -- earned it", so the one with the lower id read as having had the
+            -- win taken off them. The order still ranks the board beneath.
+            placement = #winners > 0 and player.placement or nil,
             kills = math.max(0, Arena.ToInt(player.kills) or 0),
             deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
             earnings = earned[player.src] or 0,
             scoreboard = board,
+            -- The side totals and the kills banked in them, built above.
+            -- Absent outside a team round, and where one side was left.
+            teamScores = tally,
+            departedScores = banked,
 
             -- AND WHETHER IT COUNTED TOWARDS THE LADDER.
             --
@@ -3652,6 +3716,10 @@ function ArenaMatch.End(matchId, reasonKey, winners)
                 winningTeam = teamMode and wonSide or nil,
                 earnings = earned[src] or 0,
                 scoreboard = board,
+                -- The same tally the fighters' cards carry: a watcher is sent
+                -- this card and nothing else at the end of a round.
+                teamScores = tally,
+                departedScores = banked,
             }
             sendExitArena(src, { returnCoords = returnCoords, results = results })
             TriggerClientEvent('crimson_arena:client:results', src, results)
@@ -3754,12 +3822,41 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         for _, row in ipairs(board) do
             lines[#lines + 1] = ('%s -- %d kill(s), %d death(s)'):format(row.name, row.kills, row.deaths)
         end
-        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), locale(endReason), {
+        local fields = {
             { name = 'Arena', value = tostring(match.arenaKey) },
             { name = 'Mode', value = tostring(match.modeKey) },
             { name = 'Winners', value = #names > 0 and table.concat(names, ', ') or 'none (draw)' },
-            { name = 'Scoreboard', value = table.concat(lines, '\n') },
-        })
+        }
+
+        -- AND THE SIDE TOTALS, for the same reason the card carries them: the
+        -- log read "Winners: Fighter 4" over a scoreboard where Fighter 4 had
+        -- no kills, and never named a side or the count that decided it.
+        --
+        -- ONLY WHEN THERE IS A TALLY, and so never with an empty value.
+        -- Discord refuses an embed with an empty field and the refusal is
+        -- only logged under debug, so a blank line here would silently stop
+        -- every results post, not just this one's.
+        if tally then
+            local sides, left = {}, 0
+            for team in pairs(tally) do sides[#sides + 1] = team end
+            table.sort(sides, function(a, b)
+                if tally[a] ~= tally[b] then return tally[a] > tally[b] end
+                return a < b
+            end)
+            for index, team in ipairs(sides) do
+                local side = Arena.GetTeamByKey(team)
+                sides[index] = ('%s %d'):format((side and side.label) or team, tally[team])
+            end
+            for _, kills in pairs(banked or {}) do left = left + kills end
+            fields[#fields + 1] = {
+                name = 'Teams',
+                value = table.concat(sides, ', ')
+                    .. (left > 0 and (' (incl. %d from fighters who left)'):format(left) or ''),
+            }
+        end
+
+        fields[#fields + 1] = { name = 'Scoreboard', value = table.concat(lines, '\n') }
+        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), locale(endReason), fields)
     end
 
     ArenaDispatch.ReleaseBucket(match.id)

@@ -1498,9 +1498,9 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
     -- way to walk out of a round you are losing with no defeat on the board.
     --
     -- AND ONLY IF THE ROUND WOULD HAVE COUNTED. This is the one row that does
-    -- not go through ArenaStats.RecordMatch -- the leaver is off the roster
-    -- before the round ends, so RecordMatch will never see them -- and it went
-    -- straight past Config.Leaderboard's gate.
+    -- not come off the roster in ArenaStats.RecordMatch -- the leaver is off
+    -- the roster before the round ends, so RecordMatch never sees them there
+    -- -- and it went straight past Config.Leaderboard's gate.
     --
     -- What it cost: two accounts, a four-second round, and the farmer presses
     -- Leave before it settles. Every round is refused by minSeconds, the
@@ -1514,17 +1514,39 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
         or type(ArenaStats.WouldRank) ~= 'function'
         or ArenaStats.WouldRank(match) ~= false
 
-    if liveRound and wouldRank and not (dropped and wasFighting and not ejected)
+    if liveRound and not (dropped and wasFighting and not ejected)
         and type(ArenaStats) == 'table' and type(ArenaStats.Record) == 'function'
     then
-        ArenaStats.Record({
+        local row = {
             citizenid = player.citizenid,
             name = player.name,
             won = false,
             kills = player.kills,
             deaths = player.deaths,
             earnings = 0,
-        })
+        }
+
+        -- AND "NOT YET" IS NOT "NEVER". The minSeconds rule reads how long
+        -- the round has run so far, so asked in its first thirty seconds --
+        -- or in the frozen countdown, where it has not run at all -- it
+        -- always says no, while the same round asked at its end says yes.
+        -- MEASURED: a fighter who took a kill and a death and pressed Leave
+        -- at 0s had no row at all, while the two who stayed were recorded
+        -- when the round counted; the same Leave at 120s wrote their loss.
+        -- Quitting early in a round you were losing cost nothing.
+        --
+        -- So a row this round cannot count YET is kept on the match rather
+        -- than dropped, and ArenaStats.RecordMatch writes it under the
+        -- round's own verdict when it ends: a loss if the round counts,
+        -- nothing if it does not -- which keeps the four-second farm above
+        -- shut. A row the round already counts is written now, as it always
+        -- was, so nothing that reached the board before goes missing.
+        if wouldRank then
+            ArenaStats.Record(row)
+        else
+            match.departedRows = match.departedRows or {}
+            match.departedRows[#match.departedRows + 1] = row
+        end
     end
 
     -- THEIR KILLS STAY WITH THEIR SIDE.

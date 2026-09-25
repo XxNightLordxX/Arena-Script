@@ -1272,6 +1272,169 @@ t.test('and the drop still costs them the stake, which is the money rule', funct
 end)
 
 -- ======================================================================
+-- A QUIT IN THE FIRST THIRTY SECONDS OF A ROUND THAT COUNTS
+-- ======================================================================
+--
+-- The gate above asks Config.Leaderboard whether the round counts AT THE
+-- MOMENT OF THE LEAVE, and minSeconds reads how long it has run so far -- so
+-- in its first thirty seconds, or in the frozen countdown, the answer is
+-- always no, while the same round asked at its end says yes. A fighter who
+-- took a kill and a death and pressed Leave at 0s had no row at all; the two
+-- who stayed were recorded when the round counted.
+--
+-- Run through the REAL server/stats.lua and a round started the way a lobby
+-- starts one, because the defect is the two halves -- Leave's early answer
+-- and RecordMatch's final one -- disagreeing about one round.
+
+--- The real stats layer in place of this file's stub, every Record captured.
+local function withRealStats(server)
+    Sandbox.loadInto('../Crimson-Arena/server/stats.lua', server.env)
+    local rows = {}
+    local real = server.env.ArenaStats.Record
+    server.env.ArenaStats.Record = function(entry)
+        rows[#rows + 1] = entry
+        return real(entry)
+    end
+    return rows
+end
+
+--- A three-fighter free-for-all, readied and started the way a lobby is.
+--- With `freeze` the round is left in its frozen countdown, players placed.
+local function countedRound(freeze)
+    local server = newArena({ [1] = 5000, [2] = 5000, [3] = 5000 }, function(config)
+        config.Match.lives = 2
+        config.Match.respawnDelaySeconds = 0
+        config.Match.lobbyCountdownSeconds = freeze and 1 or 0
+        config.Match.startCountdownSeconds = freeze and 5 or 0
+        config.Betting.enabled = false
+    end)
+    local rows = withRealStats(server)
+    local matchId = openLobby(server, 0, { 1, 2, 3 })
+    for _, id in ipairs({ 1, 2, 3 }) do server.fire('setReady', id, { ready = true }) end
+    server.step()
+    local match = server.lobby.Get(matchId)
+    t.equals(match.state, freeze and 'countdown' or 'live', 'the fixture round is not where the test needs it')
+    return server, match, rows
+end
+
+--- Fighter 2 is knocked out by fighter 1, and the round ends on the sweep.
+--- `ran` is how long the round has lasted by then, in seconds.
+local function finish(server, match, ran)
+    match.startsAt = os.time() - ran
+    for _ = 1, 2 do
+        if match.players[2] then match.players[2].alive = true end
+        server.match.OnDeath(2, 1)
+    end
+    server.step()
+    server.step()
+    t.equals(match.state, 'ended', 'the fixture round never ended')
+end
+
+--- The rows written for one character, in order.
+local function rowsFor(rows, citizenid)
+    local out = {}
+    for _, row in ipairs(rows) do
+        if row.citizenid == citizenid then out[#out + 1] = row end
+    end
+    return out
+end
+
+t.test('THE KILL TRACKER: a quit in the first thirty seconds of a round that counts is a loss', function()
+    local server, match, rows = countedRound()
+    server.match.OnDeath(2, 3); match.players[2].alive = true      -- 3 takes a kill
+    server.match.OnDeath(3, 1); match.players[3].alive = true      -- and dies once
+    t.isFalse(server.env.ArenaStats.WouldRank(match), 'the round already counts, so this is not the early case')
+
+    server.fire('leaveMatch', 3, {})
+    finish(server, match, 120)
+
+    t.isTrue(match.ranked, 'the round did not count, so there is nothing for the leaver to lose')
+    local mine = rowsFor(rows, 'CID003')
+    t.equals(#mine, 1, ('the early leaver was recorded %d time(s)'):format(#mine))
+    t.isFalse(mine[1] and mine[1].won, 'the leaver was recorded as a win')
+    t.equals(mine[1] and mine[1].kills, 1, 'the kill they took before quitting was not recorded')
+    t.equals(mine[1] and mine[1].deaths, 1, 'the death they took before quitting was not recorded')
+    t.equals(mine[1] and mine[1].earnings, 0, 'a leaver was credited with earnings')
+end)
+
+t.test('and a round that ends before it counts still writes nobody, the leaver included', function()
+    -- THE HOLE above, kept shut: a four-second round, the farmer walks out
+    -- of it, and the board refuses the whole round.
+    local server, match, rows = countedRound()
+    server.match.OnDeath(2, 3); match.players[2].alive = true
+    server.fire('leaveMatch', 3, {})
+    finish(server, match, 4)
+
+    t.isFalse(match.ranked, 'a four-second round counted')
+    t.equals(#rows, 0, ('a round the board refused wrote %d row(s)'):format(#rows))
+end)
+
+t.test('and a quit once the round counts is written once, not again at the end', function()
+    local server, match, rows = countedRound()
+    server.match.OnDeath(2, 3); match.players[2].alive = true
+    match.startsAt = os.time() - 120
+
+    server.fire('leaveMatch', 3, {})
+    t.equals(#rowsFor(rows, 'CID003'), 1, 'a quit from a round that already counts was not written at once')
+
+    finish(server, match, 120)
+    t.equals(#rowsFor(rows, 'CID003'), 1, 'the leaver was booked twice across the round')
+end)
+
+t.test('and a quit in the frozen countdown of a round that counts is one too', function()
+    -- The countdown is a round being fought -- the fighters are in the
+    -- arena and a drop there forfeits the stake -- and the clock rule reads
+    -- it as not started at all.
+    local server, match, rows = countedRound(true)
+    t.isTrue(match.placed == true, 'nobody was placed, so this is not the frozen countdown')
+
+    server.fire('leaveMatch', 3, {})
+    server.step()
+    t.equals(match.state, 'live', 'the round never went live without them')
+    finish(server, match, 120)
+
+    t.isTrue(match.ranked, 'the round did not count')
+    local mine = rowsFor(rows, 'CID003')
+    t.equals(#mine, 1, ('a quit in the frozen countdown was recorded %d time(s)'):format(#mine))
+    t.isFalse(mine[1] and mine[1].won, 'the leaver was recorded as a win')
+end)
+
+t.test('CONTROL: an early CRASH is still spared, however the round ends', function()
+    -- The crash rule is not the minSeconds rule and must not be folded into
+    -- it: a dropped connection while still fighting wears no loss at any
+    -- minute, so it is not kept for the end either.
+    local server, match, rows = countedRound()
+    server.match.OnDeath(2, 3); match.players[2].alive = true
+    server.drop(3)
+    finish(server, match, 120)
+
+    t.isTrue(match.ranked, 'the round did not count, so this proves nothing')
+    t.equals(#rowsFor(rows, 'CID003'), 0, 'a fighter whose game crashed was given a loss at the end')
+    t.equals(#rows, 2, 'the two who stayed were not both recorded')
+end)
+
+t.test('and a row kept from before the round was placed is not written under it', function()
+    -- Start clears it with the banked kills: last round's leavers must not
+    -- be recorded under this round's verdict.
+    local server = newArena({ [1] = 5000, [2] = 5000 }, function(config)
+        config.Match.lives = 2
+        config.Match.lobbyCountdownSeconds = 0
+        config.Match.startCountdownSeconds = 0
+        config.Betting.enabled = false
+    end)
+    local rows = withRealStats(server)
+    local matchId = openLobby(server, 0, { 1, 2 })
+    local match = server.lobby.Get(matchId)
+    match.departedRows = { { citizenid = 'CID009', name = 'Gone', won = false, kills = 5, deaths = 0, earnings = 0 } }
+    for _, id in ipairs({ 1, 2 }) do server.fire('setReady', id, { ready = true }) end
+    server.step()
+    finish(server, match, 120)
+
+    t.isTrue(match.ranked, 'the round did not count, so this proves nothing')
+    t.equals(#rowsFor(rows, 'CID009'), 0, 'a row from before the round was written under its verdict')
+end)
+
+-- ======================================================================
 -- AND THE PEOPLE STILL FIGHTING ARE TOLD
 -- ======================================================================
 --

@@ -951,7 +951,7 @@ setting to make it try.
 
 11. **The end.** Last player or team standing, the score limit, or the clock running out. Two players who die in the same tick are both counted before anything is decided, so a double knockout is a draw rather than a race between two corpses.
 
-12. **Payout.** The pot is settled, the leaderboard is written, side-bets are judged, escrow is cleared, and everyone is teleported to `Config.Lobby.returnCoords` with their own weapons, armour and health back and a results board showing the scoreboard, their placement and what they earned. Any ammo items the arena lent them are taken back on the way out, before anything else about that player is torn down.
+12. **Payout.** The pot is settled, the leaderboard is written, side-bets are judged, escrow is cleared, and everyone is teleported to `Config.Lobby.returnCoords` with their own weapons, armour and health back and a results board showing the scoreboard, their placement (none on a draw, which nobody won), each side's kill total when a team round ends with two or more sides still in it, and what they earned. Any ammo items the arena lent them are taken back on the way out, before anything else about that player is torn down.
 
 ---
 

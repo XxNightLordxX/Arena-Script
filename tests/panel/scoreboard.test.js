@@ -573,7 +573,9 @@ test('CONTROL: last_standing and a ladder draw no goal line at all', () => {
     /* last_standing is already expressed by "Remaining 3 / 8" above it, and
        the server sends nothing for a ladder because neither counting rule
        can fire in one. A line invented for either would be a target that
-       ends nothing. */
+       ends nothing. THIS IS last_standing WITH NO CLOCK AND NO SIDES: a
+       team round with a clock is decided on the side totals when it runs
+       out, and the test after this one draws those. */
     const standing = panelWith(false);
     standing.send('hud', { visible: true, hud: {
         remaining: 3, total: 8, kills: 0, deaths: 0, winCondition: 'last_standing',
@@ -588,6 +590,60 @@ test('CONTROL: last_standing and a ladder draw no goal line at all', () => {
     } });
     assert.strictEqual(ladder.node('hud-goal').textContent, '',
         'a ladder round invented a goal line: ' + ladder.node('hud-goal').textContent);
+});
+
+test('THE KILL TRACKER: a team last_standing round with a clock shows what the clock decides on', () => {
+    /* The shipped default is last_standing with a 600-second clock, and
+       when it runs out with both sides still in, the round goes to the side
+       with more kills -- a leaver's banked kills included. The server sent
+       those totals all round and this line drew none of them, so the round
+       was decided on a number nobody saw. */
+    const panel = teamPanel();
+    panel.send('hud', { visible: true, hud: {
+        remaining: 3, total: 3, kills: 1, deaths: 2, timeLeft: 300,
+        winCondition: 'last_standing',
+        team: 'ash', teamScores: { crimson: 3, ash: 2 }, departedScores: { crimson: 3 },
+    } });
+
+    const said = panel.node('hud-goal').textContent;
+    assert.ok(/clock runs out/.test(said), 'the line does not say it is the clock that decides: ' + said);
+    assert.ok(/Ash 2/.test(said) && /Crimson 3/.test(said), 'the side totals are missing: ' + said);
+    assert.ok(/incl\. 3 from fighters who left/.test(said), 'the banked kills are unexplained: ' + said);
+    assert.strictEqual(shown(panel, 'hud-goal'), true, 'the line stayed hidden');
+
+    // THE CONTROL: the same round with no clock has nothing to decide it on
+    // but who is left standing, and draws nothing.
+    const noClock = teamPanel();
+    noClock.send('hud', { visible: true, hud: {
+        remaining: 3, total: 3, kills: 1, deaths: 2, winCondition: 'last_standing',
+        team: 'ash', teamScores: { crimson: 3, ash: 2 },
+    } });
+    assert.strictEqual(noClock.node('hud-goal').textContent, '',
+        'a round with no clock was told the clock decides it: ' + noClock.node('hud-goal').textContent);
+});
+
+test('THE KILL TRACKER: the results card carries the side totals, the winner first', () => {
+    /* MEASURED: the clock gave crimson the round 3-2 on a leaver's banked
+       kills, and the card read "Crimson takes it" over rows where crimson
+       had none. The card now says what the round was decided on, the way
+       the overlay said it. Crimson wins HERE ON PURPOSE: 'ash' sorts first
+       alphabetically, so only the rule can put the winner first. */
+    const panel = teamPanel();
+    panel.send('results', { results: {
+        won: false, winningTeam: 'crimson', reason: 'Match over. Clock ran out.', kills: 1, deaths: 2,
+        teamScores: { ash: 2, crimson: 3 }, departedScores: { crimson: 3 },
+    } });
+
+    const text = panel.text('arena-results');
+    assert.ok(/Crimson 3\s+Ash 2/.test(text), 'the side totals are missing, or the winner is not first: ' + text);
+    assert.ok(/incl\. 3 from fighters who left/.test(text), 'the banked kills are unexplained: ' + text);
+
+    // THE CONTROL: a card with no totals -- a free-for-all, or a side left
+    // standing alone -- draws no tally and no clause.
+    const plain = teamPanel();
+    plain.send('results', { results: { won: true, winningTeam: 'crimson', kills: 2, deaths: 0 } });
+    assert.ok(!/fighters who left/.test(plain.text('arena-results')) && !/Ash \d/.test(plain.text('arena-results')),
+        'a card with no totals invented some: ' + plain.text('arena-results'));
 });
 
 test('the goal line does not outlive the round it belongs to', () => {

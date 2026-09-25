@@ -303,10 +303,12 @@ end
 
 --- Would this match move anybody's ranking, asked from outside?
 ---
---- FOR THE ONE ROW THAT DOES NOT COME THROUGH RecordMatch. ArenaLobby.Leave
+--- FOR THE ONE ROW THAT DOES NOT COME OFF THE ROSTER. ArenaLobby.Leave
 --- records a fighter who walks out of a live round itself -- their row is
---- gone from the roster by the time the round ends, so RecordMatch will never
---- see them -- and that call went straight to Record, around the gate.
+--- gone from the roster by the time the round ends, so RecordMatch never sees
+--- them there -- and that call went straight to Record, around the gate. A
+--- "no" from here is kept on the match as `departedRows` rather than taken
+--- as final, and RecordMatch decides it with the rest of the round.
 ---
 --- What it cost: two accounts, a four-second round, and the farmer presses
 --- Leave before it settles. Every round is refused by minSeconds, the
@@ -426,6 +428,27 @@ function ArenaStats.RecordMatch(match)
             kills = player.kills,
             deaths = player.deaths,
             earnings = amount,
+        }) then
+            recorded = recorded + 1
+        end
+    end
+
+    -- AND THE FIGHTERS WHO WALKED OUT BEFORE THE ROUND COULD COUNT.
+    --
+    -- ArenaLobby.Leave keeps a leaver's row on the match when it asked too
+    -- early for the round to count yet -- see the note there -- and this is
+    -- where that row is decided: under THIS round's verdict, the same one
+    -- everybody who stayed was just judged by. Always a loss with nothing
+    -- earned, whichever side won: they did not finish it, which is exactly
+    -- the row Leave writes at once for a round that already counts.
+    for _, row in ipairs(match.departedRows or {}) do
+        if type(row) == 'table' and ArenaStats.Record({
+            citizenid = row.citizenid,
+            name = row.name,
+            won = false,
+            kills = row.kills,
+            deaths = row.deaths,
+            earnings = 0,
         }) then
             recorded = recorded + 1
         end

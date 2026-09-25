@@ -649,7 +649,7 @@ listed; the source documents them where they are.
 |---|---|
 | `ArenaStats.Record(entry)` | Folds one player's finished match into the totals. |
 | `ArenaStats.WouldRank(match)` | Whether this match would move anybody's ranking, for the one row ArenaLobby.Leave books itself. |
-| `ArenaStats.RecordMatch(match)` | Records every player of a finished match in one call. |
+| `ArenaStats.RecordMatch(match)` | Records every player of a finished match in one call, and every leaver ArenaLobby.Leave kept on it for this verdict. |
 | `ArenaStats.GetLeaderboard(cb)` | Hands the top rows to `cb`. |
 | `ArenaStats.Flush()` | Writes everything queued and empties the queue. |
 | `ArenaStats.EnsureSchema()` | Creates the table if it is not there. |

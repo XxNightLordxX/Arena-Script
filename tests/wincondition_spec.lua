@@ -1284,6 +1284,39 @@ t.test('and the board under the placement is in the same order as it', function(
     t.equals(order[1], 1, 'the top row of the board is not the player placed first')
 end)
 
+t.test('THE KILL TRACKER: a draw places nobody, so two level fighters are not told #1 and #2', function()
+    -- The clock refuses to break a tie at the top -- two players level on
+    -- kills is a draw and nobody is paid -- and the placement broke it
+    -- anyway, on deaths and then on server id. Fighters 1 and 2 end on
+    -- exactly two kills and one death each, and were told "Placed #1" and
+    -- "Placed #2" under "Nobody earned it".
+    local server = newServer(function(config) config.Match.lives = 3 end)
+    server.play(3)
+
+    server.kill(2, 1); server.revive(2)
+    server.kill(3, 1); server.revive(3)
+    server.kill(1, 2); server.revive(1)
+    server.kill(3, 2); server.revive(3)
+    server.settle(1)
+    t.isNil(server.endedWith(), 'the round ended before the clock, so this is not a draw on it')
+
+    server.expire()
+    server.settle(3)
+
+    t.equals(server.endedWith(), 'match.ended_draw', 'the fixture did not produce a draw')
+    local one, two = server.resultOf(1), server.resultOf(2)
+    t.isTrue(one ~= nil and two ~= nil, 'the two level fighters were sent no cards')
+    t.equals(one.kills .. '/' .. one.deaths, two.kills .. '/' .. two.deaths,
+        'the fixture did not leave the two fighters level')
+    for src = 1, 3 do
+        local card = server.resultOf(src)
+        t.isNil(card.placement,
+            ('fighter %d was placed #%s in a round nobody won'):format(src, tostring(card.placement)))
+        t.isTrue(card.kills ~= nil and card.deaths ~= nil,
+            ('and fighter %d lost the rest of their card with it'):format(src))
+    end
+end)
+
 -- ======================================================================
 -- THE HOST NAMES THE FINISH LINE
 -- ======================================================================
@@ -1872,6 +1905,145 @@ t.test('THE AUDIT: a side that has left entirely drops off everybody\'s tally', 
     s.expire()
     s.settle(3)
     t.equals(listed(s.winners()), '3,4', 'the clock gave the round to a side the tally did not show leading')
+end)
+
+--- A webhook body's field value, by field name, or nil where it has none.
+local function webhookField(body, name)
+    return tostring(body or ''):match('"name":"' .. name .. '","value":"(.-)"}')
+end
+
+t.test('THE KILL TRACKER: the card and the log carry the side totals the clock decided on', function()
+    -- The shipped default: last_standing with a clock. Crimson's fighter 3
+    -- takes three kills and disconnects; the clock gives crimson the round
+    -- 3-2 on those banked kills. Every card read "Crimson takes it" over
+    -- rows where ash had two kills and crimson none, and the Discord log
+    -- named Fighter 4 -- no kills -- as the winner and no side at all.
+    local s = newServer(function(config)
+        config.Match.lives = 9
+        config.Webhook.enabled = true
+        config.Webhook.url = 'https://discord.example/webhook'
+        config.Webhook.logResults = true
+    end)
+    local id = s.playSides(4, function(src) return src <= 2 and 'ash' or 'crimson' end,
+        { winCondition = 'last_standing' })
+    s.fire('spectateMatch', 5, { matchId = id })
+    s.kill(1, 3); s.revive(1)
+    s.kill(2, 3); s.revive(2)
+    s.kill(1, 3); s.revive(1)
+    s.kill(4, 1); s.revive(4)
+    s.kill(4, 2); s.revive(4)
+    s.drop(3)
+    s.settle(1)
+    t.isNil(s.endedWith(), 'the round ended before the clock, so the clock decided nothing')
+
+    s.expire()
+    s.settle(3)
+    t.equals(s.endedWith(), 'match.ended_time_up', 'the clock did not decide the round')
+    t.equals(listed(s.winners()), '4', 'the fixture did not give crimson the round')
+
+    for _, src in ipairs({ 1, 4, 5 }) do
+        local card = s.resultOf(src)
+        t.isTrue(card ~= nil, ('%d was sent no card'):format(src))
+        t.equals((card.teamScores or {}).crimson, 3, ('%d: the card does not carry crimson\'s 3'):format(src))
+        t.equals((card.teamScores or {}).ash, 2, ('%d: the card does not carry ash\'s 2'):format(src))
+        t.equals((card.departedScores or {}).crimson, 3,
+            ('%d: the card does not say the 3 came from a fighter who left'):format(src))
+    end
+
+    -- AND THE ROWS REALLY DO NOT ADD UP, which is the whole reason for it.
+    local crimsonRows = 0
+    for _, row in ipairs(s.resultOf(1).scoreboard or {}) do
+        if row.team == 'crimson' then crimsonRows = crimsonRows + row.kills end
+    end
+    t.equals(crimsonRows, 0, 'the fixture did not take the scorer off the board')
+
+    local body = s.posts()[1]
+    t.isNotNil(body, 'no webhook was posted, so this asserts nothing')
+    t.equals(webhookField(body, 'Teams'), 'Crimson 3, Ash 2 (incl. 3 from fighters who left)',
+        'the log does not carry the side totals: ' .. tostring(body))
+end)
+
+t.test('and a round nobody left logs the totals leader first, with no clause to explain', function()
+    -- The ordinary clocked round: nothing is banked, so the log carries the
+    -- two numbers and nothing else, and the side ahead is named first even
+    -- where its key sorts second.
+    local s = newServer(function(config)
+        config.Match.lives = 9
+        config.Webhook.enabled = true
+        config.Webhook.url = 'https://discord.example/webhook'
+        config.Webhook.logResults = true
+    end)
+    s.play(4, true)                          -- 1 and 3 crimson, 2 and 4 ash
+    s.kill(2, 1); s.revive(2)
+    s.expire()
+    s.settle(3)
+
+    t.equals(listed(s.winners()), '1,3', 'the fixture did not give crimson the round')
+    t.isNil(s.resultOf(2).departedScores, 'a round nobody left explained kills nobody banked')
+    t.equals(webhookField(s.posts()[1], 'Teams'), 'Crimson 1, Ash 0',
+        'the log does not name the leader first, or explains a gap that is not there')
+end)
+
+t.test('and a side that has left entirely is off the card\'s tally too', function()
+    -- The overlay's rule, kept: crimson leads 3-2-1 and both of its fighters
+    -- leave, and the clock gives the round to ash. "Crimson 3" at the top of
+    -- the card would be a lead nobody could have lost to.
+    local s = withThirdTeam()
+    s.playSides(6, threeWay)
+    s.kill(3, 1); s.revive(3)
+    s.kill(5, 1); s.revive(5)
+    s.kill(6, 2); s.revive(6)
+    s.kill(1, 3); s.revive(1)
+    s.kill(2, 3); s.revive(2)
+    s.kill(4, 5); s.revive(4)
+    s.drop(1)
+    s.drop(2)
+    s.expire()
+    s.settle(3)
+
+    t.equals(listed(s.winners()), '3,4', 'the fixture did not give ash the round')
+    local card = s.resultOf(3)
+    t.isNil((card.teamScores or {}).crimson, 'a side that had left entirely is on the card\'s tally')
+    t.equals((card.teamScores or {}).ash, 2, 'the sides still fighting lost their own numbers')
+    t.equals((card.teamScores or {}).bone, 1, 'the sides still fighting lost their own numbers')
+    t.isNil(card.departedScores, 'kills banked by a side that has gone are still being explained')
+end)
+
+t.test('CONTROL: no tally where there is nothing to compare, and never an empty log field', function()
+    -- A free-for-all has no sides; a round won by the last side standing was
+    -- not decided on a count, and a tally of one side compares nothing.
+    -- Discord refuses an embed with an empty field, so a blank Teams line
+    -- would stop every results post -- the stub here accepts anything, so
+    -- the body itself is asserted.
+    local function ended(teams, sideOf)
+        local s = newServer(function(config)
+            config.Webhook.enabled = true
+            config.Webhook.url = 'https://discord.example/webhook'
+            config.Webhook.logResults = true
+        end)
+        if sideOf then s.playSides(4, sideOf) else s.play(3, teams) end
+        return s
+    end
+
+    local ffa = ended(false)
+    ffa.kill(2, 1)
+    ffa.kill(3, 1)
+    ffa.settle(3)
+    t.isNil(ffa.resultOf(1).teamScores, 'a free-for-all card carries team totals')
+
+    local wiped = ended(true, function(src) return (src % 2 == 1) and 'crimson' or 'ash' end)
+    wiped.kill(2, 1)
+    wiped.kill(4, 1)
+    wiped.settle(3)
+    t.equals(wiped.endedWith(), 'match.ended_last_standing', 'the fixture did not wipe a side out')
+    t.isNil(wiped.resultOf(1).teamScores, 'a one-side finish carries a tally of one side')
+
+    for label, s in pairs({ ffa = ffa, wiped = wiped }) do
+        local body = s.posts()[1]
+        t.isNotNil(body, label .. ': no webhook was posted, so this asserts nothing')
+        t.isNil(webhookField(body, 'Teams'), label .. ': the log carries a Teams field: ' .. tostring(body))
+        t.isNil(tostring(body):find('"value":""', 1, true), label .. ': a field went out empty: ' .. tostring(body))
+    end
 end)
 
 

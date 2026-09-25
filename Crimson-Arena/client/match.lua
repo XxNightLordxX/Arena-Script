@@ -2254,6 +2254,17 @@ local arenaSurfaceZ = nil
 --- the `#arenaProps > 0` guard answers for it.
 local buildingArena = false
 
+--- How long an ENTRY waits for another build to finish or abandon itself.
+---
+--- UNDER THE START COUNTDOWN, AND THAT IS THE WHOLE CONSTRAINT. The server
+--- does not wait for a client to finish entering: it sends matchLive a few
+--- seconds after enterArena, and the boundary thread that starts then bleeds
+--- anybody it finds outside the fence. A fighter still standing at the lobby
+--- while this waits would be hurt for waiting. Three seconds is far longer
+--- than any build that can still be running needs -- a camera build abandons
+--- itself the frame the camera stops -- and well short of the countdown.
+local ENTRY_BUILD_WAIT_MS = 3000
+
 --- Which arena this client last built scenery for, and at what size.
 ---
 --- KEPT SEPARATELY FROM currentMatch on purpose. The scenery outlives the
@@ -2278,7 +2289,12 @@ local function modelFootprint(hash)
            (minimum.z or 0.0)
 end
 
-local function loadPropModel(models)
+--- @param models string|string[]
+--- @param stillWanted function|nil -- asked while waiting; false abandons the load
+--- @return integer|nil hash
+--- @return string|nil model
+--- @return boolean|nil abandoned -- true when stillWanted said no
+local function loadPropModel(models, stillWanted)
     if type(models) == 'string' then models = { models } end
 
     for _, model in ipairs(models or {}) do
@@ -2288,7 +2304,12 @@ local function loadPropModel(models)
             -- Bounded, because a model that will never arrive must not hold
             -- the entry handler open for the whole round.
             local deadline = GetGameTimer() + 10000
-            while not HasModelLoaded(hash) and GetGameTimer() < deadline do Wait(0) end
+            while not HasModelLoaded(hash) and GetGameTimer() < deadline do
+                -- THE ONE PLACE A BUILD WAITS, SO THE ONE PLACE IT CAN BE
+                -- CALLED OFF. See buildArenaProps' `stillWanted`.
+                if stillWanted and not stillWanted() then return nil, nil, true end
+                Wait(0)
+            end
             if HasModelLoaded(hash) then return hash, model end
         end
     end
@@ -2421,6 +2442,18 @@ repairArenaProps = function()
                     repaired = repaired + 1
                     if plan.kind == 'floor' then floors = floors + 1 end
                 end
+            elseif plan then
+                -- ASKED FOR AGAIN, NOT WAITED ON. The models are held for the
+                -- life of the arena, so this should never happen -- but if
+                -- anything ever did unload one, this used to skip the piece
+                -- on every pass forever, silently, leaving the hole. The
+                -- request is non-blocking: this runs inside the round's own
+                -- loop, which must never wait. The next pass, two seconds on,
+                -- finds the model back and lays the piece.
+                RequestModel(plan.hash)
+                ArenaLogOnce('repair-model-unloaded',
+                    'arena scenery: a missing piece could not be put back straight away because its '
+                    .. 'model had been unloaded; it has been requested again. (Said once a session.)')
             end
         end
     end
@@ -2434,7 +2467,13 @@ repairArenaProps = function()
     -- is worth knowing and not worth a second line; a floor being eaten
     -- continuously is a different fault and has to keep saying so, or it
     -- reads as the first one and gets closed.
-    local say = repairsThisArena == 1
+    -- `repairsSaid == 0`, NOT `repairsThisArena == 1`. The count goes up by
+    -- the whole pass, so a first pass that put back three tiles -- the
+    -- owner's "some of the floor disappears", exactly -- reached 3 without
+    -- ever being 1, and the report meant to find the culprit said nothing
+    -- until the round's total reached ten. Reproduced by the audit of this
+    -- code.
+    local say = repairsSaid == 0
         or (repairsThisArena >= 10 and repairsSaid < 10)
         or (repairsThisArena - repairsSaid) >= 100
     if say then
@@ -2489,25 +2528,10 @@ local function clearArenaScenery(mine)
     arenaSurfaceZ = nil
 end
 
-local function buildArenaProps(arenaKey, factor, boundary)
-    -- REFUSED BEFORE clearArenaScenery, WHICH IS THE WHOLE POINT. The
-    -- teardown is the destructive half; a second build that gets as far as
-    -- running it has already done the damage.
-    if buildingArena then
-        ArenaLogOnce('build-reentered',
-            'arena scenery: a second build was asked for while one was still laying pieces, and was '
-            .. 'refused. Running it would have deleted the pieces already placed and left holes in '
-            .. 'the floor. (Said once a session.)')
-
-        -- ANSWERED WITH WHAT IS ACTUALLY STANDING, not a flat no. Both
-        -- callers read this as "is there an arena", and a no sends them into
-        -- a failure path whose first act is a teardown. The build already
-        -- running is laying the arena they asked for, so once it has pieces
-        -- on the ground the honest answer to their question is yes.
-        return #arenaProps > 0
-    end
-    buildingArena = true
-
+--- THE BUILD ITSELF. Called only by buildArenaProps below, which owns the
+--- in-flight flag and runs this under pcall -- never call it directly.
+--- @param stillWanted function|nil -- see buildArenaProps
+local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     clearArenaScenery(true)
 
     sweepStrayArenaProps(arenaKey, factor)
@@ -2535,7 +2559,12 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- floor that misbehaves and it was scoped to the block that resolved it.
     local floorModel, floorWanted = nil, nil
     if platform then
-        local hash, name = loadPropModel(platform.models)
+        local hash, name, abandoned = loadPropModel(platform.models, stillWanted)
+        if abandoned then return false end
+        -- HELD THE MOMENT IT LOADS, not at the end of the build, so a build
+        -- that is abandoned or raises part-way still has every model it
+        -- requested released by the teardown that follows it.
+        if hash then heldModels[hash] = true end
         if hash then
             local sizeX, sizeY, top = modelFootprint(hash)
             if sizeX > 0.0 and sizeY > 0.0 then
@@ -2558,7 +2587,6 @@ local function buildArenaProps(arenaKey, factor, boundary)
 
     local wanted = Arena.ArenaProps(arenaKey, measured, factor)
     if #wanted == 0 then
-        buildingArena = false
         return true
     end
 
@@ -2602,9 +2630,9 @@ local function buildArenaProps(arenaKey, factor, boundary)
     -- The count itself is the thing worth attacking, and the way to attack it
     -- is the PROP, not the cap -- see the fallback warning further down.
 
-    local held = {}
     for _, piece in ipairs(wanted) do
-        local hash = loadPropModel(piece.models or piece.model)
+        local hash, _, abandoned = loadPropModel(piece.models or piece.model, stillWanted)
+        if abandoned then return false end
         if hash then
             local placeZ = piece.z
 
@@ -2647,19 +2675,19 @@ local function buildArenaProps(arenaKey, factor, boundary)
                 }
                 built = built + 1
             end
-            held[hash] = true
+            heldModels[hash] = true
         else
             failed[table.concat(piece.models or { piece.model }, ' / ')] = true
         end
     end
 
     -- HELD FOR THE LIFE OF THE ARENA, NOT RELEASED HERE. See `heldModels`:
-    -- the repair below has to be able to put a piece back in the frame it
-    -- notices one gone, and a RequestModel at that moment would wait. They
-    -- are released by removeArenaProps, which is the only thing that takes
-    -- the pieces down, so nothing is held longer than the arena it belongs
-    -- to.
-    for hash in pairs(held) do heldModels[hash] = true end
+    -- the repair has to be able to put a piece back in the frame it notices
+    -- one gone, and a RequestModel at that moment would wait. Every model is
+    -- written into heldModels as it loads (above), and released only by
+    -- removeArenaProps, which is the only thing that takes the pieces down --
+    -- so nothing is held longer than the arena it belongs to, including an
+    -- arena whose build was abandoned or raised part-way.
 
     -- ONCE PER MODEL: a model this build does not have is not going to
     -- appear between one round and the next, so the second printing of the
@@ -2791,21 +2819,64 @@ local function buildArenaProps(arenaKey, factor, boundary)
         end
     end
 
-    -- LOWERED ON EVERY EXIT, AND THERE ARE THREE. A flag left up by one
-    -- early return would refuse every build for the rest of the session --
-    -- arenas that never appear at all, which is worse than the race it was
-    -- raised to stop. Both failure exits lower it as well as the success
-    -- one, and there is no path out of this function that does not go
-    -- through one of the three.
     if needsFloor and builtFloor == 0 then
         arenaSurfaceZ = nil
         print('[crimson_arena] arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.')
-        buildingArena = false
         return false
     end
 
-    buildingArena = false
     return true
+end
+
+--- Builds an arena's scenery, one build at a time.
+---
+--- THE FLAG IS OWNED HERE AND NOWHERE ELSE. It used to be lowered by hand at
+--- each of the body's three exits -- and an error anywhere in between left it
+--- up for the rest of the session: every later build refused, every teardown
+--- refused, and the next round told an arena was standing when four pieces
+--- of the last one were. The version before the flag existed recovered from
+--- the same error completely. The audit of this code reproduced it. Run
+--- under pcall, the flag comes down however the body ends; Lua 5.4 lets the
+--- model wait inside it yield straight through.
+---
+--- `stillWanted` IS HOW A BUILD CAN BE CALLED OFF. The only builder that
+--- passes one is the spectator camera, whose build is worthless the moment
+--- the camera stops. Asked each time the build waits on a model, a no makes
+--- it return false at once -- so its owner's failure path tears down what it
+--- placed, and an entry build waiting behind it is free within a frame. An
+--- entry build passes none and is never called off: its own post-build check
+--- already handles a round that ended while it was laying.
+--- @param stillWanted function|nil
+--- @return boolean built
+local function buildArenaProps(arenaKey, factor, boundary, stillWanted)
+    -- REFUSED BEFORE ANY TEARDOWN, WHICH IS THE WHOLE POINT. The teardown is
+    -- the destructive half; a second build that gets as far as running it has
+    -- already deleted the pieces the first one placed.
+    if buildingArena then
+        ArenaLogOnce('build-reentered',
+            'arena scenery: a second build was asked for while one was still laying pieces, and was '
+            .. 'refused. Running it would have deleted the pieces already placed and left holes in '
+            .. 'the floor. (Said once a session.)')
+
+        -- YES ONLY FOR THE SAME ARENA. Both callers read this as "is there an
+        -- arena", and a no sends them into a failure path. But a yes about a
+        -- DIFFERENT arena is worse than a no: an entry to the trailer park was
+        -- told the half-built skydome was its arena, and placed its fighter at
+        -- the skydome's height, a kilometre over the trailer park. Reproduced
+        -- by the audit of this code.
+        return #arenaProps > 0 and builtArena ~= nil and builtArena.key == arenaKey
+    end
+
+    buildingArena = true
+    local ok, built = pcall(layArenaProps, arenaKey, factor, boundary, stillWanted)
+    buildingArena = false
+
+    if not ok then
+        print(('[crimson_arena] arena scenery: building \'%s\' raised an error and was abandoned -- %s'):format(
+            tostring(arenaKey), tostring(built)))
+        return false
+    end
+    return built == true
 end
 
 --- Puts the world back the way we found it. Synchronous on purpose: it is
@@ -2962,7 +3033,20 @@ function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
 
     local arena = Arena.GetArenaByKey(arenaKey)
     local boundary = type(arena) == 'table' and arena.boundary or nil
-    if not buildArenaProps(arenaKey, wantedFactor, boundary) then
+
+    -- CALLED OFF THE MOMENT THE CAMERA STOPS. A camera build waiting on a slow
+    -- model used to run on after its watcher had joined a lobby of their own,
+    -- still holding the build flag -- so when that lobby's round started, the
+    -- entry build was refused. Asked here at every model wait, the build
+    -- returns false as soon as nobody is watching, and the clear below takes
+    -- down what it had placed. No camera module at all reads as still wanted,
+    -- which is the behaviour this had before it could be called off.
+    local function stillWatching()
+        if not (ArenaSpectate and ArenaSpectate.IsActive) then return true end
+        return ArenaSpectate.IsActive() == true
+    end
+
+    if not buildArenaProps(arenaKey, wantedFactor, boundary, stillWatching) then
         clearArenaScenery()
         return false
     end
@@ -3116,6 +3200,14 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
         RequestCollisionAtCoord(sx, sy, holdZ)
         Wait(150)
     end
+
+    -- A BUILD ALREADY IN FLIGHT GETS A MOMENT TO FINISH OR BE CALLED OFF.
+    -- The only one that can be running is a spectator camera's, and that one
+    -- abandons itself the frame its camera stops; see buildArenaProps. Polled
+    -- in steps rather than every frame, and capped by ENTRY_BUILD_WAIT_MS,
+    -- which is shorter than the start countdown for the reason given there.
+    local settleBy = GetGameTimer() + ENTRY_BUILD_WAIT_MS
+    while buildingArena and matchToken == token and GetGameTimer() < settleBy do Wait(50) end
 
     if not buildArenaProps(data.arenaKey, data.sizeFactor, data.boundary) then
         leaveArena(Config.Lobby.returnCoords)
@@ -3294,6 +3386,13 @@ end)
 -- must not leave them standing in an arena no resource is managing.
 AddEventHandler('onResourceStop', function(resource)
     if resource ~= GetCurrentResourceName() then return end
+
+    -- A BUILD THAT WAS RUNNING WILL NEVER RESUME, so it owns nothing any
+    -- more. Left up, the flag made leaveArena's teardown refuse, and the
+    -- pieces that build had already placed stayed pinned at the arena until
+    -- this client next built there. The version before the flag removed
+    -- them; the audit of this code reproduced the difference.
+    buildingArena = false
     leaveArena(nil)
 end)
 

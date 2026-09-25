@@ -485,7 +485,13 @@ end)
 -- THE RACE THAT MADE THE HOLES IN THE FIRST PLACE
 -- ======================================================================
 
-t.test('THE DEFECT: the spectator camera does not eat a build that is still running', function()
+t.test('a camera arriving mid-entry is stopped by its own "already standing" guard, and the entry finishes whole', function()
+    -- NOT A TEST OF THE BUILD GUARD, and it used to claim to be one. The
+    -- audit of this code ran it against the version before the guard
+    -- existed and it passed there too: the camera's own `#arenaProps > 0`
+    -- check stops it before it ever asks for a build. It stays as a
+    -- regression guard for that shape. THE INVARIANT test below and THE
+    -- AUDIT tests are the ones that fail without the guard.
     -- THE RACE, AS IT ACTUALLY HAPPENS. buildArenaProps yields inside
     -- loadPropModel, waiting on a model the streamer has not finished with.
     -- ArenaMatch.EnsureSpectatorScenery runs off a per-frame loop and its
@@ -649,6 +655,182 @@ t.test('and an ordinary round after an ordinary round still builds', function()
 
     c.enterArena('skydome')
     t.equals(#c.world.live(), first, 'the second ordinary round came out a different size')
+end)
+
+-- ======================================================================
+-- THE AUDIT OF THIS FILE'S OWN FIRST VERSION
+--
+-- Every test below FAILS on the version of client/match.lua the audit
+-- examined, and passes on this one. Each was reproduced there first.
+-- ======================================================================
+
+t.test('THE AUDIT: several pieces vanishing at once are reported on the first pass', function()
+    -- The owner's words were "some of the floor disappears" -- plural. The
+    -- first version said so only when the round's count was exactly 1, so
+    -- a first pass that put back three tiles reported nothing at all.
+    local c = newClient()
+    local pieces = standing(c)
+
+    local floor = c.handlesOf(FLOOR_MODEL)
+    for i = 1, 3 do c.vanish(floor[i]) end
+    c.advance(2500)
+    c.step(1)
+
+    t.equals(#c.world.live(), pieces, 'the three tiles were not all put back')
+    t.isTrue(c.saidToServer('PUT BACK 3 piece(s)'),
+        'THE DEFECT: three tiles were put back and the server console was never told')
+
+    local printed = false
+    for _, line in ipairs(c.printed) do
+        if line:find('PUT BACK 3 piece(s)', 1, true) then printed = true end
+    end
+    t.isTrue(printed, 'and the player\'s own console was not told either')
+end)
+
+t.test('THE AUDIT: a build that raises does not wedge every build after it', function()
+    -- One error mid-build left the in-flight flag up for the session:
+    -- every later build refused, every teardown refused, and the next round
+    -- handed the four pieces the dead build had placed. The version before
+    -- the flag recovered from the same error completely.
+    local c = newClient()
+    local realCreate = c.env.CreateObject
+    local calls = 0
+    c.env.CreateObject = function(...)
+        calls = calls + 1
+        if calls == 5 then error('a native raised mid-build') end
+        return realCreate(...)
+    end
+
+    c.enterArena('skydome')
+    c.env.CreateObject = realCreate
+
+    t.isTrue(calls >= 5, 'the build never reached the failing call, so this tests nothing')
+    t.equals(#c.world.live(), 0, 'the pieces the failed build placed were left standing')
+
+    local said = false
+    for _, line in ipairs(c.printed) do
+        if line:find('raised an error and was abandoned', 1, true) then said = true end
+    end
+    t.isTrue(said, 'the failed build said nothing about why')
+
+    c.enterArena('skydome')
+    local clean = newClient()
+    clean.enterArena('skydome')
+    t.equals(#c.world.live(), #clean.world.live(),
+        ('THE DEFECT: the next round got %d piece(s) where a clean one has %d')
+            :format(#c.world.live(), #clean.world.live()))
+end)
+
+t.test('THE AUDIT: a resource stop mid-build leaves nothing standing', function()
+    local c = newClient()
+    c.slowModels['prop_container_01a'] = 40
+
+    local first = c.beginEnter('skydome')
+    c.pump(first, 12)
+    t.isTrue(coroutine.status(first) ~= 'dead', 'the fixture never stopped the build halfway')
+    t.isTrue(#c.world.live() > 0, 'the build had placed nothing yet, so there is nothing to strand')
+
+    -- The build's coroutine never resumes after a stop; it is not pumped again.
+    c.fire('onResourceStop', 'crimson_arena')
+
+    t.equals(#c.world.live(), 0,
+        'THE DEFECT: the pieces a stopped build had placed were left pinned at the arena')
+end)
+
+t.test('THE AUDIT: a camera build is called off when the camera stops, and the entry after it lands on the ground', function()
+    -- A watcher's camera starts laying the skydome and parks on a slow
+    -- model. They stop watching and join a trailer park lobby, whose round
+    -- starts while the camera build is still parked. The first version
+    -- refused the entry build, answered "an arena is standing" about the
+    -- half-built skydome, and placed the fighter at the skydome's height --
+    -- a kilometre over the trailer park.
+    local c = newClient()
+    local watching = true
+    c.env.ArenaSpectate = { IsActive = function() return watching end }
+
+    -- THE WORLD STREAMS AROUND THE CAMERA'S FOCUS, which this fixture models
+    -- as the player's position -- so the watcher is put at the skydome, as
+    -- the camera would put its focus there, or nothing could be created.
+    c.world.pedPos.x, c.world.pedPos.y, c.world.pedPos.z = 1500.0, 3000.0, 1201.0
+
+    -- A MODEL THAT NEVER ARRIVES, and the ENTRY resumed before the camera on
+    -- every step. Both are load-bearing, and mutation testing is why: with a
+    -- model that eventually loaded, the camera build finished inside the
+    -- entry's wait and the test passed with abandonment deleted; with the
+    -- camera resumed first, it abandoned before the entry ever waited and the
+    -- test passed with the wait deleted. Here each defence is the only thing
+    -- that can save the round, so deleting either one fails it.
+    c.slowModels['prop_container_01a'] = 100000
+    local cam = coroutine.create(function()
+        c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    end)
+    c.pump(cam, 12)
+    t.isTrue(coroutine.status(cam) ~= 'dead', 'the camera build never parked, so this tests nothing')
+    t.isTrue(#c.handlesOf(FLOOR_MODEL) > 0, 'the camera build laid no floor before parking')
+
+    watching = false
+    c.world.pedPos.x, c.world.pedPos.y, c.world.pedPos.z = -282.0, -2030.0, 30.1
+    local entry = c.beginEnter('trailerpark')
+    for _ = 1, 400 do
+        if coroutine.status(entry) ~= 'dead' then assert(coroutine.resume(entry)) end
+        if coroutine.status(cam) ~= 'dead' then assert(coroutine.resume(cam)) end
+        if coroutine.status(cam) == 'dead' and coroutine.status(entry) == 'dead' then break end
+    end
+    t.isTrue(coroutine.status(entry) == 'dead', 'the entry never finished')
+
+    t.isTrue(c.world.pedPos.z < 500.0,
+        ('THE DEFECT: the trailer park fighter was placed at z=%.1f, over open air'):format(c.world.pedPos.z))
+    t.equals(#c.handlesOf(FLOOR_MODEL), 0, 'the abandoned skydome floor was left standing over the map')
+    for _, sent in ipairs(c.toServer) do
+        t.isTrue(sent.name ~= 'crimson_arena:server:leaveMatch', 'the fighter was thrown out of the round they entered')
+    end
+end)
+
+t.test('THE AUDIT: when a build cannot be called off, a refused entry is never told another arena is its own', function()
+    -- The second line of defence, for the case the first cannot reach: a
+    -- camera build with no camera module to ask, so it never abandons, and
+    -- the entry's wait runs out. The refusal must then say NO about a
+    -- different arena -- a fighter sent back to the lobby is recoverable; one
+    -- placed at the skydome's height over the trailer park is not.
+    local c = newClient()
+    c.env.ArenaSpectate = nil
+    c.world.pedPos.x, c.world.pedPos.y, c.world.pedPos.z = 1500.0, 3000.0, 1201.0
+
+    c.slowModels['prop_container_01a'] = 100000
+    local cam = coroutine.create(function()
+        c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0)
+    end)
+    c.pump(cam, 12)
+    t.isTrue(coroutine.status(cam) ~= 'dead', 'the camera build never parked, so this tests nothing')
+
+    -- Moved back to the ground, where a trailer park entry starts from.
+    c.world.pedPos.x, c.world.pedPos.y, c.world.pedPos.z = -282.0, -2030.0, 30.1
+
+    local entry = c.beginEnter('trailerpark')
+    c.pump(entry, 400)
+    t.isTrue(coroutine.status(entry) == 'dead', 'the entry never gave up waiting')
+
+    t.isTrue(c.world.pedPos.z < 500.0,
+        ('THE DEFECT: the refused entry was told the skydome was its arena and placed the fighter at z=%.1f')
+            :format(c.world.pedPos.z))
+end)
+
+t.test('THE AUDIT: a piece whose model was unloaded is asked for again, and put back', function()
+    local c = newClient()
+    local pieces = standing(c)
+
+    local before = c.world.requested[FLOOR_MODEL] or 0
+    c.slowModels[FLOOR_MODEL] = 1
+    c.vanish(c.handlesOf(FLOOR_MODEL)[1])
+
+    c.advance(2500)
+    c.step(1)
+    t.isTrue((c.world.requested[FLOOR_MODEL] or 0) > before,
+        'THE DEFECT: the unloaded model was never requested again, so the hole is permanent')
+
+    c.advance(2500)
+    c.step(1)
+    t.equals(#c.world.live(), pieces, 'the tile never came back once its model had')
 end)
 
 os.exit(t.summary())

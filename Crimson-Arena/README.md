@@ -68,13 +68,21 @@ Everything below is in the shipped code. Where something is off by default, or i
     somebody who wanders off during a paid round will lose it.
   - **Whether they died.** A body that reads as dead for `deadTicks` checks in
     a row with nothing reported has the death booked by the server, so a
-    client that simply never reports one cannot be immortal. **The kill goes
-    to the last fighter the server itself saw land a hit in the five seconds
-    before the body first read dead** — through the same distance, fence and
-    team checks as any kill — **and to nobody otherwise**: a fall nobody was
-    seen hitting them before credits nobody, and neither does a shot into the
-    body after the check that first read it dead. A report that arrives after
-    that check is judged the same way.
+    client that never reports one **and stays down** cannot be immortal. One
+    that drops only its report but still stands itself up — the stock
+    `clearDeadStateImmediately`, which ships on — is never booked; see
+    EXPLOITS-YOUR-CALL.md. **The kill goes to the last fighter the server
+    itself saw land a hit in the five seconds before the check that first
+    read the body dead** — through the same distance, fence and team checks
+    as any kill — **and to nobody otherwise**: a fall nobody was seen hitting
+    them before credits nobody, and neither does a shot into the body after
+    that check. Two exceptions, where the server cannot tell a corpse from a
+    new death: after a respawn, until the new body has been seen standing, a
+    death is judged on the live memory, as before this existed; and after
+    more than two unreadable checks in a row the copy is dropped and re-taken
+    at the next dead check. A report that arrives after that check and names
+    nobody on the roster is judged on the same copy, and so is a capped gun
+    game's sparing; a report naming a fighter in the round keeps its claim.
   - Both act only on something seen several checks running, and never on a
     body the server cannot see, so a player whose game is still loading is not
     mistaken for a cheat.

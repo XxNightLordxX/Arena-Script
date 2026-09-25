@@ -5124,6 +5124,68 @@ t.test('THE TRADE: a gun and a blade kill each other, and it ends the same which
     end
 end)
 
+t.test('and the KILL line names the gun a dead killer fired, when a knife dropped them only one gun rung', function()
+    -- The trade fix covered a killer whose death dropped them onto the melee
+    -- rung. A killer on rung 3 knifed down to rung 2 -- still a gun -- was
+    -- logged 'holding "Pistol"' for a Combat Pistol kill.
+    local s = newServer(lateKillLadder)
+    s.play(4)
+    s.trade(3, 1)
+    s.trade(4, 1)
+    t.equals(s.row(1).tier, 3, 'player 1 is not on rung 3')
+    t.equals(s.row(2).tier, 1, 'player 2 is not on the knife rung')
+
+    s.fire('reportDeath', 1, { killerServerId = 2, cause = s.hashOf(weaponAt(s, 1)) })
+    t.equals(s.row(1).tier, 2, 'the knife did not drop player 1 one rung, so this tests nothing')
+    s.fire('reportDeath', 2, { killerServerId = 1, cause = s.hashOf(weaponAt(s, 3)) })
+
+    local fired = s.env.Arena.WeaponByHash(s.hashOf(weaponAt(s, 3)))
+    t.isNotNil(fired, 'rung 3 does not resolve, so the line cannot be checked')
+    local line
+    for index = #s.console, 1, -1 do
+        local candidate = s.console[index]
+        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+            line = candidate
+            break
+        end
+    end
+    t.isNotNil(line, 'the kill of player 2 was not written down')
+    t.contains(line or '', 'The killer was holding "' .. ((fired or {}).label or '?') .. '"',
+        'THE DEFECT: the KILL line names the rung the killer fell to, not the gun they fired')
+end)
+
+t.test('and on a ladder with two melee rungs, the KILL line names the blade a dead killer used', function()
+    -- A custom ladder, knife then bat: a killer on the bat rung knifed back
+    -- to the knife rung was logged 'holding "Knife"' for a bat kill -- the
+    -- same false line the gun case had, one rung down.
+    local s = newServer(function(config)
+        pinLadder(config, { { 'knife' }, { 'bat' }, { 'pistol' }, { 'combatpistol' },
+            { 'heavypistol' }, { 'pistol50' }, { 'revolver' } })
+        config.Modes.gungame.maxTiersPerVictim = 0
+    end)
+    s.play(4)
+    s.trade(3, 1)
+    t.equals(s.row(1).tier, 2, 'player 1 is not on the bat rung')
+
+    s.kill(1, 4)
+    t.equals(s.row(1).tier, 1, 'the knife did not drop player 1 to the knife rung, so this tests nothing')
+    t.isTrue(s.row(1).alive ~= true, 'player 1 stood back up, so this is not a dead killer')
+    s.fire('reportDeath', 2, { killerServerId = 1 })
+
+    local bat = s.env.Arena.GetWeaponByKey('bat')
+    local line
+    for index = #s.console, 1, -1 do
+        local candidate = s.console[index]
+        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+            line = candidate
+            break
+        end
+    end
+    t.isNotNil(line, 'the kill of player 2 was not written down')
+    t.contains(line or '', 'The killer was holding "' .. ((bat or {}).label or 'Bat') .. '"',
+        'the KILL line names the blade the killer fell to, not the one they used')
+end)
+
 t.test('and a shooter knifed down by somebody else first still spares the one they shot', function()
     local s = newServer(lateKillLadder)
     s.play(4)
@@ -5170,6 +5232,21 @@ t.test('and a killer who has already stood back up is judged on the rung they ho
 
     s.fire('reportDeath', 2, { killerServerId = 1 })
     t.equals(s.row(2).tier, 1, 'a living melee-rung killer spared the victim off an old rung')
+
+    -- AND THE KILL LINE NAMES THE RUNG THEY HOLD NOW: the rung they died on
+    -- belongs to a life they have already finished.
+    local held = s.env.Arena.WeaponByHash(s.hashOf(weaponAt(s, 1)))
+    local line
+    for index = #s.console, 1, -1 do
+        local candidate = s.console[index]
+        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+            line = candidate
+            break
+        end
+    end
+    t.isNotNil(line, 'the kill of player 2 was not written down')
+    t.contains(line or '', 'The killer was holding "' .. ((held or {}).label or '?') .. '"',
+        'a living killer was logged with the rung of a life they had already finished')
 end)
 
 t.test('and it can only SPARE: the rung a dead killer fell on never takes a sparing away', function()

@@ -1638,25 +1638,31 @@ local function runServerChecks(match)
                 -- report that arrives after this reading is judged on this
                 -- copy, sparing included -- see ArenaMatch.OnDeath.
                 --
-                -- NOT IN THE SECOND AFTER A RESPAWN. The client stands the
-                -- body up only when the respawn event reaches it, and until
-                -- then the server reads the corpse it left. A copy taken off
-                -- that corpse was empty, and outlived it: a fighter killed
-                -- again before the next reading was paid to nobody, where the
-                -- live memory would have named the shooter. So no copy is
-                -- taken inside SWEEP_INTERVAL_MS of the respawn; a death in
-                -- that second is read as it was before the copy existed, and
-                -- a body still down at the next reading is copied then.
+                -- NOT OFF A BODY NOT YET SEEN STANDING SINCE A RESPAWN. The
+                -- client stands the body up only when the respawn event
+                -- reaches it, and until then the server reads the corpse it
+                -- left. A copy taken off that corpse was empty, and outlived
+                -- it: a fighter killed again before the next reading was paid
+                -- to nobody, where the live memory named the shooter -- and on
+                -- a capped ladder, a victim the server HAD seen shot was
+                -- charged a tier. A fixed one-second grace was the first
+                -- answer, and a stand-up slower than one check beat it
+                -- (measured at 1.2 s). So the respawn marks the fighter
+                -- seenUp = false and the first reading of a living body sets
+                -- it back: until then no copy is taken at all, and a death in
+                -- that window is read off the live memory, as it was before
+                -- the copy existed.
                 --
                 -- THE CLOCK IS READ ONLY FOR A DEAD BODY, and asked whether
                 -- it is there at all: this runs for every fighter every
                 -- second, and a throw here stops the sweep for the round.
                 local held = match.deadWitness[src]
-                if dead and held == nil then
-                    local now = type(GetGameTimer) == 'function' and tonumber(GetGameTimer()) or nil
-                    local respawned = tonumber(player.respawnedAt)
-                    local justUp = respawned ~= nil and now ~= nil and (now - respawned) < SWEEP_INTERVAL_MS
-                    if not justUp then
+                if readable and not dead then
+                    match.deadWitness[src] = nil
+                    player.seenUp = true
+                elseif dead and held == nil then
+                    if player.seenUp ~= false then
+                        local now = type(GetGameTimer) == 'function' and tonumber(GetGameTimer()) or nil
                         local row = type(match.recentDamage) == 'table' and match.recentDamage[src] or nil
                         if type(row) ~= 'table' then row = {} end
                         local hitters = {}
@@ -1668,8 +1674,6 @@ local function runServerChecks(match)
                             seenAt = now, blind = 0,
                         }
                     end
-                elseif readable and not dead then
-                    match.deadWitness[src] = nil
                 elseif held ~= nil and not readable then
                     held.blind = (Arena.ToInt(held.blind) or 0) + 1
                     if held.blind > DEAD_WITNESS_BLIND_READINGS then match.deadWitness[src] = nil end
@@ -1986,10 +1990,11 @@ local function scheduleRespawn(match, player, unwitnessed)
         local loadout = loadoutFor(current, entry)
         entry.loadout = loadout
         entry.alive = true
-        -- WHEN, for the dead sweep: the client stands the body back up only
-        -- once the event below reaches it, and until then the server still
-        -- reads the old corpse. See runServerChecks.
-        entry.respawnedAt = tonumber(GetGameTimer())
+        -- NOT SEEN STANDING YET, for the dead sweep: the client stands the
+        -- body back up only once the event below reaches it, and until then
+        -- the server still reads the old corpse. runServerChecks sets this
+        -- back on the first reading of a living body.
+        entry.seenUp = false
 
         -- EVERY MODE, AND THE LADDER IS THE ONE THAT NEEDED IT MOST.
         --
@@ -2853,9 +2858,12 @@ end
 --- @return boolean
 local function sawLandedBy(match, victimSrc, attackerSrc, held)
     if type(held) == 'table' then
+        -- AND NEVER A HIT AFTER THE READING, though a copy taken at it cannot
+        -- hold one today: the copy is its own table, not the live one, and
+        -- saying so here keeps a later edit that shares them harmless.
         local at = type(held.hitters) == 'table' and tonumber(held.hitters[attackerSrc]) or nil
         local seenAt = tonumber(held.seenAt)
-        return at ~= nil and seenAt ~= nil and (seenAt - at) <= DAMAGE_MEMORY_MS
+        return at ~= nil and seenAt ~= nil and at <= seenAt and (seenAt - at) <= DAMAGE_MEMORY_MS
     end
 
     local row = type(match.recentDamage) == 'table' and match.recentDamage[victimSrc] or nil
@@ -3259,10 +3267,16 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         if not killedWithAGun and killer.alive ~= true and killer.rungAtDeath ~= nil then
             local fell = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1]
             killedWithAGun = fell ~= nil and Arena.IsMeleeWeapon(fell) ~= true
-            -- AND THE KILL LINE NAMES THAT GUN, not the blade their own death
-            -- dropped them onto: it printed 'holding "Knife" ... spared by a
-            -- gun kill' for exactly the trade this block settles.
-            if killedWithAGun then killedFrom = fell end
+        end
+
+        -- AND THE KILL LINE NAMES THE RUNG A DEAD KILLER FIRED FROM, however
+        -- their own death moved them -- which is a record, not the rule
+        -- above, so it is not limited to the melee case the rule is. It
+        -- printed 'holding "Knife" ... spared by a gun kill' in the trade,
+        -- and 'holding "Pistol"' for a Combat Pistol kill whose shooter a
+        -- knife had dropped one gun rung.
+        if killer.alive ~= true and killer.rungAtDeath ~= nil then
+            killedFrom = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1] or killedFrom
         end
 
         -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
@@ -3637,6 +3651,12 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     -- nothing that a report with no cause could not. Charging every silent
     -- death anyway would only cost the honest fighter whose report was lost,
     -- and hand their killer the rung all the same.
+    --
+    -- THAT IS ONLY TRUE OF A BODY THAT STAYS DOWN. The stock client stands
+    -- the body up the moment it has sent its report (clearDeadStateImmediately),
+    -- so a client that drops only the report is never read as a corpse and
+    -- never booked at all. That is a hole in the sweep, not in this rule, and
+    -- closing it is the owner's call: EXPLOITS-YOUR-CALL.md, decision 9.
     --
     -- UNLESS THAT OPPONENT HAS HIT THE CAP ON THIS VICTIM, and then it moves
     -- to nobody: creditsTier refuses them the rung. Naming a capped opponent

@@ -19,10 +19,16 @@
 
 --- Text that is not valid UTF-8 has every byte above 127 turned into a '?'.
 ---
---- A BYTE ON ITS OWN IS A CONTROL CHARACTER TO AN 8-BIT CONSOLE. 0x85 is a
---- new line and 0x9B starts an escape sequence there, and neither is caught
---- by a pattern that looks for C1 as UTF-8 writes it -- because a lone byte
---- is not UTF-8 at all. A string that is already valid is left alone.
+--- THE CONSOLE IS UTF-8 -- FXServer's own and txAdmin's both are -- and this
+--- keeps every line valid UTF-8, so the C1, separator and bidi patterns
+--- below see characters and not stray bytes they cannot match. A string
+--- that is already valid is left alone.
+---
+--- NOT A DEFENCE FOR AN 8-BIT CONSOLE, and it does not pretend to be one:
+--- there 0x85 is a new line and 0x9B starts an escape, and valid letters
+--- carry those bytes too -- 'ś', common in Polish names, is C5 9B. Making
+--- that safe would mean mangling every such name, on a console this server
+--- does not run.
 local function validUtf8(text)
     if utf8.len(text) then return text end
     return (text:gsub('[\128-\255]', '?'))
@@ -52,6 +58,13 @@ end
 --- settled. Measured. So the FINISHED line is cleaned here, whatever the
 --- arguments were, and no line added later can reopen it by forgetting.
 ---
+--- AND A NAME CANNOT REPAINT THE LINE. FiveM's colour codes -- '^' and a
+--- digit -- are taken out of every string ARGUMENT, so a name like
+--- '^1SCRIPT ERROR: @crimson_arena/...' prints as plain text inside an arena
+--- line instead of in the server's red error styling. A run of carets goes
+--- with the digit ('^^1'), or taking one out would leave the next behind.
+--- The format strings are left alone: they are this resource's own.
+---
 --- NOTHING OF THIS RESOURCE'S OWN IS LOST: no format string it passes holds
 --- a control character, and every argument is made valid UTF-8 BEFORE it is
 --- put into the line, so a bad byte in one name cannot cost the rest of the
@@ -64,7 +77,9 @@ local function compose(fmt, ...)
     else
         local args = table.pack(...)
         for index = 1, count do
-            if type(args[index]) == 'string' then args[index] = validUtf8(args[index]) end
+            if type(args[index]) == 'string' then
+                args[index] = validUtf8((args[index]:gsub('%^+(%d)', '%1')))
+            end
         end
         local ok, formatted = pcall(string.format, fmt, table.unpack(args, 1, count))
         text = ok and formatted or tostring(fmt)

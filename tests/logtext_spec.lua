@@ -54,6 +54,10 @@ t.test('ArenaLogText: every control a name can carry becomes a space', function(
     local env = newUtil()
     local cases = {
         { 'a line feed', 'a\nb', 'a b' },
+        { 'SOH, the bottom of C0', 'a\1b', 'a b' },
+        { 'US, the top of C0', 'a\31b', 'a b' },
+        { 'U+0080, the bottom of C1', 'a\194\128b', 'a b' },
+        { 'U+009F, the top of C1', 'a\194\159b', 'a b' },
         { 'a carriage return', 'a\rb', 'a b' },
         { 'a tab', 'a\tb', 'a b' },
         { 'a NUL', 'a\0b', 'a b' },
@@ -99,13 +103,17 @@ t.test('THE SPLIT: a \'^\' inside a control sequence does not rebuild it when it
     end
 end)
 
-t.test('ArenaLogText: bytes that are not UTF-8 cannot reach an 8-bit console', function()
-    -- A lone 0x85 is a new line to a Latin-1 console, and a lone 0x9B an
-    -- escape; neither is C1 "as UTF-8 writes it", so the C1 pass never saw
-    -- them.
+t.test('ArenaLogText: bytes that are not UTF-8 do not reach the console', function()
+    -- The console is UTF-8, and every line is kept valid UTF-8 so the C1,
+    -- separator and bidi passes see characters rather than stray bytes they
+    -- cannot match. (An 8-bit console is NOT defended: valid letters carry
+    -- the same bytes -- see validUtf8 in server/util.lua.)
     local env = newUtil()
     t.equals(env.ArenaLogText('a\133b\155c'), 'a?b?c', 'lone high bytes survived')
     t.equals(env.ArenaLogText('\192\138'), '??', 'an overlong line feed survived')
+    -- STRICT UTF-8: a surrogate encoded on its own is not a character, and a
+    -- lax reading would pass it to the console.
+    t.equals(env.ArenaLogText('a\237\160\128b'), 'a???b', 'an encoded surrogate survived')
     t.equals(env.ArenaLogText('Omega \226\137\136 sigma'), 'Omega \226\137\136 sigma', 'valid UTF-8 was mangled')
     t.equals(env.ArenaLogText('Jos\195\169'), 'Jos\195\169', 'an accented letter was mangled')
 end)
@@ -127,6 +135,10 @@ t.test('ArenaLogText: bounded, and cut on a character, never through one', funct
     t.isTrue(utf8.len(through) ~= nil, 'the cut left broken UTF-8 behind: ' .. hex(through))
 
     t.equals(env.ArenaLogText(string.rep('a', 40), 16), string.rep('a', 16) .. '...', 'a cap of 16 was ignored')
+
+    -- MEASURED AFTER CLEANING: a colour code does not count against the cap.
+    t.equals(env.ArenaLogText('^1' .. string.rep('a', 47)), '1' .. string.rep('a', 47),
+        'the cap was measured before the colour code came out')
     t.equals(env.ArenaLogText('abcdef', '3'), 'abc...', 'a cap given as text was ignored')
     t.equals(env.ArenaLogText(string.rep('a', 60), 0), string.rep('a', 48) .. '...', 'a cap of 0 did not fall back to 48')
     t.equals(env.ArenaLogText(string.rep('a', 60), -1), string.rep('a', 48) .. '...', 'a negative cap did not fall back to 48')
@@ -165,6 +177,44 @@ t.test('ArenaLogText: two thousand random names, and nothing dangerous comes out
     end
 end)
 
+t.test('ArenaLogText: a thousand names built from whole characters, split by carets, and nothing dangerous comes out', function()
+    -- The byte fuzz above is flattened to '?' almost every time -- random
+    -- bytes are rarely valid UTF-8 -- so it hardly reaches the passes that
+    -- look for C1, the separators and the bidi controls. These are built
+    -- from whole characters, most of them dangerous, with carets pushed in
+    -- between their bytes, so most survive the caret and reach every pass.
+    local env = newUtil()
+    local seed = 4242
+    local function nextNumber(limit)
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return seed % limit
+    end
+    local characters = { '\194\133', '\194\155', '\194\128', '\194\159', '\226\128\168', '\226\128\169',
+        '\226\128\174', '\226\128\170', '\226\129\166', '\226\129\169', '\195\169', '\240\159\152\128',
+        '\n', '\27', '\0', '\127', '\t', '"', '%', 'a', 'Z', ' ' }
+
+    local reachedPasses = 0
+    for round = 1, 1000 do
+        local bytes = {}
+        for _ = 1, 1 + nextNumber(12) do
+            local character = characters[nextNumber(#characters) + 1]
+            for index = 1, #character do
+                bytes[#bytes + 1] = character:sub(index, index)
+                if nextNumber(3) == 0 then bytes[#bytes + 1] = string.rep('^', 1 + nextNumber(2)) end
+            end
+        end
+        local input = table.concat(bytes)
+        if utf8.len((input:gsub('%^', ''))) then reachedPasses = reachedPasses + 1 end
+
+        local out = env.ArenaLogText(input, 1 + nextNumber(60))
+        local danger = dangerIn(out)
+        t.isNil(danger, ('round %d: %s came out of %s as %s'):format(round, tostring(danger), hex(input), hex(out)))
+        t.isNil(out:find('^', 1, true), ('round %d: a colour code survived %s'):format(round, hex(input)))
+        if danger then break end
+    end
+    t.isTrue(reachedPasses >= 900, ('only %d of 1000 names reached the control passes, so this tests little'):format(reachedPasses))
+end)
+
 -- ======================================================================
 -- THE COMPOSER: EVERY LINE, WHATEVER WENT INTO IT
 -- ======================================================================
@@ -195,8 +245,8 @@ end)
 
 t.test('and it keeps everything that is not dangerous, the resource\'s own text included', function()
     local env, console = newUtil()
-    env.ArenaLog('caf\195\169 %s at %d%%', 'Jos\195\169 ^1"quoted"', 50)
-    t.equals(console[1], '[crimson_arena] caf\195\169 Jos\195\169 ^1"quoted" at 50%',
+    env.ArenaLog('caf\195\169 %s at %d%%', 'Jos\195\169 "quoted"', 50)
+    t.equals(console[1], '[crimson_arena] caf\195\169 Jos\195\169 "quoted" at 50%',
         'the composer changed text that was never dangerous')
 
     -- A BAD BYTE IN ONE ARGUMENT COSTS ONLY THAT ARGUMENT: it is made valid
@@ -209,6 +259,29 @@ t.test('and it keeps everything that is not dangerous, the resource\'s own text 
 
     env.ArenaLog('no arguments at all, 100%')
     t.equals(console[4], '[crimson_arena] no arguments at all, 100%', 'a line with no arguments was changed')
+
+    -- A TRAILING nil IS STILL AN ARGUMENT: unpacked without the count it was
+    -- dropped, the format failed, and the line lost everything in it.
+    env.ArenaLog('a %s b %s', 'x', nil)
+    t.equals(console[5], '[crimson_arena] a x b nil', 'a trailing nil argument cost the line its data')
+end)
+
+t.test('and a name cannot repaint the line: colour codes go from every argument, not the format', function()
+    -- '^1' is FiveM's red: a name carrying '^1SCRIPT ERROR: ...' printed raw
+    -- inside an arena line wore the server's own error styling.
+    local env, console = newUtil()
+    env.ArenaLog('%s revived %s from the admin tablet', 'Admin', '^1SCRIPT ERROR: @crimson_arena/server/betting.lua:1551^7')
+    t.equals(console[1], '[crimson_arena] Admin revived 1SCRIPT ERROR: @crimson_arena/server/betting.lua:15517 from the admin tablet',
+        'a colour code in an argument reached the console')
+
+    -- A RUN OF CARETS goes with the digit, or taking one out leaves the next.
+    env.ArenaLog('x %s', '^^1red^^^2green')
+    t.equals(console[2], '[crimson_arena] x 1red2green', 'a doubled caret left a colour code behind')
+
+    -- A caret that is not a colour code stays, and the resource's own format
+    -- string is never touched.
+    env.ArenaLog('^3own %s', 'a^b 2^')
+    t.equals(console[3], '[crimson_arena] ^3own a^b 2^', 'the composer touched text that was not a colour code')
 end)
 
 t.test('and ArenaDebug goes through it too, and prints nothing with Debug off', function()

@@ -1264,17 +1264,79 @@ t.test('and on a ladder the silent bleed-out still promotes the shooter', functi
         'THE DEFECT: the shooter stayed on the rung he killed from')
 end)
 
-t.test('and the grace after a respawn is one check long, no more', function()
-    -- Longer than a check, and the first REAL dead reading of a spawn kill
-    -- is skipped too -- so the copy is taken a check late, after a third
-    -- fighter has had a second to fire into the body.
+t.test('THE SLOW STAND-UP: a corpse still read a second after the respawn leaves no copy either', function()
+    -- A fixed one-second grace was the first answer to the stale corpse, and
+    -- a stand-up slower than one check beat it: the corpse read at +1 s gave
+    -- an empty copy, the body stood up unread, and a spawn kill named
+    -- nobody. No copy is taken now until the new body has been SEEN standing.
+    for _, silent in ipairs({ false, true }) do
+        local label = silent and 'silent' or 'reported'
+        local server = silentServer(4)
+        server.play(3)
+
+        server.diesNamingNobody(2)
+        server.setHealth(2, 0)
+        server.settle(1)
+        t.isTrue(server.rowOf(2).alive == true, label .. ': the fighter never respawned, so there is no stale corpse')
+
+        server.wait(1000)
+        server.settle(1)
+        server.wait(200)
+        server.setHealth(2, 200)
+        server.wait(300)
+        t.isTrue(server.match.RememberDamage(2, 1), label .. ': the server refused to remember a landed hit')
+        server.wait(100)
+
+        if silent then
+            server.setHealth(2, 0)
+            t.isTrue(sweepUntilBooked(server, 2), 'silent: the sweep never booked the second death, so nothing was tested')
+        else
+            server.diesNamingNobody(2)
+        end
+        t.equals(server.rowOf(2).deaths, 2, label .. ': the second death was not booked, so nothing was tested')
+        t.equals(killsOf(server, 1), 1, label .. ': THE DEFECT: a copy of the stale corpse paid the spawn kill to nobody')
+    end
+end)
+
+t.test('and once the new body HAS been seen standing, copies are taken again', function()
+    -- The mark comes off on the first living reading: after that the late
+    -- report is judged on the copy exactly as before any respawn.
     local server = silentServer(4)
     server.play(3)
 
     server.diesNamingNobody(2)
     server.setHealth(2, 0)
     server.settle(1)
-    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so there is no grace to measure')
+    server.wait(500)
+    server.setHealth(2, 200)
+    server.settle(1)
+
+    server.wait(1000)
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(300)
+    server.diesNamingNobody(2)
+
+    t.equals(server.rowOf(2).deaths, 2, 'the second death was not booked, so nothing was tested')
+    t.equals(killsOf(server, 3), 0, 'a shot into the corpse took the kill after the body had been seen standing')
+    t.equals(killsOf(server, 1), 1, 'the fighter who dropped them was not paid')
+end)
+
+t.test('KNOWN LIMIT: a body never seen standing after its respawn is judged on the live memory', function()
+    -- Killed again before the server ever read the new body alive, a death
+    -- cannot be told from the corpse the respawn left, so no copy is taken
+    -- and the death is read as it was before the copy existed -- a shot
+    -- into the body before the booking can take it. Pinned so that trading
+    -- this back is a decision, not an accident.
+    local server = silentServer(4)
+    server.play(3)
+
+    server.diesNamingNobody(2)
+    server.setHealth(2, 0)
+    server.settle(1)
 
     server.wait(200)
     t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
@@ -1285,8 +1347,27 @@ t.test('and the grace after a respawn is one check long, no more', function()
     server.wait(500)
 
     t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the second death, so nothing was tested')
-    t.equals(killsOf(server, 3), 0, 'the grace ran past one check and let a corpse shot take the kill')
-    t.equals(killsOf(server, 1), 1, 'the spawn killer was not paid')
+    t.equals(killsOf(server, 3), 1, 'the live memory no longer decides a death never seen standing -- update this pin')
+    t.equals(killsOf(server, 1), 0, 'the live memory no longer decides a death never seen standing -- update this pin')
+end)
+
+t.test('KNOWN LIMIT: one false dead reading, then a real death reported inside the second, is judged on that reading', function()
+    -- The server sees the same readings for this as for a late report after
+    -- a real fall, so it cannot tell them apart; the late report is the case
+    -- worth getting right. Pinned so that trading it back is a decision.
+    local server = silentServer(4)
+    server.play(3)
+
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.setHealth(2, 200)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.wait(100)
+    server.diesNamingNobody(2)
+
+    t.equals(server.rowOf(2).deaths, 1, 'the death was not booked, so nothing was tested')
+    t.equals(killsOf(server, 1), 0, 'a report after a single false reading is no longer judged on it -- update this pin')
 end)
 
 -- ======================================================================
@@ -1548,6 +1629,113 @@ t.test('and a capped opponent firing into a body that fell on its own spares not
 
     t.equals(server.rowOf(2).deaths, before + 1, 'the report was not booked, so nothing was tested')
     t.equals(server.rowOf(2).tier, 2, 'THE DEFECT: a shot into a body that fell turned the fall into a spared kill')
+end)
+
+t.test('and a corpse still read a second after a respawn does not charge a capped victim the server saw shot', function()
+    local server = cappedLadder(function(config)
+        config.Match.serverChecks.enabled = true
+        config.Match.serverChecks.deadTicks = 4
+    end)
+
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 3, 'the first capped kill the server saw was charged, so nothing below means anything')
+    server.setHealth(2, 0)
+    server.settle(1)
+    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so there is no stale corpse')
+
+    server.wait(1000)
+    server.settle(1)
+    server.wait(200)
+    server.setHealth(2, 200)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(100)
+    server.diesNaming(2, 3)
+
+    t.equals(server.rowOf(2).tier, 3, 'THE DEFECT: an empty copy of the stale corpse charged a victim the server saw shot')
+end)
+
+--- The capped ladder with the dead sweep on, for the tests that judge a
+--- late report on the sweep's copy rather than on the live memory.
+local function cappedSweep()
+    return cappedLadder(function(config)
+        config.Match.serverChecks.enabled = true
+        config.Match.serverChecks.deadTicks = 4
+    end)
+end
+
+--- The body reads dead, the sweep takes its copy, and the report arrives
+--- 300 ms later naming the capped opponent 3.
+local function fallsThenNames3(server)
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    server.diesNaming(2, 3)
+end
+
+t.test('ON THE COPY: a late report naming a capped killer is judged on THAT killer\'s hit, not on anybody\'s', function()
+    -- Only 4 hit them. With the copy answering "somebody hit them", any
+    -- capped opponent the victim chose to name would spare the fall -- the
+    -- free sparing the cap rule closed, reopened for late reports.
+    local server = cappedSweep()
+    t.isTrue(server.match.RememberDamage(2, 4), 'the server refused to remember a landed hit')
+    server.wait(500)
+    fallsThenNames3(server)
+    t.equals(server.rowOf(2).tier, 2, 'somebody else\'s hit spared a capped kill by 3 on the copy')
+end)
+
+t.test('ON THE COPY: and every attacker who hit before the fall is on it, not just the last', function()
+    local server = cappedSweep()
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(1000)
+    t.isTrue(server.match.RememberDamage(2, 4), 'the server refused to remember a landed hit')
+    server.wait(500)
+    fallsThenNames3(server)
+    t.equals(server.rowOf(2).tier, 3, 'the copy kept only the last hitter, and charged a victim 3 had shot')
+end)
+
+t.test('ON THE COPY: and a capped opponent\'s shot into the body after the reading does not count', function()
+    local server = cappedSweep()
+    t.isTrue(server.match.RememberDamage(2, 4), 'the server refused to remember a landed hit')
+    server.wait(500)
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(300)
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 2, 'a shot into the corpse reached the copy and spared the fall')
+end)
+
+t.test('ON THE COPY: and a killer who also fires into the body keeps the hit that dropped them', function()
+    -- The copy is its own table. Shared with the live memory, 3's later shot
+    -- into the corpse overwrote the time of the shot that dropped them, and
+    -- the victim of a capped killer the server HAD seen was charged.
+    local server = cappedSweep()
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(1000)
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(300)
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 3, 'a shot into the corpse overwrote the hit that dropped them')
+end)
+
+t.test('ON THE COPY: exactly five seconds before the fall still spares, and one millisecond more does not', function()
+    local edge = cappedSweep()
+    t.isTrue(edge.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    edge.wait(5000)
+    fallsThenNames3(edge)
+    t.equals(edge.rowOf(2).tier, 3, 'a hit exactly five seconds before the fall was treated as expired on the copy')
+
+    local outside = cappedSweep()
+    t.isTrue(outside.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    outside.wait(5001)
+    fallsThenNames3(outside)
+    t.equals(outside.rowOf(2).tier, 2, 'a hit more than five seconds before the fall spared a capped kill on the copy')
 end)
 
 -- ======================================================================

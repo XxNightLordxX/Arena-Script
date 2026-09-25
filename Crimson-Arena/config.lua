@@ -495,11 +495,11 @@ Config.Match = {
 
         -- HOW MANY ONE-SECOND CHECKS IN A ROW a body must read as dead, with
         -- no death reported, before the server books the death itself. It
-        -- credits only the last fighter the server saw land a hit in the 5s
-        -- before the check that FIRST read the body dead, and nothing after. A
-        -- life is spent either way, which is the half a silent client skipped.
-        --
-        -- 0 switches this half off and leaves the fence.
+        -- credits the last fighter seen hitting them in the 5s before the
+        -- first dead check (re-taken after 3 blind checks; the live memory
+        -- until a respawned body is seen standing). A life is spent either
+        -- way. It catches a client that goes silent AND stays down -- not one
+        -- that stands up: see EXPLOITS-YOUR-CALL.md. 0 switches this half off.
         deadTicks = 4,
     },
 

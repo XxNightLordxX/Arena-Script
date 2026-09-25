@@ -3586,11 +3586,14 @@ end
 --- @param allowAbsent boolean? -- treat a rung that is NOT in these pockets
 --- as nothing left to take rather than as parked. OFF by default, because
 --- the anti-parking rule is the only reason the rung below can refuse at
---- all. The one caller that KNOWS the pockets were emptied by something
---- other than the player's own choice -- a demotion, which follows their own
---- death -- opts in, and settleTier already had the answer in its reason key.
---- DO NOT switch it on for a promotion: a promotion follows somebody else's
---- death, and the climber's own pockets are theirs to have emptied.
+--- all. Only a caller with a death to blame opts in: a demotion, which
+--- follows the player's own death, and the respawn catching up a promotion a
+--- corpse could not take -- settleTier is told which. The respawn TREATS
+--- absent pockets as emptied by the death it follows; it cannot tell that
+--- from a live parker who then died, and promotes that fighter too, exactly
+--- as its Refresh already re-arms them. DO NOT switch it on for a promotion
+--- AT THE KILL: that follows somebody else's death, and a living climber's
+--- pockets are theirs to have emptied.
 function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear, allowAbsent)
     local ox = inventory()
     if not ox then return false, 'no-inventory' end
@@ -3641,8 +3644,8 @@ function ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear, allo
         -- both tiers and strikes the lower one off the books, which is a free
         -- weapon per rung -- or a death emptied their pockets onto the floor,
         -- which happens on every death here. Nothing at this level separates
-        -- the two, and only a demotion follows the player's own death -- so
-        -- DO NOT try to answer it here instead of asking the caller.
+        -- the two, and only the caller knows whether the player's own death
+        -- came first -- so DO NOT try to answer it here instead of asking.
         if absent and allowAbsent ~= true then
             ArenaDebug('weapons: %s is not carrying the tier weapon %s the arena issued them, so the '
                 .. 'promotion is refused rather than hand over a second one.',

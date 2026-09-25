@@ -558,7 +558,9 @@ local function payKillReward(match, killer)
     end
 end
 
-local function settleTier(match, player, reasonKey)
+--- @param emptied boolean? -- treat absent pockets as emptied by a death; see
+--- the note on the swap below. Only the respawn passes it.
+local function settleTier(match, player, reasonKey, emptied)
     local ladder = ladderOf(match)
     if #ladder == 0 then return true end
 
@@ -591,8 +593,19 @@ local function settleTier(match, player, reasonKey)
     -- Refusing a demotion over an emptied corpse would leave a climber
     -- standing on a tier they cannot be moved off, unarmed, for the rest of
     -- the round. DO NOT collapse the two.
+    --
+    -- AND A PROMOTION CAN FOLLOW THE CLIMBER'S OWN DEATH TOO, which the
+    -- reason key cannot see. rosterKiller credits a killer who is already a
+    -- corpse on purpose -- a trade, or a bullet still in flight when they
+    -- fell -- so their promotion arrives with the pockets already on the
+    -- floor, is read as parking, and is refused. `emptied` is the respawn
+    -- saying so, and it is the only caller that passes it. It TREATS absent
+    -- pockets as emptied by the death it follows -- it cannot tell that from
+    -- a live parker who then died, and does not need to: that fighter is
+    -- promoted here too, exactly as the respawn's Refresh already re-arms
+    -- them, and the number of weapons off the books is the same either way.
     local swapped, why = ArenaAmmo.SwapWeapon(player.src, match.id, dropped, weapon, rungs,
-        reasonKey == 'notify.gungame_demoted')
+        reasonKey == 'notify.gungame_demoted' or emptied == true)
     if not swapped and why == 'refused' then
         ArenaDebug('gun game: %s stays on tier %s -- ox_inventory would not take back %s.',
             tostring(player.src), tostring(player.tier), tostring(dropped))
@@ -1844,6 +1857,32 @@ local function scheduleRespawn(match, player, unwitnessed)
 
         current.spawnCursor = (current.spawnCursor or 0) + 1
 
+        -- A PROMOTION THE CORPSE COULD NOT TAKE, TAKEN NOW.
+        --
+        -- THE DEFECT, MEASURED: a climber on rung 2 is shot dead, ox_inventory
+        -- drops their pockets, and then a bullet of theirs still in flight
+        -- kills somebody. The kill is credited, the score says tier 3 and the
+        -- board shows it -- but the swap found no rung to take back, read that
+        -- as parking, and refused, and nothing ever asked again. They
+        -- respawned holding the pistol, and their next kill jumped them from
+        -- rung 2 to rung 4: the combat pistol was never held, and a climber
+        -- one short of the top was never announced to the room before the
+        -- winning kill.
+        --
+        -- loadoutFor below re-arms from `entry.tier`, which is the tier the
+        -- last swap LANDED, so it is caught up to the score first. It is the
+        -- same settleTier every kill runs, told the one thing it could not
+        -- know at the kill: a death emptied these pockets.
+        --
+        -- ONLY UPWARDS, on purpose. A tier sitting ABOVE the score is a
+        -- demotion ox_inventory refused, which already had the emptied-pocket
+        -- allowance and is retried on the next kill or death as it always
+        -- was. This is not the place to change that.
+        local ladder = ladderOf(current)
+        if #ladder > 0 and tierForScore(tierScore(entry), #ladder) > (Arena.ToInt(entry.tier) or 1) then
+            settleTier(current, entry, 'notify.gungame_promoted', true)
+        end
+
         local loadout = loadoutFor(current, entry)
         entry.loadout = loadout
         entry.alive = true
@@ -2846,6 +2885,20 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
     player.alive = false
     player.deaths = (Arena.ToInt(player.deaths) or 0) + 1
 
+    -- THE RUNG THEY FELL ON, for the kills of theirs still in flight.
+    --
+    -- Their own demotion, at the bottom of this function, rewrites `tier`.
+    -- A victim of theirs whose report is read after this one is judged by
+    -- the gun rule further down -- `killedWithAGun`, the one reader of this
+    -- -- and without it that rule could only see the rung their death moved
+    -- them onto. Written by the server from its own row, so it gives a
+    -- client nothing new to name.
+    --
+    -- NEVER CLEARED, AND IT DOES NOT NEED TO BE. It is read only while this
+    -- row is dead, and every death writes it afresh -- so a value from an
+    -- earlier life, or from last round's ladder, can never be the one read.
+    player.rungAtDeath = player.tier
+
     if type(ArenaCompat) == 'table' and type(ArenaCompat.WarnLateStartOnce) == 'function' then
         ArenaCompat.WarnLateStartOnce()
     end
@@ -2964,6 +3017,29 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash)
         local rung = ladder[Arena.ClampInt(killer.tier, 1, #ladder) or 1]
         killedFrom = rung
         killedWithAGun = rung ~= nil and Arena.IsMeleeWeapon(rung) ~= true
+
+        -- AND A KILLER WHO IS ALREADY A CORPSE IS ALSO READ OFF THE RUNG THEY
+        -- DIED ON, because their own death can move them off it before this
+        -- report is read, and the note above only covers the promotion.
+        --
+        -- THE DEFECT, MEASURED: 1 on the pistol rung shoots 2 while 2 knifes
+        -- 1. If 1's report lands first, 1's knife death drops them to the
+        -- melee rung -- and 2's report, read a moment later, found a MELEE
+        -- killer and cost 2 a tier for being shot. Land the reports the other
+        -- way round and 2 kept it. The same happens when 1 is knifed by a
+        -- third fighter while their bullet is still on its way. Which packet
+        -- the server read first decided the ladder.
+        --
+        -- IT MAY ONLY SPARE, NEVER CHARGE. It is asked only when the rung
+        -- above said melee, so a victim the rung test already spares is
+        -- spared exactly as before; and the cause below still revokes it, so
+        -- a victim who reports a blade still pays. `rungAtDeath` is the
+        -- server's own record of a rung the killer really held, and the
+        -- killer still takes the kill and the tier for it.
+        if not killedWithAGun and killer.alive ~= true and killer.rungAtDeath ~= nil then
+            local fell = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1]
+            killedWithAGun = fell ~= nil and Arena.IsMeleeWeapon(fell) ~= true
+        end
 
         -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
         --

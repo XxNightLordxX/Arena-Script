@@ -4927,4 +4927,251 @@ t.test('and the results card places the rest by the same rule', function()
     t.equals((s.resultFor(3) or {}).placement, 3, 'raw kills out-placed the kills that climbed')
 end)
 
+-- ======================================================================
+-- THE KILL THAT LANDS AFTER A DEATH
+--
+-- rosterKiller credits a killer who is already a corpse, ON PURPOSE: two
+-- fighters who kill each other in the same tick are both dead by the time
+-- the reports arrive, and a bullet can still be in the air when the man who
+-- fired it falls. Two parts of the ladder had never been asked about that
+-- killer. The weapon swap read their emptied pockets as parking and refused
+-- the promotion, and the gun rule read their rung AFTER their own death had
+-- already moved them off it.
+--
+-- Pinned ladder and NO CAP, as the mode ships, so every credit here buys a
+-- tier and the only things that can refuse one are the things under test.
+-- Appended at the foot of the file so no earlier test's seed moves.
+-- ======================================================================
+
+local function lateKillLadder(config)
+    pinLadder(config, SEVEN_TIERS)
+    config.Modes.gungame.maxTiersPerVictim = 0
+end
+
+--- Steps the REAL respawn thread until `src` is back on their feet.
+--- `server.revive` would stand them up by hand and skip the very code
+--- these tests are about.
+local function standUp(s, src)
+    for _ = 1, 4 do
+        if s.row(src).alive then break end
+        s.settle(1)
+    end
+    t.equals(s.row(src).alive, true, 'the scheduled respawn never ran, so nothing was tested')
+end
+
+t.test('THE LATE KILL: a killer credited after their own death respawns on the tier it earned', function()
+    local s = newServer(lateKillLadder)
+    s.play(3)
+    s.trade(3, 1)
+    s.trade(3, 2)
+    t.equals(s.row(1).tier, 2, 'the setup did not put player 1 on the pistol rung')
+
+    -- 2 SHOOTS 1. A gun death spares the tier, so 1 lies on rung 2 -- and
+    -- ox_inventory drops a dead fighter's pockets on the floor.
+    s.kill(1, 2)
+    t.equals(s.row(1).tier, 2, 'a gun death cost a tier, which is not what this test is about')
+    s.ox.pockets[1] = {}
+
+    -- AND 1'S BULLET, STILL IN THE AIR, KILLS 2.
+    s.kill(2, 1)
+    t.equals(s.row(1).ladderKills, 2, 'the late kill was not credited at all')
+
+    standUp(s, 1)
+
+    t.equals(s.row(1).tier, 3,
+        'THE DEFECT: they respawned a weapon behind the tier their score earned')
+    t.equals(s.ox.count(1, weaponAt(s, 3)), 1, 'and are not holding exactly one of the rung they earned')
+    t.equals(s.ox.count(1, weaponAt(s, 2)), 0, 'and still hold the rung below it')
+    t.contains(s.told(1), 'Tier 3 of 7', 'and were never told they moved up')
+
+    -- THE NEXT KILL MOVES ONE TIER, NOT TWO. Before the fix it went from the
+    -- pistol straight to rung 4, and rung 3 was never held at all.
+    s.trade(3, 1)
+    t.equals(s.row(1).tier, 4, 'the next kill did not move exactly one tier')
+    t.equals(s.ox.count(1, weaponAt(s, 4)), 1, 'and they are not holding the rung it moved them to')
+end)
+
+t.test('and a trade, where both pockets were on the floor before either kill landed', function()
+    -- THE OTHER REPORT ORDER. Player 1's kill is read while the server still
+    -- has them alive, but their pockets are already gone -- which at the
+    -- kill looks exactly like parking, and is refused as parking. Their own
+    -- death then follows, and the respawn is where it is put right.
+    local s = newServer(lateKillLadder)
+    s.play(3)
+    s.trade(3, 1)
+    s.trade(3, 2)
+    s.ox.pockets[1] = {}
+    s.ox.pockets[2] = {}
+
+    s.kill(2, 1)
+    s.kill(1, 2)
+
+    standUp(s, 1)
+    standUp(s, 2)
+    for _, src in ipairs({ 1, 2 }) do
+        t.equals(s.row(src).tier, 3, ('player %d did not respawn on the tier they earned'):format(src))
+        t.equals(s.ox.count(src, weaponAt(s, 3)), 1,
+            ('and player %d is not holding exactly one of it'):format(src))
+    end
+end)
+
+t.test('and one short of the top, the room is warned before the winning kill', function()
+    local s = newServer(lateKillLadder)
+    s.play(3)
+    for _ = 1, 5 do s.trade(3, 1) end
+    for _ = 1, 5 do s.trade(3, 2) end
+    t.equals(s.row(1).tier, 6, 'the setup did not put player 1 one rung short of the top')
+
+    s.kill(1, 2)
+    s.ox.pockets[1] = {}
+    s.kill(2, 1)
+    t.equals(s.told(3):find('Fighter 1 is on the top tier', 1, true), nil,
+        'the room was told before the swap happened, so this proves nothing')
+
+    standUp(s, 1)
+
+    t.equals(s.ox.count(1, weaponAt(s, 7)), 1, 'they respawned without the top rung')
+    t.contains(s.told(3), 'Fighter 1 is on the top tier',
+        'the room was never told somebody is one kill from winning')
+end)
+
+t.test('CONTROL: a LIVE killer with empty pockets is still refused at the kill', function()
+    -- THE ANTI-PARKING RULE IS UNTOUCHED. Only the respawn knows the pockets
+    -- went with a death; a fighter standing up with no rung in their pockets
+    -- has put it somewhere, and the kill does not hand them a second gun.
+    local s = newServer(lateKillLadder)
+    s.play(3)
+    s.trade(3, 1)
+    s.ox.pockets[1] = {}
+
+    s.trade(2, 1)
+
+    t.equals(s.row(1).ladderKills, 2, 'the kill was not credited')
+    t.equals(s.row(1).tier, 2, 'a live parker was promoted at the kill')
+    t.equals(s.ox.count(1, weaponAt(s, 3)), 0, 'and handed the next rung')
+end)
+
+t.test('and the respawn only ever catches a tier UP: a refused demotion waits, as it did', function()
+    -- THE LINE THIS FIX STOPS AT. A tier above the score is a demotion that
+    -- ox_inventory refused -- here, pockets that take nothing. That has
+    -- always been retried on the next kill or death, and the respawn does
+    -- not move it.
+    local s = newServer(lateKillLadder)
+    s.play(3)
+    for _ = 1, 3 do s.trade(2, 1) end
+    t.equals(s.row(1).tier, 4, 'three kills up')
+
+    for tier = 1, s.tierCount() do s.ox.refuseAdd[weaponAt(s, tier)] = true end
+    s.ox.pockets[1] = {}
+    s.kill(1, nil)
+    t.equals(s.row(1).tiersLost, 1, 'the death did not cost a tier')
+    t.equals(s.row(1).tier, 4, 'the demotion was not refused, so this proves nothing')
+
+    for tier = 1, s.tierCount() do s.ox.refuseAdd[weaponAt(s, tier)] = nil end
+    standUp(s, 1)
+
+    t.equals(s.row(1).tier, 4, 'the respawn moved a refused demotion, which is not its job')
+end)
+
+t.test('THE TRADE: a gun and a blade kill each other, and it ends the same whichever report lands first', function()
+    -- Player 1 on the pistol rung shoots player 2; player 2 on the knife
+    -- rung knifes player 1. Read 1's report first and 1's own knife death
+    -- has dropped them to the melee rung by the time 2's report is read --
+    -- and 2 used to be charged a tier for being SHOT.
+    local function play(firstReporter)
+        local s = newServer(lateKillLadder)
+        s.play(4)
+        s.trade(3, 1)
+        t.equals(s.row(1).tier, 2, 'player 1 is not on the pistol rung')
+        t.equals(s.row(2).tier, 1, 'player 2 is not on the knife rung')
+
+        local reports = {
+            [1] = { killerServerId = 2, cause = s.hashOf(weaponAt(s, 1)) },
+            [2] = { killerServerId = 1, cause = s.hashOf(weaponAt(s, 2)) },
+        }
+        local second = firstReporter == 1 and 2 or 1
+        s.fire('reportDeath', firstReporter, reports[firstReporter])
+        s.fire('reportDeath', second, reports[second])
+        return s
+    end
+
+    for _, first in ipairs({ 2, 1 }) do
+        local s = play(first)
+        local order = ('player %d reported first'):format(first)
+        t.equals(s.row(1).deaths + s.row(2).deaths, 2, order .. ': both deaths were not booked')
+        t.equals(s.row(2).tier, 2, order .. ': player 2 lost a tier to a GUN kill')
+        t.equals(s.row(2).tiersLost, nil, order .. ': and was charged for it')
+        t.equals(s.row(1).tier, 2, order .. ': player 1 did not end where the knife left them')
+    end
+end)
+
+t.test('and a shooter knifed down by somebody else first still spares the one they shot', function()
+    local s = newServer(lateKillLadder)
+    s.play(4)
+    s.trade(4, 1)
+    s.trade(4, 2)
+    t.equals(s.row(3).tier, 1, 'player 3 is not on the knife rung')
+
+    -- 3 KNIFES 1, and that report lands first; 1's bullet was already on
+    -- its way to 2.
+    s.fire('reportDeath', 1, { killerServerId = 3, cause = s.hashOf(weaponAt(s, 1)) })
+    t.equals(s.row(1).tier, 1, 'the knife did not drop player 1 to the melee rung')
+
+    s.fire('reportDeath', 2, { killerServerId = 1, cause = s.hashOf(weaponAt(s, 2)) })
+    t.equals(s.row(2).tier, 2, 'THE DEFECT: shot with a pistol, and charged a tier for it')
+end)
+
+t.test('but a victim who reports the BLADE still pays, however the killer died', function()
+    -- THE CAUSE STILL REVOKES. The rung a dead killer fell on is one more
+    -- way to be spared by a GUN; it is not a way round the blade they carry
+    -- beside it.
+    local s = newServer(lateKillLadder)
+    s.play(4)
+    s.trade(4, 1)
+    s.trade(4, 2)
+    local blade = s.match_().blade
+    t.isNotNil(blade, 'no blade this round, so this proves nothing')
+
+    s.fire('reportDeath', 1, { killerServerId = 3, cause = s.hashOf(weaponAt(s, 1)) })
+    s.fire('reportDeath', 2, { killerServerId = 1, cause = s.hashOf(blade.weapon) })
+    t.equals(s.row(2).tier, 1, 'a blade kill from a dead killer spared the victim')
+end)
+
+t.test('and a killer who has already stood back up is judged on the rung they hold now', function()
+    -- The rung they died on is read ONLY while they are dead. Back on their
+    -- feet on the knife rung, that is the rung they kill with.
+    local s = newServer(lateKillLadder)
+    s.play(4)
+    s.trade(4, 1)
+    s.trade(4, 2)
+
+    s.fire('reportDeath', 1, { killerServerId = 3, cause = s.hashOf(weaponAt(s, 1)) })
+    standUp(s, 1)
+    t.equals(s.row(1).tier, 1, 'player 1 is not back up on the knife rung')
+
+    s.fire('reportDeath', 2, { killerServerId = 1 })
+    t.equals(s.row(2).tier, 1, 'a living melee-rung killer spared the victim off an old rung')
+end)
+
+t.test('and it can only SPARE: the rung a dead killer fell on never takes a sparing away', function()
+    -- Player 2 falls on the knife rung, and a knife kill of theirs is then
+    -- credited to the corpse, promoting it onto the pistol. A third report
+    -- naming 2, with no cause, is read off that pistol rung and spared --
+    -- the no-cause fallback the rule has always had. Reading the rung 2
+    -- fell on INSTEAD of the one they stand on would charge it, and that
+    -- is not this record's to decide.
+    local s = newServer(lateKillLadder)
+    s.play(4)
+    s.trade(4, 1)
+    s.trade(4, 3)
+    t.equals(s.row(2).tier, 1, 'player 2 is not on the knife rung')
+
+    s.kill(2, nil)
+    s.fire('reportDeath', 1, { killerServerId = 2, cause = s.hashOf(weaponAt(s, 1)) })
+    t.equals(s.row(2).tier, 2, 'the dead killer was not promoted onto the pistol')
+
+    s.fire('reportDeath', 3, { killerServerId = 2 })
+    t.equals(s.row(3).tier, 2, 'the rung the killer died on took away a sparing the rung they hold gives')
+end)
+
 os.exit(t.summary())

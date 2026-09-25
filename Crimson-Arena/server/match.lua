@@ -1516,6 +1516,12 @@ local function readsAsDead(src)
     return health <= 0, true
 end
 
+--- How many readings in a row the dead sweep's copy of a body's damage
+--- memory survives the body being unreadable. ONE is the hitch
+--- killwitness_spec pins; the limit is what stops a copy from before a long
+--- blindness paying out for a death after it. See runServerChecks.
+local DEAD_WITNESS_BLIND_READINGS = 2
+
 local function strike(store, src, sighted, needed)
     if not sighted then
         store[src] = nil
@@ -1617,12 +1623,58 @@ local function runServerChecks(match)
                 -- so the copy and the moment it was taken stay with it. A
                 -- hitch that read dead once and then alive leaves nothing
                 -- behind for a later death to be paid out of.
-                if dead and match.deadWitness[src] == nil then
-                    local row = type(match.recentDamage) == 'table' and match.recentDamage[src] or nil
-                    if type(row) ~= 'table' then row = {} end
-                    match.deadWitness[src] = { by = row.by, at = row.at, seenAt = tonumber(GetGameTimer()) }
+                --
+                -- BUT NOT THROUGH A LONG BLINDNESS. With no limit, a copy
+                -- taken before a minute the body could not be read was still
+                -- there when it next read dead, and paid the fighter who hit
+                -- them a minute ago for a death somebody else had just made.
+                -- Measured: sixty blind readings, then a fresh hit and a real
+                -- death, credited to the stale shooter. A body that cannot be
+                -- read for longer than DEAD_WITNESS_BLIND_READINGS is more
+                -- likely a ped being swapped for a new one than a corpse, so
+                -- the copy goes, and the next dead reading takes a fresh one.
+                --
+                -- AND IT KEEPS WHO HAD HIT THEM, as well as who hit last: a
+                -- report that arrives after this reading is judged on this
+                -- copy, sparing included -- see ArenaMatch.OnDeath.
+                --
+                -- NOT IN THE SECOND AFTER A RESPAWN. The client stands the
+                -- body up only when the respawn event reaches it, and until
+                -- then the server reads the corpse it left. A copy taken off
+                -- that corpse was empty, and outlived it: a fighter killed
+                -- again before the next reading was paid to nobody, where the
+                -- live memory would have named the shooter. So no copy is
+                -- taken inside SWEEP_INTERVAL_MS of the respawn; a death in
+                -- that second is read as it was before the copy existed, and
+                -- a body still down at the next reading is copied then.
+                --
+                -- THE CLOCK IS READ ONLY FOR A DEAD BODY, and asked whether
+                -- it is there at all: this runs for every fighter every
+                -- second, and a throw here stops the sweep for the round.
+                local held = match.deadWitness[src]
+                if dead and held == nil then
+                    local now = type(GetGameTimer) == 'function' and tonumber(GetGameTimer()) or nil
+                    local respawned = tonumber(player.respawnedAt)
+                    local justUp = respawned ~= nil and now ~= nil and (now - respawned) < SWEEP_INTERVAL_MS
+                    if not justUp then
+                        local row = type(match.recentDamage) == 'table' and match.recentDamage[src] or nil
+                        if type(row) ~= 'table' then row = {} end
+                        local hitters = {}
+                        if type(row.hitters) == 'table' then
+                            for attacker, at in pairs(row.hitters) do hitters[attacker] = at end
+                        end
+                        match.deadWitness[src] = {
+                            by = row.by, at = row.at, hitters = hitters,
+                            seenAt = now, blind = 0,
+                        }
+                    end
                 elseif readable and not dead then
                     match.deadWitness[src] = nil
+                elseif held ~= nil and not readable then
+                    held.blind = (Arena.ToInt(held.blind) or 0) + 1
+                    if held.blind > DEAD_WITNESS_BLIND_READINGS then match.deadWitness[src] = nil end
+                elseif held ~= nil then
+                    held.blind = 0
                 end
 
                 if strike(match.deadStrikes, src, dead, deadTicks) then
@@ -1934,6 +1986,10 @@ local function scheduleRespawn(match, player, unwitnessed)
         local loadout = loadoutFor(current, entry)
         entry.loadout = loadout
         entry.alive = true
+        -- WHEN, for the dead sweep: the client stands the body back up only
+        -- once the event below reaches it, and until then the server still
+        -- reads the old corpse. See runServerChecks.
+        entry.respawnedAt = tonumber(GetGameTimer())
 
         -- EVERY MODE, AND THE LADDER IS THE ONE THAT NEEDED IT MOST.
         --
@@ -2782,11 +2838,26 @@ end
 --- killer", it answered no for an honest victim whose killer's shot landed
 --- and was followed by anybody else's round into the body. So the row also
 --- keeps, per attacker, the last time each of them landed one.
+---
+--- AND ONCE THE DEAD SWEEP HAS READ THE BODY DEAD, IT ASKS THE SWEEP'S COPY
+--- -- measured to that reading, as heldWitness is. Asked of the live memory
+--- instead, a report arriving seconds after the fall was judged on hits
+--- into the corpse and a clock still running: the victim of a capped
+--- killer the server HAD seen was charged when the report came late, and
+--- spared when it never came at all; and a capped opponent emptying a
+--- magazine into a body that fell on its own made the fall a spared kill.
 --- @param match table
 --- @param victimSrc integer
 --- @param attackerSrc integer
+--- @param held table|nil -- the dead sweep's copy, when there is one
 --- @return boolean
-local function sawLandedBy(match, victimSrc, attackerSrc)
+local function sawLandedBy(match, victimSrc, attackerSrc, held)
+    if type(held) == 'table' then
+        local at = type(held.hitters) == 'table' and tonumber(held.hitters[attackerSrc]) or nil
+        local seenAt = tonumber(held.seenAt)
+        return at ~= nil and seenAt ~= nil and (seenAt - at) <= DAMAGE_MEMORY_MS
+    end
+
     local row = type(match.recentDamage) == 'table' and match.recentDamage[victimSrc] or nil
     if type(row) ~= 'table' or type(row.hitters) ~= 'table' then return false end
 
@@ -3069,17 +3140,31 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     -- already extends to a dying client's own claim, and no stronger.
     local claimed = Arena.ToInt(killerSrc)
     local claimedRoster = claimed ~= nil and claimed ~= id and match.players[claimed] ~= nil
+
+    -- THE DEAD SWEEP'S COPY, WHEN THERE IS ONE: handed in by its own booking,
+    -- or left by a sweep that had already read this body dead by the time a
+    -- report arrived. Either way the body was seen down at `seenAt`, so a hit
+    -- after it is a shot into a corpse -- and a late report, read against the
+    -- live memory, handed the kill to whoever fired into the body while the
+    -- report was on its way, when the copy named the fighter who dropped
+    -- them. Measured: 1 hits, the body reads dead, 3 shoots it, the report
+    -- names nobody -- paid to 3.
+    local held = witnessed
+    if type(held) ~= 'table' and type(match.deadWitness) == 'table' then
+        held = match.deadWitness[id]
+    end
+
     local byWitness = false
     if not killer and namedAFighter ~= true and not claimedRoster then
-        -- A DEATH THE DEAD SWEEP BOOKED READS ITS OWN COPY AND NOTHING ELSE:
+        -- A DEATH THE DEAD SWEEP HAS SEEN READS ITS COPY AND NOTHING ELSE:
         -- the last hit before the body first read dead, not whatever the
         -- memory holds by the time the booking came round. Falling back to
         -- the memory here paid whoever shot the corpse during the count
         -- whenever the copy was empty or too old -- a fall, a drowning, a
         -- grenade of their own. runServerChecks says why the copy exists.
         local witness
-        if type(witnessed) == 'table' then
-            witness = heldWitness(witnessed)
+        if type(held) == 'table' then
+            witness = heldWitness(held)
         else
             witness = damagerOf(match, id)
         end
@@ -3101,10 +3186,11 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     end
 
     -- WHETHER THE SERVER SAW THIS KILLER'S SHOT LAND, for the gun game's
-    -- sparing below -- asked before the spend, which would answer no. A
-    -- killer the memory itself supplied was seen by definition.
+    -- sparing below -- asked before the spend, which would answer no, and of
+    -- the sweep's copy when there is one. A killer the memory itself
+    -- supplied was seen by definition.
     local killerSeen = playingLadder and killer ~= nil
-        and (byWitness or sawLandedBy(match, id, killer.src))
+        and (byWitness or sawLandedBy(match, id, killer.src, held))
 
     -- SPENT, WHOEVER IT NAMED OR DID NOT. One landed hit is evidence about
     -- ONE death, and leaving it behind would let the next death inside the
@@ -3540,6 +3626,18 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     -- firearm rung -- and that hands them a kill, a rung and a killReward.
     -- The tier still moves, it just moves to somebody else.
     --
+    -- A SILENT DEATH THE SERVER SAW A HIT BEHIND IS THE ONE EXCEPTION, AND IT
+    -- IS NOT A DODGE EITHER. The dead sweep books it with the server's own
+    -- record of the last hit (runServerChecks), so it can carry a killer --
+    -- and that killer is judged on their rung ALONE, because a booking has
+    -- no cause of death to read. That is exactly what a report naming no
+    -- weapon has always been given: the blade check above may only make
+    -- things worse for the client that sends it, so a cheat was always free
+    -- to leave it out. Lying on the floor for deadTicks seconds instead buys
+    -- nothing that a report with no cause could not. Charging every silent
+    -- death anyway would only cost the honest fighter whose report was lost,
+    -- and hand their killer the rung all the same.
+    --
     -- UNLESS THAT OPPONENT HAS HIT THE CAP ON THIS VICTIM, and then it moves
     -- to nobody: creditsTier refuses them the rung. Naming a capped opponent
     -- on a gun used to spare you anyway, so every fall and suicide could be
@@ -3547,6 +3645,15 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     -- only when the server itself watched THAT killer land a hit in the last
     -- five seconds -- the honest victim, shot by a capped fighter, is spared
     -- as before; a claim the server saw nothing behind is charged.
+    --
+    -- WHAT THAT LEANS ON, and it is only with a cap switched on (it ships
+    -- off): that the server is handed the killing shot at all. A packet the
+    -- damage handler drops before recording -- one with no hit list, or with
+    -- crossfireGuard off, one padded past MAX_HITS, which the SHOOTER's own
+    -- client can arrange -- leaves an honest victim of a capped killer
+    -- charged. And a pair who agree it can still land one real hit and have
+    -- the victim die inside the five seconds. Both are the cap's own terms,
+    -- not something this line adds; EXPLOITS-YOUR-CALL.md has them.
     --
     -- SO A FALL, A DROWNING, A SUICIDE AND A REFUSED KILL CLAIM ALL STILL
     -- COST A TIER. That is not the literal sentence "you only drop a level

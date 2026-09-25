@@ -1055,6 +1055,135 @@ t.test('a body the server briefly cannot see keeps the moment it first read dead
     t.equals(killsOf(server, 1), 1, 'THE DEFECT: one blind reading moved the window past the shooter')
 end)
 
+t.test('THE LONG BLINDNESS: a copy from before a minute unread does not pay for a death after it', function()
+    -- The copy is kept through a reading that cannot see the body. Kept
+    -- through SIXTY of them, it was still there when the body next read dead
+    -- and paid the fighter who hit them a minute ago -- while the fighter the
+    -- server had just watched land a hit was robbed.
+    local server = silentServer(4)
+    server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.setHealth(2, false)
+    for _ = 1, 60 do
+        server.wait(1000)
+        server.settle(1)
+    end
+    t.equals(server.rowOf(2).deaths or 0, 0, 'a body nobody could see was booked, so this tests nothing')
+
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(500)
+    server.setHealth(2, 0)
+
+    t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the death, so nothing was tested')
+    t.equals(killsOf(server, 1), 0, 'THE DEFECT: a hit a minute old took the kill')
+    t.equals(killsOf(server, 3), 1, 'the fighter the server actually watched was robbed')
+end)
+
+t.test('and the copy lives through two unreadable checks, not a third', function()
+    -- ONE is the hitch above. The limit is what the test before this one
+    -- needs; the boundary is pinned here so neither side of it can move
+    -- without a failure saying so.
+    local function run(blind)
+        local server = silentServer(4)
+        server.play(3)
+
+        t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+        server.wait(3000)
+        server.setHealth(2, 0)
+        server.settle(1)
+        server.setHealth(2, false)
+        for _ = 1, blind do
+            server.wait(1000)
+            server.settle(1)
+        end
+        server.wait(1000)
+        server.setHealth(2, 0)
+
+        t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the death, so nothing was tested')
+        return killsOf(server, 1)
+    end
+
+    t.equals(run(2), 1, 'two blind checks dropped a copy the shooter had earned')
+    t.equals(run(3), 0, 'a copy survived three blind checks, so the limit does nothing')
+end)
+
+t.test('and blind checks that a dead one comes between do not add up', function()
+    -- The limit counts unreadable checks IN A ROW. A body that flickers --
+    -- blind, dead, blind, dead -- is still a body the server keeps seeing
+    -- dead, and the copy of what hit it stays.
+    local server = silentServer(4)
+    server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.wait(2000)
+    server.setHealth(2, 0)
+    server.settle(1)
+    for _ = 1, 3 do
+        for _, reading in ipairs({ false, false, 0 }) do
+            server.setHealth(2, reading)
+            server.wait(1000)
+            server.settle(1)
+        end
+    end
+    t.equals(server.rowOf(2).deaths or 0, 0, 'the flickering body was booked early, so this tests nothing')
+
+    server.setHealth(2, 0)
+    t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the death, so nothing was tested')
+    t.equals(killsOf(server, 1), 1, 'blind checks with dead ones between them were counted as one long blindness')
+end)
+
+t.test('THE LATE REPORT: once the sweep has read the body dead, a report is judged on its copy', function()
+    -- The report is still on its way when the body already lies on the
+    -- floor, and a third fighter empties a magazine into it. Read against
+    -- the live memory, the report named nobody and paid the corpse shooter;
+    -- the sweep's copy names the fighter who dropped them.
+    local server = silentServer(4)
+    server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.setHealth(2, 0)
+    server.settle(1)
+    t.equals(server.rowOf(2).deaths or 0, 0, 'one reading was enough to book it, so there was no window')
+
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(300)
+    server.diesNamingNobody(2)
+
+    t.equals(server.rowOf(2).deaths, 1, 'the report was not booked, so nothing was tested')
+    t.equals(killsOf(server, 3), 0, 'THE DEFECT: a shot into the corpse took a kill the late report left open')
+    t.equals(killsOf(server, 1), 1, 'the fighter who dropped them was not paid')
+end)
+
+t.test('THE STALE CORPSE: the old body read just after a respawn leaves no copy behind', function()
+    -- The client stands the body up only when the respawn event reaches it,
+    -- and until then the server reads the corpse it left. A copy taken off
+    -- that corpse was empty and outlived it: killed again before the next
+    -- reading, the fighter was paid to nobody.
+    local server = silentServer(4)
+    server.play(3)
+
+    server.diesNamingNobody(2)
+    t.equals(server.rowOf(2).deaths, 1, 'the first death was not booked, so nothing was tested')
+    server.setHealth(2, 0)
+    server.settle(1)
+    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so there is no stale corpse')
+
+    -- The sweep reads the corpse the respawn has not reached yet ...
+    server.settle(1)
+    -- ... and the new body is killed before the next reading.
+    server.wait(200)
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.wait(800)
+
+    t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the second death, so nothing was tested')
+    t.equals(server.rowOf(2).deaths, 2, 'the second death was not booked, so nothing was tested')
+    t.equals(killsOf(server, 1), 1, 'THE DEFECT: a copy of the old corpse paid the spawn kill to nobody')
+end)
+
 t.test('a report that lands mid-count still names its own killer', function()
     -- The copy is a second opinion for a death NOBODY reported. A client
     -- that reports while the sweep is counting, naming a fighter on the
@@ -1133,6 +1262,31 @@ t.test('and on a ladder the silent bleed-out still promotes the shooter', functi
     t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the death, so nothing was tested')
     t.isTrue(server.rowOf(1).tier > before,
         'THE DEFECT: the shooter stayed on the rung he killed from')
+end)
+
+t.test('and the grace after a respawn is one check long, no more', function()
+    -- Longer than a check, and the first REAL dead reading of a spawn kill
+    -- is skipped too -- so the copy is taken a check late, after a third
+    -- fighter has had a second to fire into the body.
+    local server = silentServer(4)
+    server.play(3)
+
+    server.diesNamingNobody(2)
+    server.setHealth(2, 0)
+    server.settle(1)
+    t.isTrue(server.rowOf(2).alive == true, 'the fighter never respawned, so there is no grace to measure')
+
+    server.wait(200)
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.wait(800)
+    server.settle(1)
+    server.wait(500)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(500)
+
+    t.isTrue(sweepUntilBooked(server, 2), 'the sweep never booked the second death, so nothing was tested')
+    t.equals(killsOf(server, 3), 0, 'the grace ran past one check and let a corpse shot take the kill')
+    t.equals(killsOf(server, 1), 1, 'the spawn killer was not paid')
 end)
 
 -- ======================================================================
@@ -1297,6 +1451,105 @@ t.test('and a silent bleed-out the sweep books on a capped killer\'s shot is spa
     t.equals(server.rowOf(2).tier, 3, 'a shot the server watched land cost the victim a tier')
 end)
 
+t.test('and exactly five seconds still spares, the same edge the credit has', function()
+    local server = cappedLadder()
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(5000)
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 3, 'a hit exactly five seconds old was treated as expired')
+end)
+
+t.test('and a capped killer who hit twice is judged on the LATER hit', function()
+    -- Each attacker keeps the time of their last hit, not their first: a
+    -- fighter who landed one six seconds ago and another a second ago DID
+    -- land one in the window.
+    local server = cappedLadder()
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(5000)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(1000)
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 3, 'the killer\'s second hit was forgotten and the victim charged')
+end)
+
+t.test('and on their OWN hit, not the last one anybody landed', function()
+    -- 3's shot is six seconds old; 4 hit a second ago. The window is 3's to
+    -- be inside, and they are not.
+    local server = cappedLadder()
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(5000)
+    t.isTrue(server.match.RememberDamage(2, 4), 'the server refused to remember a landed hit')
+    server.wait(1000)
+    server.diesNaming(2, 3)
+    t.equals(server.rowOf(2).tier, 2, 'somebody else\'s recent hit spared a capped kill by 3')
+end)
+
+t.test('and a report that arrives after the body first read dead is measured to that reading', function()
+    -- The same death, reported late, used to be charged -- the clock ran on
+    -- to the report -- while left to the sweep it was spared. Both are now
+    -- measured to the moment the body was first seen down.
+    local server = cappedLadder(function(config)
+        config.Match.serverChecks.enabled = true
+        config.Match.serverChecks.deadTicks = 4
+    end)
+    local before = server.rowOf(2).deaths or 0
+
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(3000)
+    server.setHealth(2, 0)
+    server.settle(1)
+    t.equals(server.rowOf(2).deaths or 0, before, 'one reading booked it, so there was no window')
+    server.wait(2500)
+    server.diesNaming(2, 3)
+
+    t.equals(server.rowOf(2).deaths, before + 1, 'the report was not booked, so nothing was tested')
+    t.equals(server.rowOf(2).tier, 3,
+        'THE DEFECT: a capped kill the server saw land was charged because the report came late')
+end)
+
+t.test('and the copy holds a late report to the same five seconds', function()
+    -- Measured to the first dead reading, a hit six seconds before it is as
+    -- stale as a hit six seconds before a report -- the copy does not keep
+    -- an old shot alive for longer.
+    local server = cappedLadder(function(config)
+        config.Match.serverChecks.enabled = true
+        config.Match.serverChecks.deadTicks = 4
+    end)
+    local before = server.rowOf(2).deaths or 0
+
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.wait(6000)
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    server.diesNaming(2, 3)
+
+    t.equals(server.rowOf(2).deaths, before + 1, 'the report was not booked, so nothing was tested')
+    t.equals(server.rowOf(2).tier, 2, 'a hit six seconds before the fall spared a capped kill')
+end)
+
+t.test('and a capped opponent firing into a body that fell on its own spares nothing', function()
+    -- THE ONE THAT NEEDS NO ACCOMPLICE. The victim falls with nothing having
+    -- hit them, waits for a capped opponent on a gun rung to fire into the
+    -- body, then names them. Read against the live memory, that shot was
+    -- "seen" and the fall was spared.
+    local server = cappedLadder(function(config)
+        config.Match.serverChecks.enabled = true
+        config.Match.serverChecks.deadTicks = 4
+    end)
+    local before = server.rowOf(2).deaths or 0
+
+    server.setHealth(2, 0)
+    server.settle(1)
+    server.wait(300)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the corpse hit was refused, so this tests nothing')
+    server.wait(300)
+    server.diesNaming(2, 3)
+
+    t.equals(server.rowOf(2).deaths, before + 1, 'the report was not booked, so nothing was tested')
+    t.equals(server.rowOf(2).tier, 2, 'THE DEFECT: a shot into a body that fell turned the fall into a spared kill')
+end)
+
 -- ======================================================================
 -- WHAT THE MEMORY ITSELF WILL AND WILL NOT WRITE DOWN
 -- ======================================================================
@@ -1318,6 +1571,38 @@ t.test('RememberDamage refuses everything that is not two fighters in one live r
 
     -- AND THE ONE IT MUST ACCEPT, so none of the above passes by accident.
     t.isTrue(server.match.RememberDamage(2, 1), 'two fighters in one live round were refused')
+end)
+
+t.test('a later hit by somebody else becomes the one credited', function()
+    -- The row is updated in place now, beside the per-attacker times, so the
+    -- line that moves "who hit last" onto the newest hit is the only thing
+    -- keeping the credit on the right fighter.
+    local server = newServer()
+    server.play(3)
+
+    t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+    server.wait(1000)
+    t.isTrue(server.match.RememberDamage(2, 3), 'the server refused to remember a landed hit')
+    server.diesNamingNobody(2)
+
+    t.equals(killsOf(server, 3), 1, 'the last fighter to land a hit was not credited')
+    t.equals(killsOf(server, 1), 0, 'an earlier hit took the credit from a later one')
+end)
+
+t.test('and every hit starts the five seconds again', function()
+    -- One fighter hitting once a second for seven seconds, and the body
+    -- going down a second after the last: that is a kill. A row that kept
+    -- the time of its FIRST hit had expired it.
+    local server = newServer()
+    server.play(3)
+
+    for _ = 1, 7 do
+        t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
+        server.wait(1000)
+    end
+    server.diesNamingNobody(2)
+
+    t.equals(killsOf(server, 1), 1, 'a fighter still hitting them was dropped by a window measured from the first hit')
 end)
 
 t.test('nothing it remembers survives the round it was remembered in', function()

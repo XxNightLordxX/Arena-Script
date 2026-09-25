@@ -71,8 +71,10 @@ Everything below is in the shipped code. Where something is off by default, or i
     client that simply never reports one cannot be immortal. **The kill goes
     to the last fighter the server itself saw land a hit in the five seconds
     before the body first read dead** — through the same distance, fence and
-    team checks as any kill — **and to nobody otherwise**: a fall credits
-    nobody, and neither does a shot into the body while it is being counted.
+    team checks as any kill — **and to nobody otherwise**: a fall nobody was
+    seen hitting them before credits nobody, and neither does a shot into the
+    body after the check that first read it dead. A report that arrives after
+    that check is judged the same way.
   - Both act only on something seen several checks running, and never on a
     body the server cannot see, so a player whose game is still loading is not
     mistaken for a cheat.

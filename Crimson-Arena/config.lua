@@ -495,8 +495,8 @@ Config.Match = {
 
         -- HOW MANY ONE-SECOND CHECKS IN A ROW a body must read as dead, with
         -- no death reported, before the server books the death itself. It
-        -- can credit only the last fighter the server saw land a hit in the 5s
-        -- before the body FIRST read dead -- never a shot into the corpse. A
+        -- credits only the last fighter the server saw land a hit in the 5s
+        -- before the check that FIRST read the body dead, and nothing after. A
         -- life is spent either way, which is the half a silent client skipped.
         --
         -- 0 switches this half off and leaves the fence.
@@ -970,13 +970,13 @@ Config.Modes = {
         --
         -- READ THE OTHER WAY ROUND BEFORE YOU JUDGE IT. The obvious wording
         -- is "you only drop a tier if a melee kill did it", and that rule
-        -- cannot be defended: a client that simply never reports its own
-        -- death is booked by the arena's own dead sweep with NO killer
-        -- attached, so there is no melee to find, no tier is taken, no life
-        -- is spent -- ladders spend none -- and the unwitnessed-death price
-        -- is skipped because the server saw it itself. Total tier immunity,
-        -- for ever, by sending nothing. Putting the burden on the SPARING
-        -- instead closes that: silence proves nothing, so silence is charged.
+        -- cannot be defended: a client that never reports its own death is
+        -- booked by the dead sweep with no killer unless the server saw a hit
+        -- land, so no melee to find, no tier taken, no life spent -- ladders
+        -- spend none -- and no unwitnessed price. Tier immunity for ever, by
+        -- sending nothing. The burden on the SPARING closes it: silence proves
+        -- nothing, so it is charged. A killer the server DID see is judged on
+        -- their rung alone, as a report naming no weapon always has been.
         --
         -- WHAT THAT COSTS HONEST PLAYERS, said plainly: a fall, a drowning, a
         -- suicide, a boundary bleed and a refused kill claim all take a tier.

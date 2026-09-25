@@ -736,6 +736,65 @@ t.test('DEFECT: the floor prop is MEASURED, and a coordinate\'s type is not \'ta
             :format(guessed, floor))
 end)
 
+--- Every clientDebug event this client sent, as a list of line lists.
+local function debugEvents(c)
+    local out = {}
+    for _, sent in ipairs(c.serverEvents) do
+        if sent.name == 'crimson_arena:server:clientDebug' and type(sent.payload) == 'table' then
+            local lines = type(sent.payload.lines) == 'table' and sent.payload.lines
+                or (type(sent.payload.line) == 'string' and { sent.payload.line } or {})
+            out[#out + 1] = lines
+        end
+    end
+    return out
+end
+
+local function eventHas(lines, fragment)
+    for _, line in ipairs(lines) do
+        if tostring(line):find(fragment, 1, true) then return true end
+    end
+    return false
+end
+
+t.test('THE AUDIT: a fallback build sends its whole report as ONE event, so the rate limit keeps all of it', function()
+    -- The server keeps one debug event per second per player. This build
+    -- sent three in one frame -- the fallback line, the scenery report and the
+    -- floor briefing -- so only the first ever reached the operator.
+    local models = {}
+    for name, dims in pairs(World.DEFAULT_MODELS) do
+        if not name:find('bblock_huge', 1, true) then models[name] = dims end
+    end
+    local c = newClient({ models = models })
+    c.enter('skydome')
+
+    local carrying = {}
+    for _, lines in ipairs(debugEvents(c)) do
+        if eventHas(lines, 'arena scenery') then carrying[#carrying + 1] = lines end
+    end
+    t.equals(#carrying, 1, ('THE DEFECT: the build sent %d events, and the server keeps only the first'):format(#carrying))
+
+    local report = carrying[1] or {}
+    t.isTrue(eventHas(report, 'fell back to'), 'the fallback line is not in the one event')
+    t.isTrue(eventHas(report, 'piece(s) built'), 'the piece count is not in the one event')
+    t.isTrue(eventHas(report, 'BUILT THE FLOOR OUT OF'), 'the floor briefing is not in the one event')
+end)
+
+t.test('THE AUDIT: the wall-gap warning reaches the SERVER console, with a remedy that does not hang the wall over air', function()
+    -- It fired on every entry of the shipped skydome and went only to the
+    -- player's F8. Its remedy -- "move the cover ring out to <corner>" -- would
+    -- have stood the wall over open air along the floor's short sides.
+    local c = newClient()
+    c.enter('skydome')
+
+    local found = nil
+    for _, lines in ipairs(debugEvents(c)) do
+        if eventHas(lines, 'THE WALL DOES NOT ENCLOSE THE FLOOR') then found = lines end
+    end
+    t.isTrue(found ~= nil, 'THE DEFECT: the wall-gap warning never reached the server console')
+    t.isTrue(found ~= nil and eventHas(found, 'Do NOT simply move the ring out'),
+        'the warning still tells the operator to move the wall over open air')
+end)
+
 t.test('DEFECT: a client that fell back to the small prop is TOLD, not just counted', function()
     -- ONE OF THREE PLAYERS CRASHED ENTERING THE SKYDOME, EVERY TIME, WHILE
     -- THE OTHER TWO WERE FINE.

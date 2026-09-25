@@ -29,10 +29,13 @@ print('clientdebug_spec')
 --- server/main.lua loaded far enough to reach the clientDebug handler.
 --- @param debugOn boolean
 --- @return table
-local function newServer(debugOn)
+--- @param debugOn boolean
+--- @param firstname string|nil -- a character name to give player 7, hostile or not
+local function newServer(debugOn, firstname)
     local players = {
         [7] = {
             citizenid = 'CID007',
+            firstname = firstname,
             name = 'Fighter 7',
             money = { cash = 0, bank = 0 },
             job = { name = 'unemployed', grade = { level = 0 } },
@@ -202,6 +205,23 @@ t.test('a newline cannot forge a console line of its own', function()
     end
     t.contains(s.log(), 'nothing to see here',
         'the text was dropped rather than flattened, so this is passing on an empty log')
+end)
+
+t.test('THE AUDIT: a player NAME carrying a newline cannot forge a console line either', function()
+    -- The line text was scrubbed and the name printed beside it was not. A
+    -- character name is player text too, and it went out raw on every line of
+    -- every report -- up to forty-one forged lines per batched event.
+    local s = newServer(true, 'Evil\n[crimson_arena] the arena refunded everybody')
+    s.say(7, 'harmless')
+    s.send(7, { lines = { 'first', 'second' } })
+
+    t.isTrue(#s.lines >= 3, 'nothing was printed, so this is passing on an empty log')
+    for _, line in ipairs(s.lines) do
+        t.equals(line:find('\n', 1, true), nil,
+            'THE DEFECT: a player name wrote a newline into the console log: ' .. line)
+    end
+    t.contains(s.log(), 'refunded everybody',
+        'the name was dropped rather than flattened, so the attribution is lost')
 end)
 
 t.test('and neither can an escape sequence clear the operator\'s screen', function()

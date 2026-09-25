@@ -2558,6 +2558,25 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     -- warning below can name it. It is the first thing worth knowing about a
     -- floor that misbehaves and it was scoped to the block that resolved it.
     local floorModel, floorWanted = nil, nil
+
+    -- EVERYTHING THIS BUILD HAS TO TELL THE OPERATOR, SENT AS ONE EVENT AT
+    -- THE END. The server allows one debug event per second per player and
+    -- keeps the first; this build used to send three in the same frame -- the
+    -- fallback line, the scenery report and the floor briefing -- so the
+    -- briefing never reached the server console at all, which is the exact
+    -- fault 716608a had fixed and 2af9f03 put back. Reproduced by the audit of
+    -- this code. Each line still goes to the player's own F8 where it is
+    -- written; only the copy for the server waits here.
+    local relay = {}
+
+    --- A once-a-session line, for this player's F8 AND the operator.
+    --- ArenaLogOnce prints only the first time; the relay copies it only the
+    --- first time, so the server console gets it exactly as often as F8 does.
+    local function relayOnce(key, text)
+        if not saidOnce[key] then relay[#relay + 1] = text end
+        ArenaLogOnce(key, text)
+    end
+
     if platform then
         local hash, name, abandoned = loadPropModel(platform.models, stillWanted)
         if abandoned then return false end
@@ -2580,7 +2599,7 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
                 local fell = ('arena scenery: the floor fell back to \'%s\' -- this build does not have \'%s\'.')
                     :format(tostring(name), tostring(platform.models[1]))
                 print('[crimson_arena] ' .. fell)
-                ArenaDebugReport({ fell })
+                relay[#relay + 1] = fell
             end
         end
     end
@@ -2693,9 +2712,9 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     -- appear between one round and the next, so the second printing of the
     -- same line tells nobody anything the first did not.
     for model in pairs(failed) do
-        ArenaLogOnce('model-failed:' .. tostring(model),
-            'arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.',
-            tostring(model))
+        relayOnce('model-failed:' .. tostring(model),
+            ('arena scenery: the model \'%s\' would not load, so those pieces are missing. Check it exists on this build.')
+                :format(tostring(model)))
     end
 
     -- PRINTED WHENEVER ANYTHING WAS ASKED FOR, not only when the floor could
@@ -2716,7 +2735,7 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
                 ('arena scenery: the floor prop measures %.2f x %.2fm and its surface is at %.2f.')
                     :format(measured.x, measured.y, arenaSurfaceZ or 0.0)
         end
-        ArenaDebugReport(scenery)
+        for _, line in ipairs(scenery) do relay[#relay + 1] = line end
 
         -- WHICH PROP THIS CLIENT GOT DECIDES HOW HEAVY THE ARENA IS, AND THE
         -- TWO ANSWERS ARE NOT CLOSE.
@@ -2783,8 +2802,10 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
                     ('  The model this arena asks for first is \'%s\'.'):format(tostring(floorWanted))
             end
 
-            for _, line in ipairs(briefing) do print('[crimson_arena] ' .. line) end
-            ArenaDebugReport(briefing)
+            for _, line in ipairs(briefing) do
+                print('[crimson_arena] ' .. line)
+                relay[#relay + 1] = line
+            end
         end
     end
 
@@ -2807,24 +2828,35 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
         -- this is a misconfiguration in config.lua, and config.lua does not
         -- change between two rounds at the same arena.
         if radius > 0.0 and reach > radius then
-            ArenaLogOnce('floor-outside:' .. tostring(arenaKey),
+            relayOnce('floor-outside:' .. tostring(arenaKey),
                 ('arena scenery: THE FLOOR REACHES OUTSIDE THE ARENA -- it extends %.2fm from the middle and the boundary is %.2fm. The outer ring is solid ground you bleed on. Raise Config.Arenas["%s"].boundary.radius above %.2fm, or lower platform.radius.')
                 :format(reach, radius, tostring(arenaKey), reach))
         end
 
         if coverReach > 0.0 and reach > coverReach + 0.5 then
-            ArenaLogOnce('wall-gap:' .. tostring(arenaKey),
-                ('arena scenery: THE WALL DOES NOT ENCLOSE THE FLOOR -- the furthest cover stands %.2fm out and the floor reaches %.2fm, so there is %.2fm of walkable ground OUTSIDE the wall and fighters can walk round it and fall. Either move the cover ring out to %.2fm in Config.Arenas["%s"].cover, or give platform.models a smaller prop so the floor stops short of the wall.')
-                :format(coverReach, reach, reach - coverReach, reach, tostring(arenaKey)))
+            -- THE REMEDY USED TO SAY "move the cover ring out to <reach>", and
+            -- following it would have stood the wall over open air: `reach` is
+            -- the floor's furthest CORNER, and a tiled floor is a rectangle,
+            -- so along its short sides the floor stops long before that. The
+            -- audit of the skydome worked it through -- 82.60m at the corners,
+            -- 48.90m along the sides. Only a wall laid along the floor's own
+            -- edge, or a floor prop small enough to follow the ring, closes it.
+            relayOnce('wall-gap:' .. tostring(arenaKey),
+                ('arena scenery: THE WALL DOES NOT ENCLOSE THE FLOOR -- the furthest cover stands %.2fm out and the floor reaches %.2fm at its furthest corner, so there is walkable ground OUTSIDE the wall and fighters can walk round it and fall. Do NOT simply move the ring out to %.2fm: a tiled floor is a rectangle, and along its short sides it ends well before that, so the wall would stand over open air. Lay the wall along the floor\'s own edge in Config.Arenas["%s"].cover, or give platform.models a prop small enough to follow the ring.')
+                :format(coverReach, reach, reach, tostring(arenaKey)))
         end
     end
 
     if needsFloor and builtFloor == 0 then
         arenaSurfaceZ = nil
-        print('[crimson_arena] arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.')
+        local none = 'arena scenery: NO FLOOR was built for an arena that supplies its own. Nobody is being placed into it -- there is nothing under it.'
+        print('[crimson_arena] ' .. none)
+        relay[#relay + 1] = none
+        ArenaDebugReport(relay)
         return false
     end
 
+    ArenaDebugReport(relay)
     return true
 end
 
@@ -3478,7 +3510,13 @@ end)
 -- ----------------------------------------------------------------------
 
 CreateThread(function()
-    Wait(2000)
+    -- FIVE SECONDS, NOT TWO, and not for the outline's sake. The props check
+    -- above also waits two seconds from the same start, so both reports were
+    -- sent in the same frame and the server's one-event-a-second limit kept
+    -- whichever arrived first -- sometimes this line, sometimes the whole props
+    -- report. Found by the audit of this code. A three-second gap survives a
+    -- start-up hitch and network jitter; a few hundred milliseconds would not.
+    Wait(5000)
 
     local teamMode = false
     for _, mode in ipairs(Arena.GetEnabledModes()) do

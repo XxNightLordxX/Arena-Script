@@ -1191,6 +1191,15 @@ onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, dat
     local payload = tableArg(data)
     if not payload then return end
 
+    -- THE NAME IS PLAYER TEXT TOO, and it was the one thing on these lines
+    -- printed as it came. A character or FiveM name carrying a newline
+    -- forged a '[crimson_arena] ...' line in the operator's log for every
+    -- line of every report -- up to forty-one per event since reports were
+    -- batched -- which is exactly what scrubbedForLog is here to stop.
+    -- Found by the audit of this code. Read once per event, which also
+    -- replaces up to forty-one framework lookups with one.
+    local who = scrubbedForLog(ArenaPlayerName(src), 64)
+
     -- A WHOLE REPORT IN ONE EVENT, BECAUSE THE RATE LIMIT ATE THE REST.
     --
     -- MEASURED on a live server: the props check printed its heading --
@@ -1212,12 +1221,12 @@ onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, dat
         for _, entry in ipairs(lines) do
             if printed >= MAX_DEBUG_LINES then
                 ArenaDebug('client %s (%s): ...report cut at %d lines.',
-                    tostring(src), ArenaPlayerName(src), MAX_DEBUG_LINES)
+                    tostring(src), who, MAX_DEBUG_LINES)
                 break
             end
             if type(entry) == 'string' and entry ~= '' then
                 printed = printed + 1
-                ArenaDebug('client %s (%s): %s', tostring(src), ArenaPlayerName(src),
+                ArenaDebug('client %s (%s): %s', tostring(src), who,
                     scrubbedForLog(entry, MAX_DEBUG_LINE))
             end
         end
@@ -1232,7 +1241,7 @@ onClient('crimson_arena:server:clientDebug', RATE.clientDebug, function(src, dat
     -- HERE, and what its absence from the other handler allowed.
     line = scrubbedForLog(line, MAX_DEBUG_LINE)
 
-    ArenaDebug('client %s (%s): %s', tostring(src), ArenaPlayerName(src), line)
+    ArenaDebug('client %s (%s): %s', tostring(src), who, line)
 end)
 
 --- The admin tools the tablet can run, and what each one answers with.

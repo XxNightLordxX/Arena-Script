@@ -661,6 +661,9 @@ t.test('A KILLER WHO WALKED OUT: the log says the victim named them, and says no
     -- NOT "has left": the row is gone, and a server id that never was in the
     -- round reads exactly the same from here.
     t.contains(line, 'or were never in it', 'the line asserts a departure the server cannot know')
+    -- AND IT IS NOT LOOKED UP BY NAME: off the roster, the id may be anybody's.
+    t.contains(line, 'By name: "Fighter 2" and nobody on the roster (id 1 is not looked up',
+        'the line looked an id off the roster up by name')
     t.isTrue(not server.said('UNATTRIBUTED'), 'THE DEFECT: the named leaver was logged as nobody named')
     t.isTrue(not server.said('older client'), 'THE DEFECT: an up-to-date client was blamed for its age')
     t.equals(unattributedNotices(server, 2), 0,
@@ -709,6 +712,10 @@ t.test('and a team-mate who is already out still gets a line, because TEAMKILL s
     local line = lineSaying(server, 'KILL NOT CREDITED')
     t.isNotNil(line, 'THE DEFECT: no always-on line says the named team-mate claim was refused')
     t.contains(line, 'naming 1 as their killer', 'the line does not say whom they named')
+    -- THE SIDE IS ASKED FIRST, and that is the reason given: they are out
+    -- as well, but a team-mate could not have been credited either way.
+    t.contains(line, 'is on their own side, and friendly fire is off', 'the line gives the wrong reason')
+    t.contains(line, 'By name: "Fighter 2" and "Fighter 1"', 'a named fighter still on the roster lost their name')
     t.isTrue(not server.said('UNATTRIBUTED'), 'THE DEFECT: the named team-mate was logged as nobody named')
     t.equals(unattributedNotices(server, 2), 0,
         'THE DEFECT: the victim was told nothing could be pinned on anybody')
@@ -727,7 +734,24 @@ t.test('a server id that is nobody in the round is still logged, always on', fun
     t.isNotNil(line, 'THE DEFECT: a claim naming a stranger had no always-on line of its own')
     t.contains(line, 'naming 99 as their killer', 'the line does not say whom they named')
     t.contains(line, 'or were never in it', 'the line asserts a departure the server cannot know')
+    t.contains(line, 'id 99 is not looked up', 'the line does not say why the id has no name')
     t.isTrue(not server.said('UNATTRIBUTED'), 'the stranger claim was logged twice')
+end)
+
+t.test('and an id that belongs to somebody on the server, but not in the round, does not print their name', function()
+    -- THE BYSTANDER. Player 3 is online, nowhere near the arena. A client
+    -- naming 3 had the framework asked who 3 is, and an innocent player's
+    -- name went into the always-on record as the accused.
+    local server = newServer(function(config) config.Debug = false end)
+    server.play(2)
+
+    server.diesNaming(2, 3)
+
+    local line = lineSaying(server, 'KILL NOT CREDITED')
+    t.isNotNil(line, 'no always-on line for the refused claim, so nothing was tested')
+    t.contains(line, 'naming 3 as their killer', 'the line does not say whom they named')
+    t.isNil((line or ''):find('Fighter 3', 1, true),
+        'THE DEFECT: a player who was never in the round was named as the accused')
 end)
 
 t.test('and a stranger claim the memory DID explain is reported as neither', function()
@@ -747,6 +771,13 @@ t.test('and a stranger claim the memory DID explain is reported as neither', fun
     t.isTrue(server.said('kill credited from the server'), 'the debug line naming the witness is gone')
     t.isTrue(not server.said('older client'),
         'THE DEFECT: the witness line blamed an older client for a report that named an id')
+
+    -- THE KILL LINE SAYS THE CLIENT NAMED SOMEBODY, and whom: "the client
+    -- named nobody" was the misstatement the UNATTRIBUTED line was cured of.
+    local line = server.line('KILL: "Fighter 3"') or ''
+    t.contains(line, "credited from the server's own record of the last hit (the client named 99, who is not on "
+        .. "this round's roster", 'THE DEFECT: the KILL line says the client named nobody')
+    t.isNil(line:find('the client named nobody', 1, true), 'the KILL line says the client named nobody')
 end)
 
 t.test('CONTROL: a report naming nobody -- no id, its own id, nought, negative -- is still UNATTRIBUTED', function()
@@ -1120,6 +1151,16 @@ end)
 -- was asked about.
 -- ======================================================================
 
+--- The LAST console line carrying this fragment, or nil -- the fixtures
+--- below kill the same fighter several times before the death under test.
+local function lastLineWith(server, fragment)
+    for index = #server.console, 1, -1 do
+        local line = server.console[index]
+        if line:find(fragment, 1, true) then return line end
+    end
+    return nil
+end
+
 --- A gun game on a pinned seven-rung ladder with the per-victim cap ON,
 --- where player 3 stands on a gun rung and has taken all they may off
 --- player 2, and player 2 has two tiers to lose.
@@ -1170,6 +1211,11 @@ t.test('THE CAP: a capped killer the server SAW land the shot still spares the v
     t.equals(server.rowOf(3).ladderKills, 3, 'the capped kill moved the killer')
     t.equals(server.rowOf(2).tier, 3, 'a shot the server watched land cost the victim a tier')
     t.equals(server.rowOf(2).tiersLost, nil, 'and was charged')
+
+    local line = lastLineWith(server, 'killed "Fighter 2"') or ''
+    t.contains(line, 'the killer stays on tier 4/7 -- this victim has already paid out their tiers',
+        'the KILL line does not say the capped kill moved nobody')
+    t.contains(line, 'the victim keeps tier 3/7, spared by a gun kill', 'the KILL line does not say the victim was spared')
 end)
 
 t.test('and so does one whose shot was followed by somebody else\'s round into the body', function()
@@ -1214,6 +1260,11 @@ t.test('but a capped killer the server saw NOTHING from spares nothing', functio
     t.equals(server.rowOf(2).tier, 2, 'THE DEFECT: naming the capped opponent kept the tier')
     t.equals(server.rowOf(2).tiersLost, 1, 'and nothing was charged')
     t.equals((server.rowOf(2).ladderVictims or {})[4], 1, 'the lost tier did not hand back a credit')
+
+    local line = lastLineWith(server, 'killed "Fighter 2"') or ''
+    t.contains(line, 'the killer stays on tier 4/7 -- this victim has already paid out their tiers',
+        'the KILL line does not say the capped kill moved nobody')
+    t.contains(line, 'the victim goes from tier 3 to 2/7', 'the KILL line does not say the victim was charged')
 end)
 
 t.test('and neither does a hit that has expired, or one by somebody else', function()
@@ -1640,6 +1691,205 @@ t.test('a line that cannot be built never costs the victim their respawn', funct
     t.equals(server.rowOf(1).kills, 1, 'the kill itself was lost with the line')
     server.settle(3)
     t.isTrue(server.rowOf(2).alive == true, 'THE VICTIM WAS LEFT DEAD because a log line failed')
+end)
+
+-- ======================================================================
+-- EVERY BRANCH OF THE LINE, ASSERTED
+--
+-- The suite drove all of these and asserted almost none: the wording of the
+-- outcome could be broken branch by branch with every spec still green. The
+-- line is a record an operator settles arguments with, so each thing it
+-- can say is pinned to the kill that makes it say it.
+-- ======================================================================
+
+t.test('a victim on their last-but-one life has 1 life left, not 1 lives', function()
+    local server = newServer(function(config) config.Match.lives = 2 end)
+    server.play(3)
+    server.diesNaming(2, 1)
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the kill was not written down')
+    t.contains(lines[1], 'the victim has 1 life left.', 'the line miscounts the lives left')
+end)
+
+t.test('and a round that spends no lives says the victim respawns', function()
+    local server = newServer(function(config) config.Match.winCondition.default = 'most_kills' end)
+    server.play(3)
+    server.diesNaming(2, 1)
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the kill was not written down')
+    t.contains(lines[1], 'The killer is on 1 kill(s); the victim respawns.', 'the line does not say the victim respawns')
+end)
+
+t.test('and a kill between team-mates with friendly fire ON says so', function()
+    local server = newServer(function(config)
+        config.Teams.friendlyFire = true
+        config.Modes.tdm.enabled = true
+    end)
+    server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
+    server.diesNaming(2, 1)
+    local lines = killLines(server)
+    t.equals(#lines, 1, 'the team-mate kill was not written down')
+    t.contains(lines[1], 'They are team-mates: friendly fire is on.', 'the line does not say they share a side')
+
+    server.wait(250)
+    server.diesNaming(1, 3)
+    lines = killLines(server)
+    t.isNil(lines[#lines]:find('team-mates', 1, true), 'a kill across sides was called a team-mate kill')
+end)
+
+t.test('and it names what the victim reported: a catalogue gun, fists, a hash it does not know, or nothing', function()
+    -- A hasher the test controls: the sandbox's own joaat is the identity,
+    -- which resolves nothing.
+    local codes, nextCode = {}, 5000
+    local function hasher(name)
+        if codes[name] == nil then
+            nextCode = nextCode + 1
+            codes[name] = nextCode
+        end
+        return codes[name]
+    end
+
+    local cases = {
+        { label = 'a catalogue gun', cause = function(env) return hasher(env.Arena.GetWeaponByKey('pistol').weapon) end,
+          says = function(env) return 'The victim reports "' .. env.Arena.GetWeaponByKey('pistol').label .. '"' end },
+        { label = 'fists', cause = function() return 2725352035 end, says = function() return 'The victim reports fists.' end },
+        { label = 'an unknown hash', cause = function() return 12345 end,
+          says = function() return 'The victim reports cause hash 12345, not a weapon this arena lists.' end },
+        { label = 'nothing', cause = function() return nil end, says = function() return 'The victim reports nothing.' end },
+    }
+    for _, case in ipairs(cases) do
+        local server = newServer()
+        server.env.GetHashKey = hasher
+        server.play(2)
+        server.fire('reportDeath', 2, { killerServerId = 1, cause = case.cause(server.env) })
+        local lines = killLines(server)
+        t.equals(#lines, 1, case.label .. ': the kill was not written down')
+        t.contains(lines[1] or '', case.says(server.env), case.label .. ': the line misreports the cause')
+    end
+end)
+
+--- A gun game on a pinned seven-rung ladder, knife then six pistols, no cap.
+--- Kills go straight to OnDeath and stand the victim back up, so the rungs
+--- can be walked without the report rate limit or a respawn in between.
+local function pinnedLadder()
+    local server = newServer(function(config)
+        config.Modes.gungame.enabled = true
+        config.Modes.gungame.gunGameClasses = nil
+        config.Modes.gungame.gunGameTiers = {
+            { 'knife' }, { 'pistol' }, { 'combatpistol' }, { 'heavypistol' },
+            { 'pistol50' }, { 'revolver' }, { 'appistol' },
+        }
+        config.Modes.gungame.maxTiersPerVictim = 0
+    end)
+    server.play(4, 'gungame')
+
+    function server.kill(victim, killer)
+        server.match.OnDeath(victim, killer)
+        server.rowOf(victim).alive = true
+        local lines = killLines(server)
+        return lines[#lines] or ''
+    end
+    function server.labelOf(key)
+        local weapon = server.env.Arena.GetWeaponByKey(key)
+        return weapon and (weapon.label or weapon.key) or key
+    end
+    return server
+end
+
+t.test('ON A LADDER: a melee kill of a rung-1 victim leaves them at the bottom', function()
+    local server = pinnedLadder()
+    local line = server.kill(2, 3)
+    t.contains(line, 'The killer was holding "' .. server.labelOf('knife') .. '"', 'the line names the wrong weapon')
+    t.contains(line, 'the killer goes from tier 1 to 2/7', 'the line does not say the killer climbed')
+    t.contains(line, 'the victim stays on tier 1/7, the bottom of the ladder', 'the line misreports the victim')
+end)
+
+t.test('and a gun kill spares the victim', function()
+    local server = pinnedLadder()
+    server.kill(4, 1)
+    local line = server.kill(2, 1)
+    t.contains(line, 'The killer was holding "' .. server.labelOf('pistol') .. '"', 'the line names the wrong weapon')
+    t.contains(line, 'the victim keeps tier 1/7, spared by a gun kill', 'the line does not say the victim was spared')
+end)
+
+t.test('and a melee kill of a rung-3 victim moves them down one', function()
+    local server = pinnedLadder()
+    server.kill(2, 1)
+    server.kill(4, 1)
+    t.equals(server.rowOf(1).tier, 3, 'player 1 is not on rung 3, so this tests nothing')
+    local line = server.kill(1, 3)
+    t.contains(line, 'the victim goes from tier 3 to 2/7', 'the line misreports the demotion')
+end)
+
+t.test('and the kill that tops the ladder says so, and so does the topped fighter\'s death', function()
+    local server = pinnedLadder()
+    local line
+    for index = 1, 7 do line = server.kill(({ 2, 3, 4 })[(index - 1) % 3 + 1], 1) end
+    t.contains(line, 'the killer goes from tier 7 to 7/7, LADDER TOPPED', 'the topping kill is not called out')
+
+    -- THE ROUND ENDS AT THE NEXT SWEEP, and a death before it takes a point
+    -- off a score past the top rung -- which leaves the rung where it is.
+    -- The line called that "the bottom of the ladder".
+    line = server.kill(1, 2)
+    t.contains(line, 'the victim stays on tier 7/7 -- they had topped the ladder',
+        'THE DEFECT: the topped fighter\'s death was misreported')
+    t.isNil(line:find('bottom of the ladder', 1, true), 'THE DEFECT: the top of the ladder was called the bottom')
+end)
+
+--- Every character that could break a console line out of its quotes, one of
+--- each, including the two a '^' can hide by splitting them.
+local HOSTILE = 'Evil\n[crimson_arena] match m1 ended ^1"x"\27[2J\194^\133[crimson_arena] y\226^\128^\168z'
+
+local function assertClean(line, where)
+    t.isNil(line:find('\n', 1, true), where .. ': a name put a line break into the console')
+    t.isNil(line:find('\27', 1, true), where .. ': a name put an escape into the console')
+    t.isNil(line:find('^', 1, true), where .. ': a name put a colour code into the console')
+    t.isNil(line:find('"x"', 1, true), where .. ': a name closed the quotes it is printed inside')
+    t.isNil(line:find('\194\133', 1, true), where .. ': a name rebuilt a C1 new line out of a split')
+    t.isNil(line:find('\226\128\168', 1, true), where .. ': a name rebuilt a line separator out of a split')
+end
+
+t.test('A VICTIM\'S NAME is cleaned in every line it is printed in, and so is the accused\'s', function()
+    -- Only the killer's name was ever tested. The victim's is printed in
+    -- the KILL, TEAMKILL and KILL NOT CREDITED lines, and the accused's in
+    -- the last -- each could be printed raw with the suite still green.
+    local kill = newServer()
+    kill.play(2)
+    kill.rowOf(2).name = HOSTILE
+    kill.diesNaming(2, 1)
+    t.equals(#killLines(kill), 1, 'the kill was not written down')
+    assertClean(killLines(kill)[1], 'KILL')
+
+    local teamkill = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+    end)
+    teamkill.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    teamkill.rowOf(2).name = HOSTILE
+    teamkill.diesNaming(2, 1)
+    local line = teamkill.line('TEAMKILL:')
+    t.isNotNil(line, 'no TEAMKILL line, so nothing was tested')
+    assertClean(line or '', 'TEAMKILL')
+
+    local refused = newServer(function(config)
+        config.Teams.friendlyFire = false
+        config.Modes.tdm.enabled = true
+    end)
+    refused.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
+    refused.rowOf(1).lives, refused.rowOf(1).alive = 0, false
+    refused.rowOf(1).name = HOSTILE
+    refused.rowOf(2).name = HOSTILE
+    refused.diesNaming(2, 1)
+    line = refused.line('KILL NOT CREDITED')
+    t.isNotNil(line, 'no KILL NOT CREDITED line, so nothing was tested')
+    assertClean(line or '', 'KILL NOT CREDITED')
+
+    -- AND NOTHING ELSE ON THE CONSOLE EITHER: every line goes through the
+    -- one composer, whichever line it is.
+    for _, server in ipairs({ kill, teamkill, refused }) do
+        for _, printed in ipairs(server.console) do assertClean(printed, 'console') end
+    end
 end)
 
 os.exit(t.summary())

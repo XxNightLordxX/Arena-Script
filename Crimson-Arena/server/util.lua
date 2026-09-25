@@ -17,10 +17,59 @@
     later file can call these without a require or an existence guard.
 ]]
 
+--- Text that is not valid UTF-8 has every byte above 127 turned into a '?'.
+---
+--- A BYTE ON ITS OWN IS A CONTROL CHARACTER TO AN 8-BIT CONSOLE. 0x85 is a
+--- new line and 0x9B starts an escape sequence there, and neither is caught
+--- by a pattern that looks for C1 as UTF-8 writes it -- because a lone byte
+--- is not UTF-8 at all. A string that is already valid is left alone.
+local function validUtf8(text)
+    if utf8.len(text) then return text end
+    return (text:gsub('[\128-\255]', '?'))
+end
+
+--- Every character that can end a console line, start an escape, or turn
+--- the text after it round, replaced with a space: the C0 range and DEL, the
+--- C1 range as UTF-8 writes it, the Unicode line and paragraph separators,
+--- and the bidirectional embeddings, overrides and isolates. A SPACE, never
+--- nothing, so no two bytes either side of one can close up into another.
+local function stripControls(text)
+    local out = text:gsub('\194[\128-\159]', ' ')
+    out = out:gsub('\226\128[\168-\174]', ' ')
+    out = out:gsub('\226\129[\166-\169]', ' ')
+    out = out:gsub('[%z\1-\31\127]', ' ')
+    return out
+end
+
+--- THE ONE PLACE EVERY CONSOLE LINE PASSES THROUGH, so it is the one place a
+--- line is kept to one line.
+---
+--- A NAME PRINTED RAW COULD FORGE A WHOLE RECORD. The KILL lines pass names
+--- through ArenaLogText, but twenty older always-on lines printed them as
+--- they came -- the side-bet lines, the door's kit line, the admin tablet --
+--- and a spectator who named themselves 'x\n[crimson_arena] KILL: ...' got
+--- a KILL line of their own into the log the moment an uncontested bet
+--- settled. Measured. So the FINISHED line is cleaned here, whatever the
+--- arguments were, and no line added later can reopen it by forgetting.
+---
+--- NOTHING OF THIS RESOURCE'S OWN IS LOST: no format string it passes holds
+--- a control character, and every argument is made valid UTF-8 BEFORE it is
+--- put into the line, so a bad byte in one name cannot cost the rest of the
+--- line its own characters.
 local function compose(fmt, ...)
-    if select('#', ...) == 0 then return tostring(fmt) end
-    local ok, text = pcall(string.format, fmt, ...)
-    return ok and text or tostring(fmt)
+    local count = select('#', ...)
+    local text
+    if count == 0 then
+        text = tostring(fmt)
+    else
+        local args = table.pack(...)
+        for index = 1, count do
+            if type(args[index]) == 'string' then args[index] = validUtf8(args[index]) end
+        end
+        local ok, formatted = pcall(string.format, fmt, table.unpack(args, 1, count))
+        text = ok and formatted or tostring(fmt)
+    end
+    return stripControls(validUtf8(text))
 end
 
 function ArenaLog(fmt, ...)
@@ -41,31 +90,35 @@ end
 --- resource's own ("[crimson_arena] match ended ..."); an ESC is taken by an
 --- ANSI console as a command to clear it or retitle it; FiveM's own '^1'
 --- colour codes repaint whatever follows; and a '"' closes the quotes the
---- name is printed inside. So every control character goes -- the C0 range
---- and DEL, the C1 range as UTF-8 writes it, and the Unicode line and
---- paragraph separators -- along with every '^', and a '"' becomes a "'".
+--- name is printed inside. So every control character goes -- see
+--- stripControls, above -- along with every '^', and a '"' becomes a "'".
 ---
---- CUT ON A CHARACTER, NOT A BYTE. A name cut through the middle of a
---- multi-byte character leaves a broken sequence at the end of the line;
---- the part-character is dropped with the cut.
+--- THE '^' GOES FIRST, AND THAT ORDER IS THE FIX. It is the only thing here
+--- that is removed rather than replaced, so taking it out joins the bytes
+--- either side of it. Taken out LAST, it rebuilt what the passes before it
+--- had just looked for and not found: '\194^\133' left a new line behind,
+--- '\194^\155' an escape that clears the screen, '\226^\128^\168' a line
+--- separator. Measured, through the KILL, TEAMKILL and KILL NOT CREDITED
+--- lines alike.
+---
+--- CUT ON A CHARACTER, NOT A BYTE, AND ONLY ONCE IT IS CLEAN. ArenaCutText
+--- keeps a whole character that ends exactly at the cap, where the pattern
+--- this used to cut with dropped it along with any broken one.
 --- @param text any
 --- @param cap integer|nil -- longest it may be, in bytes; 48 by default
 --- @return string
 function ArenaLogText(text, cap)
     if text == nil then return '?' end
-    local out = tostring(text)
+    local out = tostring(text):gsub('%^', '')
+
+    out = stripControls(validUtf8(out))
+    out = out:gsub('"', "'")
 
     local limit = Arena.ToInt(cap) or 48
     if limit < 1 then limit = 48 end
     if #out > limit then
-        out = out:sub(1, limit):gsub('[\192-\255][\128-\191]*$', '') .. '...'
+        out = ArenaCutText(out, limit) .. '...'
     end
-
-    out = out:gsub('\194[\128-\159]', ' ')
-    out = out:gsub('\226\128[\168\169]', ' ')
-    out = out:gsub('[%z\1-\31\127]', ' ')
-    out = out:gsub('%^', '')
-    out = out:gsub('"', "'")
     return out
 end
 

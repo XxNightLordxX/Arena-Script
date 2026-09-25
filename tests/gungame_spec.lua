@@ -5102,6 +5102,25 @@ t.test('THE TRADE: a gun and a blade kill each other, and it ends the same which
         t.equals(s.row(2).tier, 2, order .. ': player 2 lost a tier to a GUN kill')
         t.equals(s.row(2).tiersLost, nil, order .. ': and was charged for it')
         t.equals(s.row(1).tier, 2, order .. ': player 1 did not end where the knife left them')
+
+        -- AND THE KILL LINE SAYS THE SAME THING THE TIERS DO. With player 1's
+        -- report first, it read 'holding "Knife" ... spared by a gun kill':
+        -- the rung their own death dropped them onto, in the very line that
+        -- says a gun spared the victim.
+        local gun = s.env.Arena.WeaponByHash(s.hashOf(weaponAt(s, 2)))
+        t.isNotNil(gun, order .. ': the pistol rung does not resolve, so the line cannot be checked')
+        local line
+        for index = #s.console, 1, -1 do
+            local candidate = s.console[index]
+            if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+                line = candidate
+                break
+            end
+        end
+        t.isNotNil(line, order .. ': the kill of player 2 was not written down')
+        t.contains(line or '', 'The killer was holding "' .. ((gun or {}).label or '?') .. '"',
+            order .. ': THE DEFECT: the KILL line names the blade the killer fell onto, not the gun they fired')
+        t.contains(line or '', 'spared by a gun kill', order .. ': the KILL line does not say the victim was spared')
     end
 end)
 

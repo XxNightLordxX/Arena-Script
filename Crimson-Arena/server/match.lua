@@ -2924,8 +2924,18 @@ local function logKill(match, killer, victim, kill)
         local lost
         if kill.spared then
             lost = ('the victim keeps tier %d/%d, spared by a gun kill'):format(kill.victimTierWas or 0, height)
-        elseif now == kill.victimTierWas then
+        elseif now == kill.victimTierWas and now <= 1 then
             lost = ('the victim stays on tier %d/%d, the bottom of the ladder'):format(now, height)
+        elseif now == kill.victimTierWas and now == height then
+            -- A SCORE PAST THE TOP RUNG. tierForScore gives the top tier for
+            -- any score at or above the height, so a fighter who had topped
+            -- the ladder, and dies before the sweep ends the round, loses a
+            -- point and not the rung -- which this line used to call the
+            -- bottom of the ladder.
+            lost = ('the victim stays on tier %d/%d -- they had topped the ladder, and the point '
+                .. 'this death cost them does not move them off the top rung'):format(now, height)
+        elseif now == kill.victimTierWas then
+            lost = ('the victim stays on tier %d/%d'):format(now, height)
         else
             lost = ('the victim goes from tier %d to %d/%d'):format(kill.victimTierWas or 0, now, height)
         end
@@ -3163,6 +3173,10 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         if not killedWithAGun and killer.alive ~= true and killer.rungAtDeath ~= nil then
             local fell = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1]
             killedWithAGun = fell ~= nil and Arena.IsMeleeWeapon(fell) ~= true
+            -- AND THE KILL LINE NAMES THAT GUN, not the blade their own death
+            -- dropped them onto: it printed 'holding "Knife" ... spared by a
+            -- gun kill' for exactly the trade this block settles.
+            if killedWithAGun then killedFrom = fell end
         end
 
         -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
@@ -3433,13 +3447,23 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     if claimRefused and not announcedTeamKill then
         -- AND BY NAME, cleaned, as the KILL line names people -- looked up
         -- inside a pcall, because this runs before the respawn below and a
-        -- name is not worth a player. The claimed killer may be off the
-        -- roster; the framework may still know them, and '?' is the answer
-        -- when nothing does.
+        -- name is not worth a player.
+        --
+        -- THE ACCUSED ONLY OFF THIS ROUND'S ROSTER. An id that is not on it
+        -- was asked of the framework, which answers for whoever holds that
+        -- id NOW: a client naming the id of somebody who was never in the
+        -- round wrote an innocent player's name into the always-on record as
+        -- the accused. Measured, with player 3 online and nowhere near the
+        -- arena. The server cannot tell a leaver from a stranger by the id
+        -- alone, so an id off the roster is printed as a number and nothing
+        -- more.
         local okNames, names = pcall(function()
             local accusedRow = match.players[claimed]
-            return ('"%s" and "%s"'):format(ArenaLogText(player.name or ArenaPlayerName(id)),
-                ArenaLogText(accusedRow and accusedRow.name or ArenaPlayerName(claimed)))
+            local accused = accusedRow
+                and ('"%s"'):format(ArenaLogText(accusedRow.name or ArenaPlayerName(claimed)))
+                or ('nobody on the roster (id %s is not looked up: it may be somebody else\'s by now)')
+                    :format(tostring(claimed))
+            return ('"%s" and %s'):format(ArenaLogText(player.name or ArenaPlayerName(id)), accused)
         end)
         ArenaLog('KILL NOT CREDITED: %s died in match %s naming %s as their killer, who %s. The roster '
             .. 'refused the claim, so nobody was credited, no kill ammo was paid and the score did not '
@@ -3601,9 +3625,21 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     -- of the round. Measured, when an earlier draft called a helper that did
     -- not exist. A record is worth having; it is not worth a player.
     if killer then
-        local via = (not byWitness) and "named by the victim's own client"
-            or (serverSaw == true and "credited from the server's own record of the last hit (dead sweep, no report)")
-            or "credited from the server's own record of the last hit (the client named nobody)"
+        -- A CLAIM THE ROSTER REFUSED STILL NAMED SOMEBODY, and the memory is
+        -- asked for one it refused as not on the roster. Saying "the client
+        -- named nobody" there is the misstatement the UNATTRIBUTED line was
+        -- already cured of; this says who, and why it did not count.
+        local via
+        if not byWitness then
+            via = "named by the victim's own client"
+        elseif serverSaw == true then
+            via = "credited from the server's own record of the last hit (dead sweep, no report)"
+        elseif REFUSED_CLAIM[refused] ~= nil then
+            via = ("credited from the server's own record of the last hit (the client named %s, who %s)")
+                :format(tostring(claimed), REFUSED_CLAIM[refused])
+        else
+            via = "credited from the server's own record of the last hit (the client named nobody)"
+        end
         local ok, err = pcall(logKill, match, killer, player, {
             via = via, causeHash = causeHash, killedFrom = killedFrom,
             killerTierWas = killerTierWas, victimTierWas = victimTierWas,

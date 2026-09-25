@@ -554,6 +554,16 @@ t.test('THE MATRIX: but a watcher cannot back a round that is already decided', 
         'a watcher backed the only fighter left after the other walked out')
 end)
 
+t.test('and a round decided as a DRAW shuts it too', function()
+    -- Both fighters out in the same second: the next sweep calls it a draw,
+    -- so it is as decided as a win is, and nothing is left to back.
+    local s, matchId = liveBook()
+    s.match.OnDeath(2, 1)
+    s.match.OnDeath(1, 2)
+    t.equals(s.lobby.Get(matchId).state, 'live', 'the round ended before the gap this is about')
+    t.isFalse(s.betting.BetsAreOpen(s.lobby.Get(matchId)), 'the book stayed open on a round already drawn')
+end)
+
 t.test('and a fighter betting in the LOBBY is untouched', function()
     -- Where a fighter is supposed to back themselves: before a shot is
     -- fired, on the same information everybody else has.

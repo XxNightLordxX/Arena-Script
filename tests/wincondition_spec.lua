@@ -1709,6 +1709,38 @@ t.test('THE MATRIX: and with two sides, the one left standing wins it even with 
     t.equals(s.moneyInCirculation(), opening, 'money was destroyed or created by the round')
 end)
 
+t.test('THE MATRIX: but with two sides still standing and level on nothing, it is still a draw', function()
+    -- The other half of the rule above, and the half that decides where the
+    -- money goes: one side alone wins it, two or more level do not. Nothing
+    -- pinned this -- a guard that let two level sides play on passed every
+    -- test, and turned a draw into a round paid out on the next kill.
+    local s = newServer(function(config)
+        config.Betting.enabled = true
+        config.Teams.list.bone.enabled = true
+    end)
+    local opening = s.moneyInCirculation()
+    s.fire('createMatch', 1, { arenaKey = 'trailerpark', modeKey = 'tdm', entryFee = 1000,
+        account = 'cash', winCondition = 'score_limit', scoreLimit = 2 })
+    local id = s.lobby.All()[1].id
+    for src = 2, 4 do s.fire('joinMatch', src, { matchId = id, account = 'cash' }) end
+    local side = { [1] = 'crimson', [2] = 'ash', [3] = 'crimson', [4] = 'bone' }
+    for src = 1, 4 do s.fire('setTeam', src, { teamKey = side[src] }) end
+    for src = 1, 4 do s.fire('setReady', src, { ready = true }) end
+    s.match.Start(id)
+    s.settle(1)
+    t.equals((s.lobby.Get(id) or {}).state, 'live', 'the fixture round never went live')
+
+    s.kill(2, 1); s.revive(2)
+    s.kill(4, 3); s.revive(4)
+    s.drop(1)
+    s.drop(3)
+    s.settle(3)
+
+    t.equals(s.endedWith(), 'match.ended_draw', 'two sides level on nothing were not a draw')
+    t.equals(listed(s.winners()), '', 'somebody was paid a round nobody still in had won')
+    t.isTrue(s.moneyInCirculation() <= opening, 'money was created by the round')
+end)
+
 t.test('THE MATRIX: an entry fee handed back on a draw is called a stake, not a side-bet', function()
     -- With includeEntryPot on, as shipped, an entry stake rides in the book
     -- as a bet on its fighter -- and a draw hands it back through the bet

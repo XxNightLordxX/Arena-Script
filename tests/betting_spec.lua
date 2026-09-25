@@ -411,6 +411,9 @@ t.test('and neither a split the pot really makes nor the shipped one is complain
         config.Betting.betPayout.includeEntryPot = false
     end), 'IT IS NOT USED', 'a split the pot really makes was complained about')
     t.notContains(complaintsFrom(nil), 'IT IS NOT USED', 'the shipped config warns about the split it ships')
+    -- Left out altogether, it is the default, which the pool matches.
+    t.notContains(complaintsFrom(function(config) config.Betting.payout = nil end),
+        'IT IS NOT USED', 'a payout left unset was complained about')
 end)
 
 t.test('ApplyHouseCut treats an out-of-range percent as its nearest legal end', function()

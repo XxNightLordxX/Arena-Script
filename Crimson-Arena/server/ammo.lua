@@ -8330,16 +8330,62 @@ function ArenaAmmo.WeaponItemReport()
         end
     end
 
+    -- WITHDRAWN AT START-UP, AND SAID SO IN A BLOCK OF THEIR OWN.
+    --
+    -- Checked in with the rest, a withdrawn weapon told the operator
+    -- something false whichever way ox_inventory answered. Still missing, it
+    -- sat under "handed over and REFUSED" -- it is not handed over at all,
+    -- because nobody can pick it. Put right in ox_inventory since, it read as
+    -- "all present" while it was still off every host's list, and nothing
+    -- said the arena itself has to be restarted to offer it again. That
+    -- second case is the very one this report is on the tablet for.
+    --
+    -- DECIDED PER ENTRY BY THE MARKER, not by the withdrawMissingWeapons
+    -- switch. A weapon whose item vanished AFTER start-up was never
+    -- withdrawn: it is still offered and still refused on hand-out, and the
+    -- REFUSED wording below is the truth about it.
+    local withdrawn, withdrawnSeen = {}, {}
+    local function finished()
+        if #withdrawn == 0 then return lines end
+        table.sort(withdrawn)
+        say('issued items: %d weapon(s) were withdrawn at start-up because ox_inventory had no '
+            .. 'item by that name, and are not offered to hosts until crimson_arena restarts:',
+            #withdrawn)
+        for _, name in ipairs(withdrawn) do
+            local known, readable = inventoryHasItem(name)
+            if readable and known then
+                say('  %-8s %s -- ox_inventory HAS it now: restart crimson_arena to offer it again',
+                    'weapon', name)
+            elseif readable then
+                say('  %-8s %s -- still not an item in this ox_inventory', 'weapon', name)
+            else
+                say('  %-8s %s', 'weapon', name)
+            end
+        end
+        return lines
+    end
+
     for _, weapon in ipairs((Config.Loadouts or {}).weapons or {}) do
         -- ENABLED, OR WITHDRAWN BY THIS RESOURCE FOR BEING MISSING. The
         -- second half is why the marker exists: a weapon taken off the list
         -- at boot must keep appearing here, or the report that explains the
         -- withdrawal stops naming what was withdrawn. A weapon the OPERATOR
         -- switched off is a different thing and stays out.
+        --
+        -- A withdrawn weapon is named in its own block, above. Its AMMUNITION
+        -- is still checked with the rest, so everything that has to be put
+        -- right before the restart is named in one go.
         if type(weapon) == 'table'
             and (weapon.enabled ~= false or weapon.withdrawnByArena == true)
         then
-            add('weapon', weapon.weapon)
+            if weapon.withdrawnByArena == true then
+                if Arena.IsKey(weapon.weapon) and not withdrawnSeen[weapon.weapon] then
+                    withdrawnSeen[weapon.weapon] = true
+                    withdrawn[#withdrawn + 1] = weapon.weapon
+                end
+            else
+                add('weapon', weapon.weapon)
+            end
             for _, entry in ipairs(weapon.ammoTypes or {}) do
                 if type(entry) == 'table' then add('ammo', entry.item) end
             end
@@ -8353,13 +8399,13 @@ function ArenaAmmo.WeaponItemReport()
     for _, row in ipairs(kinds) do total = total + #row.names end
     if total == 0 then
         say('issued items: the config hands nothing out.')
-        return lines
+        return finished()
     end
 
     if inventory() == nil then
         say('issued items: %d name(s) configured, none checked -- ox_inventory is not running. '
             .. 'Without it nobody is issued anything at all.', total)
-        return lines
+        return finished()
     end
 
     local missing, checked, unreadable = {}, 0, false
@@ -8378,13 +8424,13 @@ function ArenaAmmo.WeaponItemReport()
         say('issued items: %d name(s) configured, NONE checked -- this ox_inventory would not '
             .. 'answer Items(). A name it does not know is handed over and refused, and the '
             .. 'fighter gets nothing of that kind.', total)
-        return lines
+        return finished()
     end
 
     if #missing == 0 then
         say('issued items: %d of %d name(s) checked against ox_inventory, all present.',
             checked, total)
-        return lines
+        return finished()
     end
 
     table.sort(missing, function(a, b)
@@ -8404,7 +8450,7 @@ function ArenaAmmo.WeaponItemReport()
     say('  Fix: a WEAPON or AMMO name must exist in ox_inventory/data/weapons.lua, spelled')
     say('       exactly as in Config.Loadouts.weapons -- WEAPON_PISTOL, ammo-9. A SUPPLY name')
     say('       is an ordinary item in ox_inventory/data/items.lua.')
-    return lines
+    return finished()
 end
 
 function ArenaAmmo.AttachmentReport()
@@ -8591,6 +8637,67 @@ end
 -- -- the same lines from the same function, through the one command this
 -- resource still registers.
 
+--- How many rungs each mode's ladder has right now, by mode key -- and
+--- whether that is still enough to climb. Modes that play no ladder are left
+--- out. nil if the question could not be answered.
+---
+--- PCALL'D, THOUGH EVERY CALL IN IT IS A READ the boot validator already
+--- makes. It runs on the start-up thread ahead of the attachment report, and
+--- a fault in somebody's gun game config must not cost them that report.
+--- @return table<string, { rungs: integer, plays: boolean }>|nil
+local function ladderLengths()
+    local ok, lengths = pcall(function()
+        local out = {}
+        for key in pairs(Config.Modes or {}) do
+            if Arena.IsKey(key) then
+                local rungs = #Arena.LadderTiersFor(key)
+                if rungs > 0 then out[key] = { rungs = rungs, plays = Arena.PlaysLadder(key) } end
+            end
+        end
+        return out
+    end)
+    if not ok then return nil end
+    return lengths
+end
+
+--- Names every ladder the withdrawal has just shortened.
+---
+--- THE BOOT VALIDATOR CANNOT. It runs in onResourceStart, before this thread
+--- has waited for ox_inventory, so it checked the ladder with every weapon
+--- still on it. A class that loses more weapons than it can spare builds
+--- fewer rungs, and without this the only clue would be a list of weapon
+--- names nobody would think to count against a ladder.
+---
+--- MEASURED AGAINST THE LADDER JUST BEFORE THE WITHDRAWAL, not against the
+--- configured tier counts: a shortfall the operator's own config causes has
+--- already been reported by the validator, and must not be blamed on this.
+--- @param before table|nil ladderLengths() taken before anything was withdrawn
+local function reportShortenedLadders(before)
+    local after = ladderLengths()
+    if before == nil or after == nil then return end
+
+    local keys = {}
+    for key in pairs(before) do keys[#keys + 1] = key end
+    table.sort(keys)
+
+    for _, key in ipairs(keys) do
+        local was = before[key]
+        local now = after[key] or { rungs = 0, plays = false }
+        if now.rungs < was.rungs then
+            if was.plays and not now.plays then
+                ArenaLog('issued items: the \'%s\' ladder is down to %d rung(s) from %d because of '
+                    .. 'the weapons withdrawn above. That is too short to climb, so the mode plays '
+                    .. 'as an ordinary free-for-all until the missing items are added to '
+                    .. 'ox_inventory and crimson_arena is restarted.', key, now.rungs, was.rungs)
+            else
+                ArenaLog('issued items: the \'%s\' ladder is down to %d rung(s) from %d because of '
+                    .. 'the weapons withdrawn above. Add the missing items to ox_inventory and '
+                    .. 'restart crimson_arena to get the full ladder back.', key, now.rungs, was.rungs)
+            end
+        end
+    end
+end
+
 --- Switches off every weapon whose ox_inventory item this server does not
 --- have, so nobody can pick one that cannot be delivered.
 ---
@@ -8613,6 +8720,8 @@ end
 --- SAID OUT LOUD, EVERY NAME. A weapon disappearing from the panel with no
 --- reason on the console is the kind of thing an operator spends an evening
 --- hunting. The report printed just above this names them too.
+---
+--- NOT WHEN EVERY ONE OF THEM IS MISSING. See the check in the body.
 --- @return string[] keys withdrawn
 function ArenaAmmo.WithdrawMissingWeapons()
     local withdrawn = {}
@@ -8622,35 +8731,71 @@ function ArenaAmmo.WithdrawMissingWeapons()
     local catalogue = (Config.Loadouts or {}).weapons
     if type(catalogue) ~= 'table' then return withdrawn end
 
+    -- EVERY NAME ASKED ABOUT BEFORE ANY IS SWITCHED OFF, so the answer can be
+    -- judged as a whole first.
+    local missing, answered = {}, 0
     for _, weapon in ipairs(catalogue) do
         if type(weapon) == 'table' and weapon.enabled ~= false and Arena.IsKey(weapon.weapon) then
             local known, readable = inventoryHasItem(weapon.weapon)
-            if readable and not known then
-                weapon.enabled = false
-                -- MARKED, NOT JUST SWITCHED OFF. WeaponItemReport walks the
-                -- ENABLED catalogue, so a weapon withdrawn here would drop
-                -- out of the very report that explains why it went -- an
-                -- operator asking "what is missing?" would be told "all
-                -- present" while the broken names sat withdrawn and unnamed.
-                -- The marker keeps them in the report and nowhere else.
-                weapon.withdrawnByArena = true
-                withdrawn[#withdrawn + 1] = tostring(weapon.key or weapon.weapon)
+            if readable then
+                answered = answered + 1
+                if not known then missing[#missing + 1] = weapon end
             end
         end
     end
 
-    if #withdrawn > 0 then
-        ArenaLog('issued items: %d weapon(s) withdrawn from the catalogue because this '
-            .. 'ox_inventory has no item by their name -- nobody can pick one now, so a '
-            .. 'loadout cannot come up empty because of them: %s',
-            #withdrawn, table.concat(withdrawn, ', '))
+    if #missing == 0 then return withdrawn end
 
-        if #Arena.GetEnabledWeapons() == 0 then
-            ArenaLog('issued items: THAT WAS ALL OF THEM. No weapon in the catalogue exists '
-                .. 'in this ox_inventory, so there is nothing left to hand out. Check that '
-                .. 'ox_inventory/data/weapons.lua is the one this server is running.')
-        end
+    -- EVERY ONE OF THEM MISSING IS NOT BELIEVED. An addon weapon a server
+    -- never installed is one or two names; a registry that knows NONE of the
+    -- catalogue is ox_inventory not ready yet -- a fork or shim that answers
+    -- before its list is filled -- or a different weapons file altogether.
+    -- Withdrawing on that would leave nothing to pick for the whole session,
+    -- even after ox_inventory came right and could have handed every one of
+    -- them over. Nothing is withdrawn, and the operator is told why.
+    --
+    -- THE COST, taken knowingly: a server that really does lack every
+    -- configured weapon keeps offering them, and each is refused on hand-out
+    -- -- which is how every server behaved before withdrawal existed, and the
+    -- report printed just above names every one of them either way.
+    if #missing == answered then
+        ArenaLog('issued items: ox_inventory was asked about %d weapon(s) and has an item for NONE '
+            .. 'of them. That is ox_inventory not being ready, or running a different weapons '
+            .. 'file, far more often than every weapon really being missing -- so NOTHING was '
+            .. 'withdrawn, and any name this ox_inventory truly lacks is refused when it is '
+            .. 'handed out. Check that ox_inventory/data/weapons.lua is the one this server is '
+            .. 'running, then restart crimson_arena.', answered)
+        return withdrawn
     end
+
+    local ladders = ladderLengths()
+
+    for _, weapon in ipairs(missing) do
+        weapon.enabled = false
+        -- MARKED, NOT JUST SWITCHED OFF. WeaponItemReport walks the
+        -- ENABLED catalogue, so a weapon withdrawn here would drop
+        -- out of the very report that explains why it went -- an
+        -- operator asking "what is missing?" would be told "all
+        -- present" while the broken names sat withdrawn and unnamed.
+        -- The marker keeps them in the report and nowhere else.
+        weapon.withdrawnByArena = true
+        withdrawn[#withdrawn + 1] = tostring(weapon.key or weapon.weapon)
+    end
+
+    ArenaLog('issued items: %d weapon(s) withdrawn from the catalogue because this '
+        .. 'ox_inventory has no item by their name -- nobody can pick one now, so a '
+        .. 'loadout cannot come up empty because of them: %s',
+        #withdrawn, table.concat(withdrawn, ', '))
+
+    -- Still possible past the check above: a catalogue entry with a good item
+    -- name and a bad key is asked about but is never offered anyway.
+    if #Arena.GetEnabledWeapons() == 0 then
+        ArenaLog('issued items: THAT WAS ALL OF THEM. No weapon in the catalogue exists '
+            .. 'in this ox_inventory, so there is nothing left to hand out. Check that '
+            .. 'ox_inventory/data/weapons.lua is the one this server is running.')
+    end
+
+    reportShortenedLadders(ladders)
 
     return withdrawn
 end
@@ -8681,9 +8826,23 @@ CreateThread(function()
     -- and nobody can pick what it named. Reported first, withdrawn second:
     -- the report walks the ENABLED catalogue, so withdrawing first would hide
     -- the very names the operator needs to see.
-    ArenaAmmo.WithdrawMissingWeapons()
+    local withdrawn = ArenaAmmo.WithdrawMissingWeapons()
 
     for _, line in ipairs(ArenaAmmo.AttachmentReport()) do ArenaLog('%s', line) end
+
+    -- A PANEL OPENED WHILE THIS THREAD WAS WAITING was sent the catalogue as
+    -- it stood then, and the lobby keeps that snapshot for the session -- so
+    -- it went on offering what was just withdrawn, and a host who picked one
+    -- had it refused. Only reachable when ox_inventory comes up after this
+    -- resource; on an ordinary start nobody has asked yet and this is a
+    -- no-op. AFTER the attachment report, so nothing here can cost it.
+    -- Checked for, because this file loads before server/lobby.lua.
+    if #withdrawn > 0 and type(ArenaLobby) == 'table'
+        and type(ArenaLobby.InvalidateConfig) == 'function'
+    then
+        ArenaLobby.InvalidateConfig()
+        if type(ArenaLobby.Broadcast) == 'function' then ArenaLobby.Broadcast() end
+    end
 end)
 
 AddEventHandler('onResourceStop', function(resource)

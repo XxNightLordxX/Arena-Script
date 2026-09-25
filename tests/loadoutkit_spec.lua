@@ -38,7 +38,7 @@ local Sandbox = dofile('fixtures/sandbox.lua')
 --- The real server/ammo.lua with ox_inventory modelled, including the
 --- difference between a call that THROWS and one that politely returns
 --- false -- which is the whole subject of this file.
---- @param opts table? -- { mutate = fun(config) }
+--- @param opts table? -- { mutate = fun(config), prepare = fun(env) }
 --- @return table fixture
 local function newKit(opts)
     opts = opts or {}
@@ -240,6 +240,9 @@ local function newKit(opts)
     --- Only src 4 is cleared, so a gate can be told apart from a no-op.
     env.ArenaIsAdmin = function(src) return src == 4 end
     env.ArenaNotifyKey = function(src, key) refusals[#refusals + 1] = { src = src, key = key } end
+    -- The start-up thread runs while ammo.lua loads, so anything it calls on
+    -- a neighbour has to be in place before that.
+    if opts.prepare then opts.prepare(env) end
     Sandbox.loadInto('../Crimson-Arena/server/ammo.lua', env)
 
     return {
@@ -1964,6 +1967,123 @@ t.test('the report still NAMES what was withdrawn, rather than hiding it', funct
         'the withdrawn weapon was never named, so nobody can fix it')
     t.isTrue(log:find('NOT items in this ox_inventory', 1, true) ~= nil,
         'the report that explains the withdrawal is missing')
+end)
+
+-- ======================================================================
+-- THE AUDIT: THE EDGES OF THE WITHDRAWAL
+-- ======================================================================
+
+t.test('THE AUDIT: a weapon withdrawn at start-up and put right since says a restart brings it back', function()
+    -- The owner adds the missing item to ox_inventory and runs `restart
+    -- ox_inventory`, then opens Tools -> Issued Items. It used to read "all
+    -- present" while the weapon stayed off every host's list.
+    local missing = { WEAPON_BLACKICE = true }
+    local kit = newKit({ knownItems = inventoryWithout(missing) })
+    t.isNil(kit.env.Arena.GetWeaponByKey('blackice'), 'the fixture did not withdraw it to begin with')
+
+    missing.WEAPON_BLACKICE = nil
+    local report = table.concat(kit.ammo.WeaponItemReport(), '\n')
+
+    t.isTrue(report:find('WEAPON_BLACKICE -- ox_inventory HAS it now: restart crimson_arena', 1, true) ~= nil,
+        'the report does not tell the operator the arena itself must be restarted:\n' .. report)
+    t.isNil(kit.env.Arena.GetWeaponByKey('blackice'),
+        'the weapon came back without a restart, which is not what the report says')
+end)
+
+t.test('and one still missing is listed as withdrawn, not as handed over and refused', function()
+    local kit = newKit({ knownItems = inventoryWithout({ WEAPON_BLACKICE = true }) })
+    local report = table.concat(kit.ammo.WeaponItemReport(), '\n')
+
+    t.isTrue(report:find('WEAPON_BLACKICE -- still not an item in this ox_inventory', 1, true) ~= nil,
+        'the withdrawn weapon is not named as withdrawn:\n' .. report)
+    t.isNil(report:find('REFUSED', 1, true),
+        'a weapon nobody can pick is reported as handed over and refused:\n' .. report)
+end)
+
+t.test('THE AUDIT: a registry that knows NONE of the weapons withdraws nothing, and says why', function()
+    -- ox_inventory not ready, or a fork that answers before its list is
+    -- filled. Withdrawing on that emptied the catalogue for the session.
+    local whole = newKit({ knownItems = inventoryWithout(nil) })
+    local full = #whole.env.Arena.GetEnabledWeapons()
+
+    local noWeapons = setmetatable({}, { __index = function(_, name)
+        return type(name) == 'string' and name:sub(1, 7) == 'WEAPON_'
+    end })
+
+    local blank = newKit({ knownItems = inventoryWithout(noWeapons) })
+    t.equals(#blank.env.Arena.GetEnabledWeapons(), full,
+        'a registry that answered nil for every weapon emptied the catalogue')
+    t.isTrue(blank.log():find('NOTHING was withdrawn', 1, true) ~= nil,
+        'nothing was withdrawn and the console does not say why')
+
+    -- The older ox_inventory answer, false rather than nil, is read the same way.
+    local falsy = newKit({ knownItems = inventoryWithout(noWeapons), fail = { oldFalse = true } })
+    t.equals(#falsy.env.Arena.GetEnabledWeapons(), full,
+        'a registry that answered false for every weapon emptied the catalogue')
+
+    -- ALL, NOT MOST. The default fixture knows one weapon out of the whole
+    -- catalogue, and every other one is still withdrawn.
+    t.equals(#newKit().env.Arena.GetEnabledWeapons(), 1,
+        'a registry that knows one weapon no longer has the rest withdrawn')
+end)
+
+t.test('THE AUDIT: a withdrawal that shortens the gun game ladder names it', function()
+    -- The boot validator runs before ox_inventory is asked, so it saw the
+    -- ladder whole. Two of the four precision weapons missing costs a rung.
+    local on = function(config) config.Modes.gungame.enabled = true end
+    local whole = newKit({ knownItems = inventoryWithout(nil), mutate = on })
+    local full = #whole.env.Arena.LadderTiersFor('gungame')
+    t.isNil(whole.log():find('ladder is down to', 1, true), 'a full ladder was reported short')
+
+    local short = newKit({
+        knownItems = inventoryWithout({ WEAPON_SNIPERRIFLE = true, WEAPON_PRECISIONRIFLE = true }),
+        mutate = on,
+    })
+    t.equals(#short.env.Arena.LadderTiersFor('gungame'), full - 1,
+        'the fixture no longer costs the ladder one rung')
+    t.isTrue(short.log():find(("the 'gungame' ladder is down to %d rung(s) from %d"):format(full - 1, full),
+        1, true) ~= nil, 'the shortened ladder is never named:\n' .. short.log())
+
+    -- A class with a weapon to spare loses no rung, and nothing is said.
+    local spare = newKit({ knownItems = inventoryWithout({ WEAPON_MG = true }), mutate = on })
+    t.equals(#spare.env.Arena.LadderTiersFor('gungame'), full, 'one heavy weapon missing cost a rung')
+    t.isNil(spare.log():find('ladder is down to', 1, true),
+        'a ladder that lost nothing was reported short')
+end)
+
+t.test('and one left too short to climb says the mode now plays without a ladder', function()
+    local tiny = function(config)
+        config.Modes.gungame.enabled = true
+        config.Modes.gungame.gunGameClasses = {
+            { key = 'first', label = 'First', tiers = 1, weapons = { 'pistol' } },
+            { key = 'second', label = 'Second', tiers = 1, weapons = { 'blackice' } },
+        }
+    end
+    local whole = newKit({ knownItems = inventoryWithout(nil), mutate = tiny })
+    t.isTrue(whole.env.Arena.PlaysLadder('gungame'), 'the fixture ladder cannot be climbed to begin with')
+
+    local short = newKit({ knownItems = inventoryWithout({ WEAPON_BLACKICE = true }), mutate = tiny })
+    t.isFalse(short.env.Arena.PlaysLadder('gungame'), 'the fixture ladder is still climbable')
+    t.isTrue(short.log():find('too short to climb', 1, true) ~= nil,
+        'a gun game that lost its ladder is not named:\n' .. short.log())
+end)
+
+t.test('THE AUDIT: a withdrawal tells the lobby to drop the panel snapshot it may already hold', function()
+    local calls = {}
+    local function spyLobby(env)
+        env.ArenaLobby = {
+            InvalidateConfig = function() calls[#calls + 1] = 'invalidate' end,
+            Broadcast = function() calls[#calls + 1] = 'broadcast' end,
+        }
+    end
+
+    newKit({ knownItems = inventoryWithout({ WEAPON_BLACKICE = true }), prepare = spyLobby })
+    t.equals(table.concat(calls, ','), 'invalidate,broadcast',
+        'the lobby was not told to rebuild its snapshot, or was told in the wrong order')
+
+    calls = {}
+    newKit({ knownItems = inventoryWithout(nil), prepare = spyLobby })
+    t.equals(#calls, 0, 'a start-up that withdrew nothing still threw the panel snapshot away')
 end)
 
 os.exit(t.summary())

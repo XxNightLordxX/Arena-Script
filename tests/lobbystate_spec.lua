@@ -1314,4 +1314,55 @@ t.test('CONTROL: and somebody who has backed nothing is still told nothing', fun
     t.equals(s.state(3).player.bet, false, 'a bet was invented for somebody who placed none')
 end)
 
+-- ========================================================================
+-- THE AUDIT: A SNAPSHOT TAKEN BEFORE A START-UP WITHDRAWAL
+--
+-- The panel's copy of the catalogue is built once and kept. Start-up
+-- withdraws the weapons ox_inventory has no item for, and when ox_inventory
+-- comes up after this resource a panel can be opened first -- so the kept
+-- copy offered withdrawn weapons, and the old gun game tier ceilings, for
+-- the rest of the session.
+-- ========================================================================
+
+t.test('THE AUDIT: a panel snapshot taken before a withdrawal is rebuilt without the withdrawn weapons', function()
+    local s = newArena({ [1] = 5000 })
+
+    local function offered(key)
+        for _, weapon in ipairs(s.state(1).config.loadouts.weapons or {}) do
+            if weapon.key == key then return true end
+        end
+        return false
+    end
+    local function precisionCeiling()
+        for _, mode in ipairs(s.state(1).config.modes or {}) do
+            if mode.key == 'gungame' then
+                for _, class in ipairs(mode.tierClasses or {}) do
+                    if class.key == 'precision' then return class.maxTiers end
+                end
+            end
+        end
+        return nil
+    end
+
+    t.isTrue(offered('blackice'), 'the fixture does not offer blackice to begin with')
+    local ceiling = precisionCeiling()
+    t.isNotNil(ceiling, 'the fixture has no precision class to measure')
+
+    -- Exactly what ArenaAmmo.WithdrawMissingWeapons does to an entry.
+    for _, weapon in ipairs(s.config.Loadouts.weapons) do
+        if weapon.key == 'blackice' or weapon.key == 'sniper' or weapon.key == 'precisionrifle' then
+            weapon.enabled = false
+            weapon.withdrawnByArena = true
+        end
+    end
+    t.isTrue(offered('blackice'),
+        'the snapshot is not kept at all, so this test is not measuring the cache it is about')
+
+    s.lobby.InvalidateConfig()
+
+    t.isFalse(offered('blackice'), 'the panel still offers a weapon start-up withdrew')
+    t.equals(precisionCeiling(), ceiling - 2,
+        'the panel still shows the gun game tier ceiling from before the withdrawal')
+end)
+
 os.exit(t.summary())

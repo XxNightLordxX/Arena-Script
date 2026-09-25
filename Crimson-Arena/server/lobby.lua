@@ -532,6 +532,22 @@ local function snapshotConfig()
     return configBlock
 end
 
+--- Forgets the panel's copy of the catalogue, so the next panel to ask is
+--- sent it as it stands now.
+---
+--- THE SNAPSHOT IS BUILT ONCE AND KEPT, because nothing in it changes under a
+--- running server -- except one thing: start-up withdraws the weapons
+--- ox_inventory has no item for, and when ox_inventory comes up after this
+--- resource, a panel can be opened before that happens. Its snapshot then
+--- offers every withdrawn weapon for the rest of the session, and the tier
+--- ceilings it shows for gun game are the ones from before, too.
+---
+--- ONLY THIS ONE. The loadout preview is kept: it is built from no request
+--- at all, so it names no weapon, and a withdrawal cannot make it wrong.
+function ArenaLobby.InvalidateConfig()
+    configBlock = nil
+end
+
 local previewLoadout
 
 local function loadoutPreview()

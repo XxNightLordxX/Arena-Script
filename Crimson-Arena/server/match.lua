@@ -3651,6 +3651,31 @@ function ArenaMatch.IsLive(matchId)
     return match ~= nil and match.state == 'live'
 end
 
+--- Whether a live round's result is already fixed -- the next sweep would
+--- end it -- although it has not been ended yet.
+---
+--- THE GAP THIS NAMES. Only the once-a-second sweep ends a round. A death
+--- or a walk-out that settles it lands between two sweeps, and for up to a
+--- second the round reads as live with its winner already known. The
+--- watchers' betting grace was open through that second, so a bet on the
+--- certain winner was taken and paid out of the stakes that belonged to
+--- them.
+---
+--- ASKS `evaluate` ITSELF, the function the sweep ends the round on, so the
+--- two cannot disagree about what "decided" means. It only reads. Guarded,
+--- because a round in a state the sweep would choke on must not also take
+--- the betting book down with it: that answers "not decided", which is what
+--- this said before it existed.
+--- @param match table
+--- @return boolean
+function ArenaMatch.IsDecided(match)
+    if type(match) ~= 'table' or match.state ~= 'live' or type(match.players) ~= 'table' then
+        return false
+    end
+    local ok, winners = pcall(evaluate, match)
+    return ok and winners ~= nil
+end
+
 local function anyoneIsPlaced(match)
     for src in pairs(match.players or {}) do
         if ArenaDispatch.IsPlayerInArena(src) then return true end

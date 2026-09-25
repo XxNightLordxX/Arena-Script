@@ -746,12 +746,33 @@ end)
 -- ========================================================================
 
 t.test('DEFECT: a bet was taken on a fighter who was already eliminated', function()
-    local s, matchId = withWatcher(0, function(config)
+    -- THREE FIGHTERS, NOT TWO. With two, the one left standing has already
+    -- won: the round is decided, the book is shut for that reason, and the
+    -- pick check this test is about is never reached. A third fighter keeps
+    -- the round being fought.
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000 }, function(config)
+        config.Betting.enabled = true
+        config.Betting.spectatorBets.enabled = true
+        config.Betting.entryFee.enabled = false
+        config.Betting.entryFee.min = 0
+        config.Betting.entryFee.default = 0
         config.Betting.spectatorBets.closeAfterStartSeconds = 30
     end)
+    local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
+    t.isNotNil(matchId, 'the match could not be created')
+    t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+    t.isTrue(s.lobby.Join(4, matchId, nil, 'cash'), 'the third fighter could not join')
     local match = s.lobby.Get(matchId)
     match.state = 'live'
     match.startsAt = os.time()
+    -- A CLOCK THAT HAS NOT RUN OUT, which going live sets. A lobby row
+    -- carries endsAt = 0, and a live round reading that has already timed
+    -- out: the next sweep ends it, and the book is rightly shut on it.
+    match.endsAt = match.startsAt + 600
+    -- ON THEIR FEET, the way ArenaMatch.Start leaves a roster. A row with no
+    -- lives reads as eliminated, and a round of nobody standing is one the
+    -- next sweep ends.
+    for _, row in pairs(match.players) do row.alive, row.lives = true, 3 end
 
     -- Fighter 2 is out: no lives left and not alive, which is exactly what
     -- server/match.lua leaves behind on a final death.
@@ -775,6 +796,12 @@ t.test('and a fighter who is merely DOWN with lives left can still be backed', f
     local match = s.lobby.Get(matchId)
     match.state = 'live'
     match.startsAt = os.time()
+    -- A CLOCK THAT HAS NOT RUN OUT, which going live sets. A lobby row
+    -- carries endsAt = 0, and a live round reading that has already timed
+    -- out: the next sweep ends it, and the book is rightly shut on it.
+    match.endsAt = match.startsAt + 600
+    -- On their feet, the way ArenaMatch.Start leaves a roster.
+    for _, row in pairs(match.players) do row.alive, row.lives = true, 3 end
 
     match.players[2].alive = false
     match.players[2].lives = 2
@@ -784,13 +811,18 @@ t.test('and a fighter who is merely DOWN with lives left can still be backed', f
 end)
 
 t.test('and a team is unbackable once its last player is out', function()
-    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000 }, function(config)
+    -- THREE SIDES, NOT TWO, for the reason the test above gives: with two,
+    -- the side left standing has already won and the pick check is never
+    -- reached.
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000,
+        [6] = 50000 }, function(config)
         config.Betting.enabled = true
         config.Betting.spectatorBets.enabled = true
         config.Betting.spectatorBets.closeAfterStartSeconds = 30
         config.Betting.entryFee.enabled = false
         config.Betting.entryFee.min = 0
         config.Betting.entryFee.default = 0
+        config.Teams.list.bone.enabled = true
     end)
 
     local teamMode
@@ -798,17 +830,26 @@ t.test('and a team is unbackable once its last player is out', function()
         if mode.teams then teamMode = mode.key break end
     end
     local teams = s.env.Arena.GetEnabledTeams()
-    local sideA, sideB = teams[1].key, teams[2].key
+    t.isTrue(#teams >= 3, 'the fixture has no third side')
+    local sideA, sideB, sideC = teams[1].key, teams[2].key, teams[3].key
 
     local matchId = s.lobby.Create(1, anArena(s), teamMode, 0, nil, nil, 'cash')
     t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'))
     t.isTrue(s.lobby.Join(3, matchId, nil, 'cash'))
+    t.isTrue(s.lobby.Join(6, matchId, nil, 'cash'))
 
     local match = s.lobby.Get(matchId)
     match.players[1].team, match.players[2].team = sideA, sideA
     match.players[3].team = sideB
+    match.players[6].team = sideC
     match.state = 'live'
     match.startsAt = os.time()
+    -- A CLOCK THAT HAS NOT RUN OUT, which going live sets. A lobby row
+    -- carries endsAt = 0, and a live round reading that has already timed
+    -- out: the next sweep ends it, and the book is rightly shut on it.
+    match.endsAt = match.startsAt + 600
+    -- On their feet, the way ArenaMatch.Start leaves a roster.
+    for _, row in pairs(match.players) do row.alive, row.lives = true, 3 end
 
     -- One of the two on sideA is out. The side is still in the fight.
     match.players[1].alive, match.players[1].lives = false, 0
@@ -890,7 +931,12 @@ t.test('POWERGAMING: walking out of a live round does not turn you into a specta
     -- Nothing named it: ArenaBetting.MarkWalkedOut appears in no other spec,
     -- and every existing refusal here is a round whose window has passed, so
     -- the term could be deleted with the suite still green.
-    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000 }, function(config)
+    --
+    -- THREE FIGHTERS, NOT TWO. With two, the walk-out leaves one standing,
+    -- the round is decided, and the book is shut to everybody for THAT reason
+    -- -- which would pass the refusal below without the walked-out rule
+    -- saying a word. The third keeps the round being fought.
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000 }, function(config)
         config.Betting.enabled = true
         config.Betting.entryFee.enabled = false
         config.Betting.spectatorBets = config.Betting.spectatorBets or {}
@@ -900,10 +946,15 @@ t.test('POWERGAMING: walking out of a live round does not turn you into a specta
     local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
     t.isNotNil(matchId, 'the match could not be created')
     t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+    t.isTrue(s.lobby.Join(4, matchId, nil, 'cash'), 'the third fighter could not join')
 
     local match = s.lobby.Get(matchId)
     match.state = 'live'
     match.startsAt = os.time()
+    -- A CLOCK THAT HAS NOT RUN OUT, which going live sets. A lobby row
+    -- carries endsAt = 0, and a live round reading that has already timed
+    -- out: the next sweep ends it, and the book is rightly shut on it.
+    match.endsAt = match.startsAt + 600
 
     -- THE WINDOW IS GENUINELY OPEN: a real spectator can back a side right
     -- now. Without this the refusal below would prove only that the book was
@@ -929,9 +980,16 @@ end)
 
 --- The setup the three tests below share: a live round, a grace window that
 --- is genuinely open, and one fighter about to walk out of it.
+---
+--- THREE FIGHTERS, NOT TWO. With two, the walk-out leaves one standing, the
+--- round is decided, and the book shuts to everybody for that reason -- so a
+--- refusal of the walker would pass without the walked-out rule saying a
+--- word, and the controls that a watcher is still served would fail. Fighter
+--- 5 stays in and keeps the round being fought. 3 is the watcher and 4 is
+--- the seat a walker comes back on.
 --- @return table server, string matchId
 local function liveRoundWithGrace()
-    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000 }, function(config)
+    local s = newArena({ [1] = 50000, [2] = 50000, [3] = 50000, [4] = 50000, [5] = 50000 }, function(config)
         config.Betting.enabled = true
         config.Betting.entryFee.enabled = false
         config.Betting.spectatorBets = config.Betting.spectatorBets or {}
@@ -941,10 +999,15 @@ local function liveRoundWithGrace()
     local matchId = s.lobby.Create(1, anArena(s), nil, 0, nil, nil, 'cash')
     t.isNotNil(matchId, 'the match could not be created')
     t.isTrue(s.lobby.Join(2, matchId, nil, 'cash'), 'the second fighter could not join')
+    t.isTrue(s.lobby.Join(5, matchId, nil, 'cash'), 'the third fighter could not join')
 
     local match = s.lobby.Get(matchId)
     match.state = 'live'
     match.startsAt = os.time()
+    -- A CLOCK THAT HAS NOT RUN OUT, which going live sets. A lobby row
+    -- carries endsAt = 0, and a live round reading that has already timed
+    -- out: the next sweep ends it, and the book is rightly shut on it.
+    match.endsAt = match.startsAt + 600
 
     return s, matchId
 end

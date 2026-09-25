@@ -531,6 +531,29 @@ t.test('and a WATCHER still gets the grace the setting is for', function()
         'a watcher was refused inside the grace window the operator set')
 end)
 
+t.test('THE MATRIX: but a watcher cannot back a round that is already decided', function()
+    -- The last opponent is out inside the watcher's grace, and the round is
+    -- still "live" only because the sweep that ends it runs once a second.
+    -- A bet on the survivor in that gap is a bet on a known result, and it
+    -- was paid out of the stakes that belong to the winner.
+    local s, matchId = liveBook()
+    s.match.OnDeath(2, 1)
+    t.equals(s.lobby.Get(matchId).state, 'live', 'the round ended before the gap this is about')
+
+    local ok, reason = s.betting.PlaceSpectatorBet(3, matchId, 1, 5000, 'cash')
+    t.isFalse(ok == true, 'a watcher backed the winner of a round that was already decided')
+    t.equals(reason, 'error.bets_closed', 'and was not told the book had shut')
+    t.isFalse(s.betting.BetsAreOpen(s.lobby.Get(matchId)),
+        'the panel is still being told the book is open')
+
+    -- THE SAME GAP WHEN THE LAST OPPONENT WALKS OUT instead of dying.
+    local w, walkedId = liveBook()
+    w.fire('leaveMatch', 2)
+    t.equals(w.lobby.Get(walkedId).state, 'live', 'the round ended before the gap this is about')
+    t.isFalse((w.betting.PlaceSpectatorBet(3, walkedId, 1, 5000, 'cash')) == true,
+        'a watcher backed the only fighter left after the other walked out')
+end)
+
 t.test('and a fighter betting in the LOBBY is untouched', function()
     -- Where a fighter is supposed to back themselves: before a shot is
     -- fired, on the same information everybody else has.

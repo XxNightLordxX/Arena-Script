@@ -726,7 +726,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
-#### `server/match.lua` — 10 functions
+#### `server/match.lua` — 11 functions
 
 | Function | What it does |
 |---|---|
@@ -740,6 +740,7 @@ listed; the source documents them where they are.
 | `ArenaMatch.RemovePlayer(src, reasonKey)` | One player out, mid-round: they left, they were dropped, or an admin pulled them. |
 | `ArenaMatch.CloseWaitingLobbies(reasonKey)` | Shuts every lobby still waiting to start -- including one counting down that nobody has been placed in -- and hands back every stake. A round anybody is standing in is left to finish. Run when a schedule window closes and when an admin closes the arena. Answers how many it tried to close. |
 | `ArenaMatch.IsLive(matchId)` | Whether a match is in its live phase. |
+| `ArenaMatch.IsDecided(match)` | Whether a live round's result is already fixed -- the next sweep would end it -- although it has not been ended yet. Asks the same `evaluate` the sweep ends a round on, and only reads. The spectator betting grace closes on it, so nobody can back the certain winner in the second between the deciding death or walk-out and the sweep. |
 
 #### `client/ui.lua` — 9 functions
 

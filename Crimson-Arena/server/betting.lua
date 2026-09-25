@@ -1444,7 +1444,21 @@ local function betsAreOpen(match, isFighter)
     local startedAt = Arena.ToInt(match.startsAt)
     local now = os.time()
     if not startedAt or startedAt > now then return false end
-    return (now - startedAt) < grace
+    if (now - startedAt) >= grace then return false end
+
+    -- NOT ON A ROUND THAT IS ALREADY DECIDED. The grace is for betting on a
+    -- round still being fought. Once the last opponent is out, or the limit
+    -- is reached, the result is fixed and the round is only still "live"
+    -- until the next sweep ends it -- and a bet placed in that second was a
+    -- bet on a known result, paid out of the winner's own stakes. The mirror
+    -- of selling a bet on a fighter already out, which pickExists refuses.
+    -- match.lua loads after this file, hence the check.
+    if type(ArenaMatch) == 'table' and type(ArenaMatch.IsDecided) == 'function'
+        and ArenaMatch.IsDecided(match)
+    then
+        return false
+    end
+    return true
 end
 
 function ArenaBetting.BetsAreOpen(match)

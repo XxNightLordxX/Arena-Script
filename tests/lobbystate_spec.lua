@@ -466,6 +466,9 @@ t.test('the snapshot says whether the book is still taking bets', function()
     -- the SNAPSHOT reports for a given clock, not how a round begins.
     match.state = 'live'
     match.startsAt = os.time() - 5
+    -- A clock that has not run out, which going live sets; a lobby row
+    -- carries endsAt = 0, which reads as a round already timed out.
+    match.endsAt = match.startsAt + 600
     t.equals(s.onlyMatch(3).betsOpen, true,
         'the book was reported shut five seconds into a thirty-second window')
 

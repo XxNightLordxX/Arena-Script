@@ -4772,6 +4772,51 @@
         toolWaiting: false,
     };
 
+    /* THE ONE READER OF THE TABLET'S MESSAGE. `adminOpen` and `adminState`
+       carry the same fields, and each case used to read them in its own
+       copy of these lines. Two copies is how the two sides drifted once
+       already -- server/main.lua records it, eight keys against twelve, and
+       the stash tab read "no database" on the very first draw. Both cases
+       call this now, so a field added here reaches both.
+
+       WHAT DIFFERS BETWEEN THE TWO STAYS IN EACH CASE. adminOpen marks the
+       tablet open BEFORE this and resets the focus, the tabs and the Tools
+       report after it. adminState refuses a closed tablet BEFORE this -- so
+       nothing, the currency symbol included, is taken off a refresh meant
+       for a tablet that has gone -- and takes the focus after it. DO NOT
+       move either of those in here, nor the two confirmations.
+
+       DECLARED HERE, INSIDE THE CLOSURE AND BELOW `admin`, because it writes
+       to `admin` and calls int, arrayOf and rememberCurrency. Outside the
+       closure none of them resolve, and guarded() swallows the
+       ReferenceError: the tablet goes blank with nothing on the console.
+       tests/panel/adminpayload.test.js holds both messages to this. */
+    function readAdminPayload(data) {
+        rememberCurrency(data.currencySymbol);
+        admin.matches = arrayOf(data.matches);
+        admin.owed = arrayOf(data.owed);
+        admin.owedKit = arrayOf(data.owedKit);
+        admin.owedKitSaved = data.owedKitSaved === true;
+        /* AND WHETHER THE HELD-BACK MARKS BELOW MEAN ANYTHING
+           YET. Until the jam list has been read back every stash
+           looks unheld, and an unqualified screen would offer a
+           hand-back on the one stash the door is certain to
+           refuse. */
+        admin.jamsKnown = data.jamsKnown === true;
+        admin.databaseOn = data.databaseOn === true;
+        admin.stashesFound = int(data.stashesFound, 0);
+        admin.stashesRead = int(data.stashesRead, 0);
+        admin.stashesReadable = data.stashesReadable !== false;
+        admin.hoursOpen = data.hoursOpen !== false;
+        admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
+            ? data.hoursForced
+            : null;
+        admin.hoursLine = typeof data.hoursLine === 'string' ? data.hoursLine : null;
+        admin.hoursOpensAt = typeof data.hoursOpensAt === 'string'
+            ? data.hoursOpensAt
+            : null;
+    }
+
     function adminRefresh() {
         post('adminState', { matchId: admin.focused ? admin.focused.id : null });
     }
@@ -5446,29 +5491,7 @@
 
                 case 'adminOpen':
                     admin.open = true;
-                    rememberCurrency(data.currencySymbol);
-                    admin.matches = arrayOf(data.matches);
-                    admin.owed = arrayOf(data.owed);
-                    admin.owedKit = arrayOf(data.owedKit);
-                    admin.owedKitSaved = data.owedKitSaved === true;
-                    /* AND WHETHER THE HELD-BACK MARKS BELOW MEAN ANYTHING
-                       YET. Until the jam list has been read back every stash
-                       looks unheld, and an unqualified screen would offer a
-                       hand-back on the one stash the door is certain to
-                       refuse. */
-                    admin.jamsKnown = data.jamsKnown === true;
-                    admin.databaseOn = data.databaseOn === true;
-                    admin.stashesFound = int(data.stashesFound, 0);
-                    admin.stashesRead = int(data.stashesRead, 0);
-                    admin.stashesReadable = data.stashesReadable !== false;
-                    admin.hoursOpen = data.hoursOpen !== false;
-                    admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
-                        ? data.hoursForced
-                        : null;
-                    admin.hoursLine = typeof data.hoursLine === 'string' ? data.hoursLine : null;
-                    admin.hoursOpensAt = typeof data.hoursOpensAt === 'string'
-                        ? data.hoursOpensAt
-                        : null;
+                    readAdminPayload(data);
                     admin.focused = null;
                     admin.player = null;
                     admin.tab = null;
@@ -5520,29 +5543,7 @@
 
                 case 'adminState':
                     if (!admin.open) break;
-                    rememberCurrency(data.currencySymbol);
-                    admin.matches = arrayOf(data.matches);
-                    admin.owed = arrayOf(data.owed);
-                    admin.owedKit = arrayOf(data.owedKit);
-                    admin.owedKitSaved = data.owedKitSaved === true;
-                    /* AND WHETHER THE HELD-BACK MARKS BELOW MEAN ANYTHING
-                       YET. Until the jam list has been read back every stash
-                       looks unheld, and an unqualified screen would offer a
-                       hand-back on the one stash the door is certain to
-                       refuse. */
-                    admin.jamsKnown = data.jamsKnown === true;
-                    admin.databaseOn = data.databaseOn === true;
-                    admin.stashesFound = int(data.stashesFound, 0);
-                    admin.stashesRead = int(data.stashesRead, 0);
-                    admin.stashesReadable = data.stashesReadable !== false;
-                    admin.hoursOpen = data.hoursOpen !== false;
-                    admin.hoursForced = (data.hoursForced === 'open' || data.hoursForced === 'shut')
-                        ? data.hoursForced
-                        : null;
-                    admin.hoursLine = typeof data.hoursLine === 'string' ? data.hoursLine : null;
-                    admin.hoursOpensAt = typeof data.hoursOpensAt === 'string'
-                        ? data.hoursOpensAt
-                        : null;
+                    readAdminPayload(data);
                     admin.focused = (data.focused && typeof data.focused === 'object')
                         ? data.focused
                         : null;

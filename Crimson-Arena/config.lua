@@ -557,10 +557,10 @@ Config.Teams = {
 
     -- CAN TEAMMATES HURT EACH OTHER? Off means the SHOT is refused, not
     -- merely that the kill is not counted. This is the one switch to move --
-    -- three FILES read it, at four decision points: the client's own hold,
-    -- and the three callers of Arena.CanDamage (kill attribution, the
-    -- weapon-damage refusal and the explosion refusal). The fourth arrived
-    -- with the explosion handler and is easy to miss when changing this.
+    -- ONE function reads it, Arena.CanDamage, and four places ask that: kill
+    -- attribution, the weapon-damage refusal, the explosion refusal and the
+    -- TEAMKILL console line. The explosion refusal came last and is the
+    -- easiest to miss -- change the rule inside CanDamage, never at a caller.
     --
     -- WHAT "REFUSED" COVERS, since the engine decides the shape of this:
     --

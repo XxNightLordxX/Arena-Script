@@ -3384,8 +3384,8 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         -- against the person it was about.
         -- THIS NOTE USED TO SAY TWO OF THE GUARDS BELOW COULD NOT BE MADE TO
         -- FAIL. IT WAS WRONG, AND WRONG IN THE DIRECTION THAT COSTS SOMETHING:
-        -- it told the next engineer that `accused.team == player.team` and
-        -- `friendlyFire ~= true` were kept out of tidiness, when each is the
+        -- it told the next engineer that the same-side guard and the
+        -- friendly-fire guard were kept out of tidiness, when each is the
         -- only thing standing between a refusal and a false accusation in the
         -- console.
         --
@@ -3397,20 +3397,41 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         -- a team-mate on a server whose operator turned friendly fire ON --
         -- and neither has anything to do with friendly fire.
         --
-        -- SO BOTH GUARDS ARE REACHABLE, AND THERE ARE NOW TESTS THAT FAIL
-        -- WITHOUT THEM. Measured: delete the friendly-fire guard and a
-        -- distance-refused team-mate kill is announced as a team-kill on a
-        -- server whose friendly fire is ON; delete the same-team guard and a
-        -- distance-refused ENEMY is announced as the victim's own team-mate.
-        -- One failing test each, named for what they print.
+        -- SO BOTH GUARDS ARE REACHABLE, AND THERE ARE TESTS THAT FAIL WITHOUT
+        -- THEM. BOTH NOW LIVE INSIDE Arena.CanDamage, which the line below
+        -- asks instead of carrying its own copy. Measured: have the rule
+        -- ignore friendly fire and a distance-refused team-mate kill is
+        -- announced as a team-kill on a server whose friendly fire is ON;
+        -- have it ignore the sides and a distance-refused ENEMY is announced
+        -- as the victim's own team-mate. One failing test each in
+        -- tests/gungame_spec.lua, named for what they print.
+        --
+        -- ONE RULE, ASKED OF THE ONE PLACE THAT OWNS IT. The copy that stood
+        -- here -- ModeUsesTeams, IsKey on the accused's side, the same side,
+        -- `friendlyFire ~= true` -- was CanDamage's refusal less its IsKey on
+        -- the victim's side, which "the same side as a real key" already
+        -- implies. Both are pure reads of the roster and Config, asked in the
+        -- same order, so nothing but the number of copies changed:
+        -- tests/teamkillrule_spec.lua drives the old copy against this line
+        -- over every mode, team value and friendly-fire value and they agree.
+        -- What the copy cost was the second edit a per-mode friendly-fire
+        -- switch would have needed, and every copy of this rule in this file
+        -- has drifted. ACCUSED FIRST, VICTIM SECOND, which is the order
+        -- CanDamage reads -- symmetric today, but a question asked backwards
+        -- is a defect waiting for the rule to stop being so.
+        --
+        -- NOT rosterKiller's REFUSAL REASON, which looks like the same answer
+        -- and is not. rosterKiller asks CanDamage BEFORE it asks whether the
+        -- accused is still in the round, so a team-mate who is eliminated or
+        -- has been sent home is refused as 'team' -- and this line says
+        -- nothing about them on purpose. That is why leftArena and
+        -- elimination are still asked here, and the self-guard with them.
         --
         -- takeWeaponBack carries a note of the same shape about the same kind
         -- of guard. Given this one was wrong, do not trust that one either
         -- until somebody has tried to break it the way these two were broken.
         local accused = killerSrc ~= id and match.players[killerSrc] or nil
-        if accused ~= nil and Arena.ModeUsesTeams(match.modeKey)
-            and Arena.IsKey(accused.team) and accused.team == player.team
-            and Config.Teams.friendlyFire ~= true
+        if accused ~= nil and not Arena.CanDamage(match.modeKey, accused.team, player.team)
             and accused.leftArena ~= true and not Arena.IsEliminated(accused)
         then
             announcedTeamKill = true

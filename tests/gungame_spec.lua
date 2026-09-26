@@ -4510,8 +4510,8 @@ end)
 --[[
     THE TWO TEAMKILL GUARDS THAT WERE WRITTEN DOWN AS UNFAILABLE.
 
-    The comment above that block says `accused.team == player.team` and
-    `friendlyFire ~= true` "CANNOT BE MADE TO FAIL", on the reasoning that
+    The comment above that block once said its same-side guard and its
+    friendly-fire guard "CANNOT BE MADE TO FAIL", on the reasoning that
     rosterKiller refuses a claim for exactly four reasons and the other three
     are already excluded by the time the line is reached.
 
@@ -4524,6 +4524,11 @@ end)
     only thing standing between that and a false accusation in the console.
 
     Both tests below fail if their guard is deleted. The comment now says so.
+
+    BOTH GUARDS NOW LIVE INSIDE Arena.CanDamage -- `attackerTeam ~= victimTeam`
+    and `friendlyFire == true` -- which the line asks instead of carrying a
+    hand-written copy. The tests are unchanged: each still fails if the rule
+    it is named for stops being applied to the line, wherever it lives.
 ]]
 
 --- A team game that also reports positions, which teamedServer cannot do.
@@ -4547,9 +4552,10 @@ t.test('a kill refused for DISTANCE is not reported as a team-kill when friendly
 function()
     -- friendlyFire ON, so a team-mate kill is not a team-kill at all. The claim
     -- is still refused -- by the distance ceiling, which rosterKiller knows
-    -- nothing about -- and the block must stay silent. Delete
-    -- `Config.Teams.friendlyFire ~= true` and it accuses a team-mate on a
-    -- server whose operator switched friendly fire on deliberately.
+    -- nothing about -- and the block must stay silent. Have the line ignore
+    -- friendly fire -- CanDamage's `friendlyFire == true` -- and it accuses a
+    -- team-mate on a server whose operator switched friendly fire on
+    -- deliberately.
     local s, places = teamedPlaces(function(config) config.Teams.friendlyFire = true end)
     local m = s.match_()
     t.equals(m.players[1].team, m.players[3].team, '1 and 3 are not team-mates')
@@ -4570,8 +4576,9 @@ end)
 t.test('and a kill refused for DISTANCE that names an ENEMY is not reported as one either',
 function()
     -- friendlyFire OFF this time, and the accused is on the OTHER side. Again
-    -- the refusal is the distance ceiling. Delete `accused.team == player.team`
-    -- and the console accuses an enemy of being the victim's own team-mate.
+    -- the refusal is the distance ceiling. Have the line ignore the sides --
+    -- CanDamage's `attackerTeam ~= victimTeam` -- and the console accuses an
+    -- enemy of being the victim's own team-mate.
     local s, places = teamedPlaces()
     local m = s.match_()
     t.isTrue(m.players[1].team ~= m.players[2].team, '1 and 2 are not on opposite sides')

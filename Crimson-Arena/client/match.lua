@@ -2676,10 +2676,15 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
 
     -- NO YIELD IN THIS LOOP, AND THAT IS A DECISION MADE TWICE.
     --
-    -- The build does up to four hundred CreateObjects, and doing them in one
-    -- frame is a visible freeze. So it was changed to hand the frame back
-    -- every thirty-two pieces -- and a player who had entered the skydome
-    -- without trouble for weeks began crashing on every single entry.
+    -- The build does over a thousand CreateObjects at its worst, and doing
+    -- them in one frame is a visible freeze. A client without the stunt
+    -- blocks tiles the floor from containers: 369 pieces at the smallest
+    -- size and 1,127 once the roster has grown the arena as far as it goes
+    -- on the test world's 12.2m by 2.5m container, or 375 and 1,149 on the
+    -- 12.19m by 2.44m one config.lua describes (buildnotes_spec measures
+    -- all four). So it was changed to hand the frame back every thirty-two
+    -- pieces -- and a player who had entered the skydome without trouble
+    -- for weeks began crashing on every single entry.
     --
     -- The first explanation was that the yield let the streamer act on the
     -- per-piece SetModelAsNoLongerNeeded between batches, so the models are
@@ -2703,8 +2708,17 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     -- the wall. Trimming to 250 opens a hole in the floor at 43m, and 200
     -- opens one at 39m -- both well INSIDE a wall at 44.5m, which is a
     -- fighter dropping a kilometre through ground they were standing on.
-    -- The rim `maxTiles` trims is not the unreachable overshoot; the
-    -- overshoot is what is left after the disc is covered.
+    -- The rim a LOWERED `maxTiles` would trim is not the unreachable
+    -- overshoot; the overshoot is what is left after the disc is covered.
+    --
+    -- AND THE SHIPPED CAP NEVER TRIMS AT ALL, at any roster size. It grows
+    -- with the square of the size factor, as the floor's area does, so the
+    -- container floor stays under it from the smallest arena (291 of 400)
+    -- to the largest (1,049 of 1,600), and it is closest at the smallest.
+    -- Those counts, like the 291 and the two holes above, are the test
+    -- world's 12.2m by 2.5m container; on config.lua's 12.19m by 2.44m one
+    -- the floor is 297 of 400 and 1,071 of 1,600, still under. It keeps no
+    -- grown arena's piece count down; only the prop can.
     --
     -- The count itself is the thing worth attacking, and the way to attack it
     -- is the PROP, not the cap -- see the fallback warning further down.

@@ -1,0 +1,4677 @@
+-- Crimson Arena: the round itself. Countdown, kills, and endings.
+
+--[[
+    crimson_arena/server/match.lua
+
+    The round itself: putting players in the arena, counting what happens
+    there, and deciding when it is over.
+
+    THE LOBBY OWNS THE RECORD, THIS FILE OWNS THE ROUND. Everything here
+    reads and writes the match record server/lobby.lua created. It keeps no
+    second list of who is playing, because two lists of players is one list
+    too many the moment somebody disconnects.
+
+    NOTHING A CLIENT SAYS IS A FACT. A death report is a hint: the server
+    already knows who is in the match, which side they are on and whether
+    they are still alive, and it re-checks all three before crediting a kill.
+    A claim it cannot verify scores nobody -- but the reporter is still
+    eliminated, because that part was never in doubt.
+
+    ONE SWEEP THREAD, NOT ONE PER MATCH. The round clock, the win check and
+    the scoreboard push all ride on a single one-second pass over the live
+    matches. That is also what turns a double knockout into a draw: two
+    players who die in the same tick are both counted before anything is
+    decided, so neither one is declared the last standing.
+
+    A ROUND IS FOUGHT IN ITS OWN NETWORK INSTANCE. Entering the arena moves a
+    player into the match's routing bucket and leaving it puts them back in
+    the one they came from, both on the same two choke points that raise and
+    clear the dispatch flag -- sendEnterArena and sendExitArena -- so the two
+    cannot end up disagreeing about who is in a match. The sweep reconciles
+    that against the registry once a second, so a departure that never
+    reaches those choke points -- and there is one -- still ends with the
+    player back in the world they came from. What all that buys, what it does
+    not, and why the bucket is captured rather than assumed to be 0 are in
+    server/dispatch.lua.
+
+    MONEY IS NOT DECIDED HERE. This file decides who won; what that is worth
+    is Arena.ComputePayouts' arithmetic and server/betting.lua's escrow. The
+    one thing it must get exactly right is the ORDER of the settlement in
+    End(), which is spelled out where it happens.
+]]
+
+ArenaMatch = {}
+
+local SWEEP_INTERVAL_MS = 1000
+
+local function toPoint(value)
+    -- Arena.IsPoint RATHER THAN A LIST OF ITS OWN. Elsewhere in this file the
+    -- rule is written down as "Arena.IsPoint is the one place that knows the
+    -- list"; this hand-rolled its own and quietly left out vector2 and
+    -- userdata, which made a comment further down claiming this had already
+    -- gone through IsPoint false. DO NOT write the types out again.
+    if not Arena.IsPoint(value) then return nil end
+
+    local kind = type(value)
+
+    local indexed = kind == 'table' and value or nil
+    local x = tonumber(value.x) or (indexed and tonumber(indexed[1]))
+    local y = tonumber(value.y) or (indexed and tonumber(indexed[2]))
+    local z = tonumber(value.z) or (indexed and tonumber(indexed[3]))
+    if not x or not y or not z then return nil end
+
+    local w = 0.0
+    if kind ~= 'vector3' then
+        w = tonumber(value.w) or (indexed and tonumber(indexed[4])) or 0.0
+    end
+
+    return { x = x, y = y, z = z, w = w }
+end
+
+local function scatterRadius()
+    return math.max(0.0, tonumber(Config.Match.spawnScatterRadius) or 0.0)
+end
+
+local function boundaryPayload(arena, factor)
+    -- Through Arena.BoundaryOf: one reading of `enabled` shared with the
+    -- keep-out fence, the explosion guard and the validator, which used to
+    -- disagree with this line about a block that omits the key.
+    local boundary = Arena.BoundaryOf(arena)
+    if not boundary then return nil end
+
+    local center = toPoint(boundary.center)
+    if not center then
+        ArenaLog('BOUNDARY IGNORED: arena "%s" has a boundary switched on whose centre cannot be read -- ' ..
+            'it needs x, y and z. Nobody will be warned or bled for leaving it.',
+            tostring(arena.label or '?'))
+        return nil
+    end
+
+    return {
+        enabled = true,
+        center = center,
+        radius = (tonumber(boundary.radius) or 0.0) * math.max(1.0, tonumber(factor) or 1.0),
+        warningSeconds = math.max(0, Arena.ToInt(boundary.warningSeconds) or 0),
+        damagePerTick = math.max(0, Arena.ToInt(boundary.damagePerTick) or 0),
+        tickMs = math.max(100, Arena.ToInt(boundary.tickMs) or 1000),
+    }
+end
+
+-- ======================================================================
+-- GUN GAME
+--
+-- Config.Modes.gungame, played.
+--
+-- THE CLOCK IS THE ROUND, NOT THE LIVES. Nobody is ever eliminated in a gun
+-- game. A death costs a TIER and nothing else, so a player is in the round
+-- from the first second to the last, and the round ends when the mode's own
+-- roundTimeSeconds runs out or when somebody tops the ladder -- whichever
+-- comes first. That is why `evaluate` skips the score limit and the
+-- last-man-standing rule for a ladder match: neither has anything to decide.
+--
+-- THE LADDER IS THE LOADOUT. What a player picked in the panel is never
+-- handed out in this mode -- the ladder replaces it on the way in, on every
+-- tier change and on every respawn. Armour, health and supplies are not a
+-- weapon choice and are left exactly as they are everywhere else.
+--
+-- A TIER IS DERIVED FROM THE SCORE, NEVER COUNTED UP. Two kills landing
+-- between one sweep and the next move a player once per tier and never
+-- twice, and a kill the server refused to credit cannot leave anybody
+-- standing a tier above what they earned.
+--
+-- AND THE SCORE IS NOT THE KILL COUNT. It is ladder kills less tiers lost,
+-- which is what makes a death cost the weapon: `kills` stays honest for the
+-- scoreboard, the leaderboard and the payout, and the ladder keeps its own
+-- two numbers next to it.
+--
+-- THE LADDER IS DRAWN ONCE PER MATCH AND THEN FIXED. Config gives ordered
+-- POOLS -- melee, then sidearms, then up -- and one weapon is taken from
+-- each when the round needs a ladder. Two matches on the same mode at the
+-- same time therefore climb different guns, which is the point: the shape is
+-- learnable, the ladder is not.
+-- ======================================================================
+
+--- What `maxTiersPerVictim` falls back to when config gives a value that
+--- cannot be read as a number.
+---
+--- IT MATCHES THE SHIPPED CONFIG DELIBERATELY. Falling back to "no cap"
+--- meant a typo switched the anti-collusion rule off; falling back to 1
+--- would quietly make an operator's mode stricter than they wrote. The
+--- shipped number is the one they had before they mistyped it.
+local DEFAULT_TIERS_PER_VICTIM = 2
+
+local function ladderOf(match)
+    if type(match) ~= 'table' then return {} end
+    if type(match.ladder) == 'table' then return match.ladder end
+
+    -- THIS MATCH'S OWN SHAPE. `tierPlan` is what the host built in the
+    -- creation menu -- how many rungs of each weapon class -- and nil means
+    -- they left it alone, which falls through to the mode's own defaults.
+    -- Read off the match rather than the config for the same reason its lives
+    -- and its clock are: an operator editing the classes mid-session must not
+    -- reshape a ladder that is already being climbed.
+    local tiers = Arena.LadderTiersFor(match.modeKey, match.tierPlan)
+    local drawn = {}
+    for _, pool in ipairs(tiers) do
+        drawn[#drawn + 1] = pool[math.random(#pool)]
+    end
+
+    if not Arena.PlaysLadder(match.modeKey) then
+        if #drawn > 0 then
+            ArenaDebug('gun game: %s has only %d playable tier(s) -- not a ladder, playing it as ordinary rules.',
+                tostring(match.modeKey), #drawn)
+        end
+        drawn = {}
+    else
+        local names = {}
+        for index, weapon in ipairs(drawn) do
+            names[#names + 1] = ('%d:%s'):format(index, weapon.key)
+        end
+        ArenaDebug('gun game: match %s drew the ladder %s', tostring(match.id), table.concat(names, ' '))
+    end
+
+    match.ladder = drawn
+    return drawn
+end
+
+--- The score a player climbs on: the kills that counted for the ladder, less
+--- the tiers their deaths have cost them. Never below zero.
+---
+--- SEPARATE FROM `kills`, and that is the point of it. A death must not take
+--- away a kill that really happened -- the scoreboard, the leaderboard and
+--- the payout all read `kills`, and rewriting it to move somebody down a
+--- tier would quietly edit history.
+---
+--- AND SEPARATE FROM `kills` IN THE OTHER DIRECTION TOO. `ladderKills` is
+--- the kills that were allowed to move the killer: a kill past
+--- `maxTiersPerVictim` on the same opponent still counts as a kill and still
+--- pays, it just stops buying tiers. See `creditsTier`.
+--- @param player table
+--- @return integer
+local function tierScore(player)
+    local climbed = math.max(0, Arena.ToInt(player.ladderKills) or 0)
+    local lost = math.max(0, Arena.ToInt(player.tiersLost) or 0)
+    return math.max(0, climbed - lost)
+end
+
+local function tierForScore(score, tiers)
+    local total = math.max(0, Arena.ToInt(tiers) or 0)
+    local scored = math.max(0, Arena.ToInt(score) or 0)
+    if total <= 0 then return 1, false end
+    if scored >= total then return total, true end
+    return scored + 1, false
+end
+
+local function kitFor(match, player)
+    local kit = Arena.StartingKitFor(match and match.modeKey)
+    if kit ~= nil then return kit end
+    return type(player) == 'table' and type(player.loadout) == 'table'
+        and player.loadout.supplies or nil
+end
+
+--- Whether this player's score has topped the ladder.
+---
+--- DERIVED, NEVER STORED, and it used to be a field. `player.ladderFinished`
+--- was a second copy of something tierScore already answers, and the two
+--- came apart the moment anything touched one without the other:
+---
+---   A DEMOTION THAT THE INVENTORY REFUSED. The death charged a tier, the
+---   flag was recomputed as false, the swap was refused, and OnDeath rolled
+---   the charge back -- leaving a player whose score had topped the ladder
+---   flagged as not having done so. They could never win on it, and the
+---   round went to whoever topped it next, as a sole win over a tie.
+---
+--- One reader is what makes that impossible rather than merely fixed, and it
+--- is the same lesson as the scoreboard sorting on the held tier while the
+--- winner was picked on the earned one.
+--- @param player table
+--- @param tiers integer -- how tall the drawn ladder is
+--- @return boolean
+local function topped(player, tiers)
+    return select(2, tierForScore(tierScore(player), tiers)) == true
+end
+
+local function tierLoadout(weapon, supplies, rounds, blade)
+    -- THROUGH Arena.ResolveWeaponEntry, NOT HAND-BUILT, and the difference
+    -- was four fields. The hand-built entry had no `ammoType`, no
+    -- `ammoTypeLabel` and -- the one that showed -- no `ammoTypeItem`, which
+    -- is what ArenaAmmo splits a magazine off and issues loose rounds
+    -- against: without it the whole pick sat in the magazine, no rounds were
+    -- ever handed over as items, and the arena never recorded owing them. It
+    -- also held `weapon.components` by REFERENCE, which is the operator's
+    -- live config table.
+    --
+    -- NOT Arena.ResolveLoadout, which is the other half of that function and
+    -- deliberately not called: that one judges a PLAYER'S REQUEST against
+    -- Config.Loadouts.allowMelee, allowFirearms and the slot count. The
+    -- ladder is the operator's own list and nobody requested it -- a server
+    -- that does not let players PICK a blade still opens its gun game on one.
+    --
+    -- THE MODE'S TIER AMMUNITION, not the weapon's own default, and the
+    -- difference is what a climber has to fight a tier with. A promotion
+    -- sweeps the previous rung's rounds away along with its gun, so whatever
+    -- lands here is the whole supply for that tier -- and the per-weapon
+    -- default is 60 for a sidearm, which is a magazine and a half.
+    --
+    -- nil falls straight back to that default: with no ask to resolve,
+    -- ResolveAmmo hands back the weapon's own number clamped to its own max.
+    -- So a mode that sets no `tierAmmo` behaves exactly as it did.
+    local tier = Arena.ResolveWeaponEntry(weapon, Arena.ResolveAmmoType(weapon, nil), rounds)
+
+    local base = Arena.ResolveLoadout({ weapons = {} })
+
+    -- SUPPLIES ARE CARRIED FORWARD DELIBERATELY. A tier change rewrites the
+    -- loadout in place, and a hand-built table that forgets a field silently
+    -- takes it away -- here, the kit a player walked in with would vanish
+    -- from the record the moment they moved a tier, and the exit would
+    -- reclaim against a record that no longer mentioned it.
+    --
+    -- WHAT IS NOT IN HERE: the bandages a kill has paid. Those go through
+    -- ArenaAmmo.GrantSupply onto the ammo ledger and never enter this
+    -- record -- an earlier version of this comment said they did, which
+    -- would have made the record the thing the exit reclaims against and it
+    -- is not.
+    --
+    -- ARMOUR IS NOT CARRIED FORWARD EITHER, and cannot be: Arena.StartingVitals
+    -- is a rule of the arena, and Arena.ResolveLoadout ignores any `armor`
+    -- in the request it is handed. This used to pass the player's previous
+    -- armour in and read the constant back out.
+    -- AND THE PERMANENT BLADE BESIDE IT, second in the list and NEVER first.
+    -- settleTier reads weapons[1] as THE rung -- the thing it swaps, bills and
+    -- takes back -- so a blade that landed first would be swapped for the next
+    -- tier and the rung would be the one left in their pocket.
+    --
+    -- SKIPPED WHEN IT WOULD BE A SECOND COPY OF THE RUNG. bladeOf already
+    -- refuses a blade that is on the ladder, so this only fires if an
+    -- operator names the drawn rung itself; it costs one comparison to be
+    -- sure rather than to assume.
+    local weapons = { tier }
+    if blade ~= nil and blade.weapon ~= weapon.weapon then
+        weapons[#weapons + 1] = Arena.ResolveWeaponEntry(blade, Arena.ResolveAmmoType(blade, nil), nil)
+    end
+
+    return {
+        weapons = weapons,
+        armor = base.armor,
+        health = base.health,
+        supplies = supplies ~= nil and supplies or base.supplies,
+    }
+end
+
+--- The permanent blade this match hands out beside every rung, or nil.
+---
+--- CHOSEN ONCE, AND NEVER A WEAPON THAT IS ON THIS LADDER. SwapWeapon sweeps
+--- the name of EVERY drawn rung off a climber on every tier change, so a
+--- blade whose key is also a rung is taken away by the first promotion and
+--- never comes back. MEASURED: with the melee pool forced to `knife`, a
+--- climber held WEAPON_KNIFE on tier 1 and WEAPON_KNIFEx0 from tier 2
+--- onwards, for the rest of the round. The shipped melee pool has 18 entries
+--- and draws one, so that is a one-in-eighteen round, which is exactly the
+--- kind of intermittent loss nobody reports and nobody can reproduce.
+local function bladeOf(match)
+    if match.blade ~= nil then return match.blade or nil end
+
+    local onLadder = {}
+    for _, rung in ipairs(ladderOf(match)) do
+        if Arena.IsKey(rung.weapon) then onLadder[rung.weapon] = true end
+    end
+
+    local mode = Arena.GetModeByKey(match.modeKey) or {}
+    local candidates = type(mode.permanentBlade) == 'table' and mode.permanentBlade or {}
+
+    for _, key in ipairs(candidates) do
+        local candidate = Arena.GetWeaponByKey(key)
+        if candidate and not onLadder[candidate.weapon] then
+            match.blade = candidate
+            return candidate
+        end
+    end
+
+    -- SAID ONCE, AND ONLY WHEN ONE WAS ASKED FOR. An operator who left the
+    -- list empty meant it; one whose five candidates were all drawn, all
+    -- switched off, or all misspelt did not, and that is the case worth a
+    -- line on the console.
+    if #candidates > 0 then
+        ArenaLog('gun game: match %s hands out no permanent blade -- every key in '
+            .. 'permanentBlade is either on this round\'s ladder or is not an enabled weapon. '
+            .. 'Fighters carry only the rung they are standing on.', tostring(match.id))
+    end
+
+    match.blade = false
+    return nil
+end
+
+local function loadoutFor(match, player)
+    local ladder = ladderOf(match)
+    if #ladder == 0 then return Arena.ResolveLoadout(player.loadout) end
+
+    local tier = Arena.ClampInt(player.tier, 1, #ladder) or 1
+    player.tier = tier
+
+    return tierLoadout(ladder[tier], kitFor(match, player),
+        Arena.TierAmmoFor(match.modeKey), bladeOf(match)), {}
+end
+
+local function creditsTier(match, killer, victim)
+    local mode = Arena.GetModeByKey(match.modeKey) or {}
+
+    local configured = Arena.ToInt(mode.maxTiersPerVictim)
+    if configured == nil or configured < 0 then configured = DEFAULT_TIERS_PER_VICTIM end
+
+    -- AND IT CAN NEVER BE TIGHTER THAN THE LADDER NEEDS.
+    --
+    -- The cap makes you spread your kills across the field. In a field of
+    -- two there is nothing to spread across: with seven tiers and a cap of
+    -- two, topping the ladder takes four different victims, so the mode's
+    -- own win condition was unreachable below five players while
+    -- Config.Match.minPlayers ships at 2. A four-man lobby watched somebody
+    -- collect "No tier for that one" forever and the round always went to
+    -- the clock.
+    --
+    -- So the floor is what a lone climber would need against everybody else
+    -- in the room. It is the same rule in both directions -- with enough
+    -- opponents this is smaller than the configured cap and changes nothing,
+    -- and it only ever loosens where a farm could not have paid anyway: the
+    -- accomplice in a two-man match is the only other stake in the pot.
+    local cap = configured
+    if cap > 0 then
+        -- THE ROSTER THE ROUND STARTED WITH, NOT THE ONE LEFT STANDING.
+        --
+        -- This counted `match.players` live, on every kill -- and
+        -- ArenaLobby.Leave deletes a departed fighter's row, so the divisor
+        -- shrank as people walked out and the cap rose with it. The attacker
+        -- chooses when that happens.
+        --
+        -- MEASURED, END TO END: a six-man gun game with a 5,000 entry fee.
+        -- Farm three accomplices flat out and the seven-tier ladder is
+        -- exactly one credit short -- the cap works. Then two accomplices
+        -- fire leaveMatch, the roster drops to four, the floor rises from 2
+        -- to 3, and ONE more kill on a victim who was already farmed out now
+        -- credits: ladder topped, round over, the whole 30,000 pot to the
+        -- attacker. The spent count persists, so the raise RETROACTIVELY
+        -- reopens a victim the cap had closed.
+        --
+        -- Latched at the start of the round instead. What the floor exists
+        -- for is a property of the lobby that was assembled -- can a climber
+        -- reach the top against this many people -- not of who happens to be
+        -- left at the moment of a kill.
+        local roster = Arena.ToInt(match.ladderSpread) or Arena.Count(match.players)
+        local opponents = math.max(0, roster - 1)
+        local height = #ladderOf(match)
+
+        -- TWO VICTIMS, ALWAYS. The floor is divided by at least two however
+        -- few opponents there really are, so topping the ladder can never be
+        -- done off one person.
+        --
+        -- WITHOUT THAT DIVISOR THE RAISE WAS THE EXPLOIT. In a two-player
+        -- match it worked out at the whole ladder, so two accounts -- one
+        -- reporting its own death on a loop -- topped it and took the pot,
+        -- which is the exact run the cap exists to stop, handed back by the
+        -- rule that was meant to make small lobbies playable. And the
+        -- attacker chooses the roster the floor is computed from.
+        --
+        -- The cost is honest and small: in a 1v1 the ladder cannot be
+        -- topped. That round still has a winner -- decideOnLadder crowns the
+        -- highest tier when the clock stops -- and a 1v1 gun game was never
+        -- the shape this mode is for.
+        local spread = math.max(2, opponents)
+        local needed = math.ceil(height / spread)
+        if needed > cap then cap = needed end
+    end
+
+    if type(killer.ladderVictims) ~= 'table' then killer.ladderVictims = {} end
+    local taken = math.max(0, Arena.ToInt(killer.ladderVictims[victim.src]) or 0)
+
+    if cap > 0 and taken >= cap then
+        ArenaDebug('gun game: %s has taken %d tier(s) off %s already -- this kill pays nothing.',
+            tostring(killer.src), taken, tostring(victim.src))
+        return false
+    end
+
+    killer.ladderVictims[victim.src] = taken + 1
+    return true
+end
+
+--- Gives one per-victim credit back when a tier is lost.
+---
+--- IN A PLAYER'S WORDS: "when you hit your max tier then die a lot then you
+--- kill that same person you wont go back up".
+---
+--- creditsTier counts kills PER VICTIM and the count only ever went up, while
+--- a player's position is `ladderKills - tiersLost` and goes both ways. So a
+--- climber who reached the top off three kills on somebody, then died three
+--- times, was back on tier 1 with that opponent recorded as having bought
+--- them three tiers -- and worth nothing to them for the rest of the round.
+--- They could stand next to the only other player in the arena, kill them
+--- repeatedly, and never move.
+---
+--- WHAT THE CAP IS ACTUALLY FOR is bounding how much of the ladder ONE
+--- opponent can carry you up. A tier you climbed and then lost carried you
+--- nowhere, so it should not be held against that opponent -- and once the
+--- credit is refunded the count means "tiers this victim is holding me up
+--- by", which is the thing worth capping.
+---
+--- THE LARGEST ENTRY PAYS. Which victim a lost tier belongs to is not
+--- recorded and could not be without pretending to know something the round
+--- never established, so the loss comes off whoever has bought the most --
+--- the one the cap is policing. It cannot let a farm through: the total
+--- refunded can never exceed the total lost, so a player who never dies is
+--- capped exactly as before.
+--- @param player table
+local function refundTierCredit(player)
+    if type(player.ladderVictims) ~= 'table' then return end
+
+    local worst, most = nil, 0
+    for src, taken in pairs(player.ladderVictims) do
+        local count = math.max(0, Arena.ToInt(taken) or 0)
+        if count > most then worst, most = src, count end
+    end
+
+    if worst == nil then return end
+    if most <= 1 then
+        player.ladderVictims[worst] = nil
+    else
+        player.ladderVictims[worst] = most - 1
+    end
+end
+
+local function rolled(chance)
+    if chance == nil then return true end
+
+    local percent = Arena.ToInt(chance)
+    if percent == nil then return false end
+
+    if percent <= 0 then return false end
+    if percent >= 100 then return true end
+    return math.random(100) <= percent
+end
+
+local function payKillAmmo(match, killer)
+    local rounds = Arena.KillAmmoFor(match.modeKey)
+    if not rounds then return end
+
+    local loadout = killer.loadout
+    if type(loadout) ~= 'table' then return end
+
+    -- PER WEAPON, NOT PER CALIBRE, and the loop is deliberately not
+    -- de-duplicated by item. The rule config states is "this many rounds for
+    -- each firearm you are carrying", so two nine-millimetre pistols are two
+    -- payments of nine-millimetre: what you are carrying is what you are paid
+    -- for. Collapsing them would quietly make a two-pistol loadout worth half
+    -- what a pistol-and-rifle loadout is.
+    --
+    -- MELEE FALLS OUT ON ITS OWN. A blade names no ammoTypeItem -- see
+    -- Arena.ResolveWeaponEntry -- so there is nothing to hand over and no
+    -- rule of its own is needed.
+    for _, entry in ipairs(loadout.weapons or {}) do
+        if Arena.IsKey(entry.ammoTypeItem) then
+            ArenaAmmo.GrantRounds(killer.src, match.id, entry.ammoTypeItem, rounds)
+        end
+    end
+end
+
+local function payKillReward(match, killer)
+    local mode = Arena.GetModeByKey(match.modeKey) or {}
+    local rewards = mode.killReward
+    if type(rewards) ~= 'table' then return end
+
+    local paid = {}
+    local remaining = Arena.SupplyTotalCap()
+    local capped = remaining > 0
+
+    for _, entry in ipairs(rewards) do
+        if type(entry) == 'table' then
+            local supply = Arena.SupplyByKey(entry.key)
+
+            -- CLAMPED TO THE SUPPLY'S OWN `max`, exactly as a player's
+            -- request is by Arena.ResolveSupplies: a reward of 99999 bandages
+            -- against a configured ceiling of 30 handed over 99999, and now
+            -- hands over 30.
+            --
+            -- PER PAYMENT, NOT PER HOLDING, AND THE DIFFERENCE IS NOT
+            -- COSMETIC. This note used to say the clamp settled "how many of a
+            -- supply a player may hold". It does not, and cannot: `paid` is
+            -- local to one call, so nothing here reads what the fighter is
+            -- already carrying. MEASURED on the shipped reward against a
+            -- bandage ceiling of 30: 5 -> 15 -> 25 -> 35 -> 45 -> 55 over five
+            -- kills.
+            --
+            -- THAT IS THE INTENDED ANSWER, not an oversight to tighten. The
+            -- mode promises ten bandages for every kill; clamping to the
+            -- holding would pay a fighter already on 30 nothing for their next
+            -- one and quietly break the promise config.lua makes. What this
+            -- line is for is a single absurd reward value, and it stops one.
+            local room = supply
+                and math.max(0, Arena.SupplyMax(supply) - (paid[supply.key] or 0))
+                or 0
+            local count = supply and (Arena.ClampInt(entry.count, 0, room) or 0) or 0
+
+            if capped and count > remaining then count = remaining end
+
+            if supply and Arena.IsKey(supply.item) and count > 0 and rolled(entry.chance) then
+                if ArenaAmmo.GrantSupply(killer.src, match.id, supply.item, count) then
+                    paid[supply.key] = (paid[supply.key] or 0) + count
+                    if capped then remaining = remaining - count end
+                end
+            end
+        end
+    end
+end
+
+--- @param emptied boolean? -- treat absent pockets as emptied by a death; see
+--- the note on the swap below. Only the respawn passes it.
+local function settleTier(match, player, reasonKey, emptied)
+    local ladder = ladderOf(match)
+    if #ladder == 0 then return true end
+
+    local tier = tierForScore(tierScore(player), #ladder)
+
+    if tier == player.tier then return true end
+
+    local previous = player.tier and ladder[player.tier] or nil
+    local moving = tierLoadout(ladder[tier], kitFor(match, player), Arena.TierAmmoFor(match.modeKey), bladeOf(match))
+    local weapon = moving.weapons[1]
+
+    local dropped = previous and previous.weapon or nil
+
+    local rungs = {}
+    for _, rung in ipairs(ladder) do
+        if Arena.IsKey(rung.weapon) then rungs[#rungs + 1] = rung.weapon end
+    end
+
+    -- WHETHER A DEATH CAME FIRST, WHICH ONLY THIS CALLER KNOWS.
+    --
+    -- "The rung the arena issued is not in these pockets" is ONE observation
+    -- with two causes that ox_inventory cannot tell apart: the climber parked
+    -- it somewhere the arena cannot reach, which is the theft the rung-below
+    -- refusal exists to stop; or they died and ox_inventory dropped their
+    -- whole inventory on the floor, which it does on every death on this
+    -- server. A promotion follows a kill and a demotion follows the player's
+    -- OWN death, so the reason key is the discriminator and it was already in
+    -- the signature.
+    --
+    -- Refusing a demotion over an emptied corpse would leave a climber
+    -- standing on a tier they cannot be moved off, unarmed, for the rest of
+    -- the round. DO NOT collapse the two.
+    --
+    -- AND A PROMOTION CAN FOLLOW THE CLIMBER'S OWN DEATH TOO, which the
+    -- reason key cannot see. rosterKiller credits a killer who is already a
+    -- corpse on purpose -- a trade, or a bullet still in flight when they
+    -- fell -- so their promotion arrives with the pockets already on the
+    -- floor, is read as parking, and is refused. `emptied` is the respawn
+    -- saying so, and it is the only caller that passes it. It TREATS absent
+    -- pockets as emptied by the death it follows -- it cannot tell that from
+    -- a live parker who then died, and does not need to: that fighter is
+    -- promoted here too, exactly as the respawn's Refresh already re-arms
+    -- them, and the number of weapons off the books is the same either way.
+    local swapped, why = ArenaAmmo.SwapWeapon(player.src, match.id, dropped, weapon, rungs,
+        reasonKey == 'notify.gungame_demoted' or emptied == true)
+    if not swapped and why == 'refused' then
+        ArenaDebug('gun game: %s stays on tier %s -- ox_inventory would not take back %s.',
+            tostring(player.src), tostring(player.tier), tostring(dropped))
+        return false
+    end
+
+    player.tier = tier
+    player.loadout = moving
+
+    if reasonKey == 'notify.gungame_demoted' then
+        ArenaNotifyKey(player.src, 'notify.gungame_demoted', 'error', tier, #ladder, weapon.label)
+    else
+        ArenaNotifyKey(player.src, 'notify.gungame_promoted', 'success', tier, #ladder, weapon.label)
+    end
+
+    local mode = Arena.GetModeByKey(match.modeKey) or {}
+    if mode.announceFinalTier ~= false and tier == #ladder
+        and not topped(player, #ladder)
+    then
+        for _, other in pairs(match.players) do
+            if other.src ~= player.src then
+                ArenaNotifyKey(other.src, 'notify.gungame_final_tier', 'warning', player.name)
+            end
+        end
+    end
+
+    return true
+end
+
+local function teamOf(match, player)
+    if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+    return Arena.IsKey(player.team) and player.team or nil
+end
+
+local function placementFor(match)
+    local total, placed = 0, 0
+    for _, player in pairs(match.players) do
+        total = total + 1
+        if player.placement then placed = placed + 1 end
+    end
+    return math.max(1, total - placed)
+end
+
+local function stillIn(player)
+    return not Arena.IsEliminated(player)
+end
+
+local function teamKills(match)
+    local scores = {}
+
+    for team, banked in pairs(match.departedKills or {}) do
+        if Arena.IsKey(team) then scores[team] = math.max(0, Arena.ToInt(banked) or 0) end
+    end
+
+    for _, player in pairs(match.players) do
+        if Arena.IsKey(player.team) then
+            scores[player.team] = (scores[player.team] or 0) + math.max(0, Arena.ToInt(player.kills) or 0)
+        end
+    end
+    return scores
+end
+
+--- The side totals as a SCREEN shows them, and the kills in them that no row
+--- on the board can account for.
+---
+--- ONLY SIDES STILL IN THE ROUND, by the same rule decideOnKills applies when
+--- the clock stops. With three or more teams a side can leave entirely while
+--- the round goes on, and its banked kills kept it at the top of the tally --
+--- "Crimson 3" over the people still fighting -- when the clock was always
+--- going to give the round to somebody else.
+---
+--- ONE FUNCTION FOR THE OVERLAY AND THE RESULTS CARD. The overlay drew this
+--- tally all round and the card drew nothing, so a round the clock decided
+--- on a leaver's banked kills ended on a number the card never showed: its
+--- rows gave the losing side more kills than the winning one. Both read it
+--- here, so the two cannot disagree about which sides are on it.
+--- @param match table
+--- @return table<string, integer> scores -- per side, sides still in only
+--- @return table<string, integer>|nil banked -- departed kills on those sides; nil when there are none
+local function standingTally(match)
+    local standing = {}
+    for _, player in pairs(match.players) do
+        if Arena.IsKey(player.team) and stillIn(player) then standing[player.team] = true end
+    end
+
+    local scores = teamKills(match)
+    for team in pairs(scores) do
+        if not standing[team] then scores[team] = nil end
+    end
+
+    -- A side no longer on the tally has nothing to explain.
+    local banked, any = {}, false
+    for team, kills in pairs(match.departedKills or {}) do
+        local count = math.max(0, Arena.ToInt(kills) or 0)
+        if Arena.IsKey(team) and count > 0 and standing[team] then
+            banked[team] = count
+            any = true
+        end
+    end
+    if not any then banked = nil end
+
+    return scores, banked
+end
+
+--- EVERY member of a side, alive or not.
+---
+--- Arena.ComputePayouts splits the pot evenly across the winners it is
+--- handed, so a seven-man team takes a seventh each while a lone winner
+--- takes the lot. That is deliberate, and it is what makes uneven teams
+--- (Config.Teams.allowUnequal) safe to allow: stacking a side dilutes what
+--- winning on it is worth instead of guaranteeing it.
+--- @param match table
+--- @param teamKey string
+--- @return integer[] ids
+local function membersOfTeam(match, teamKey)
+    local ids = {}
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if player.team == teamKey then ids[#ids + 1] = player.src end
+    end
+    return ids
+end
+
+local function decideOnKills(match, teamMode)
+    local scores, best = {}, 0
+
+    if teamMode then
+        -- ONLY SIDES WITH SOMEBODY STILL IN THE ROUND ARE CANDIDATES. The
+        -- filter is on the SIDE and not the player, and that is the whole of
+        -- the distinction: a fallen team-mate's kills were won for their
+        -- side and still count for it, which is why teamKills is left
+        -- unfiltered. What is dropped is a side with nobody left in it at
+        -- all -- wiped out, or walked out with its kills banked in
+        -- departedKills -- because a side that is not in the fight cannot win
+        -- it, however many kills it took on the way out.
+        --
+        -- THE OLD REASONING WAS: "evaluate has already ended the round if
+        -- only one side is left standing, so the sides compared here are all
+        -- still in it." That is true of two teams and false of three. With a
+        -- third side enabled, two can be standing while the third is wiped
+        -- out, and the clock then reached this with the dead side still
+        -- scored -- and crowned it. Its eliminated members were announced as
+        -- winners over the people still fighting, placed first and second
+        -- with their last-place placements already on the board, and paid
+        -- the whole pot. The mirror case -- a side that left entirely, whose
+        -- kills sit in departedKills -- has no members for membersOfTeam to
+        -- return, so the round ended as a DRAW and refunded everybody, taking
+        -- the pot off the side that had actually stayed and won. The same
+        -- defect on the free-for-all branch below was found and fixed
+        -- earlier; this is the team half of it.
+        local standing = {}
+        for _, player in pairs(match.players) do
+            if Arena.IsKey(player.team) and stillIn(player) then standing[player.team] = true end
+        end
+
+        scores = teamKills(match)
+        for team in pairs(scores) do
+            if not standing[team] then scores[team] = nil end
+        end
+    else
+        -- ONLY PLAYERS STILL IN THE ROUND ARE CANDIDATES. An eliminated
+        -- fighter keeps their row on purpose -- the results board ranks off
+        -- it, and the spectator gate reads it -- so scoring every row handed
+        -- the round to somebody who was already out, with the last-place
+        -- placement elimination gave them still on their record.
+        --
+        -- The clock is where that actually bit: rack up kills, get knocked
+        -- out, wait, and the timer crowned you and paid you the pot over the
+        -- people still fighting for it.
+        --
+        -- Teams are filtered by SIDE rather than by player -- see the team
+        -- branch above for why, and for the three-team case that broke the
+        -- earlier claim that every side reaching here was still in it.
+        for _, player in pairs(match.players) do
+            if stillIn(player) then
+                scores[player.src] = math.max(0, Arena.ToInt(player.kills) or 0)
+            end
+        end
+    end
+
+    for _, score in pairs(scores) do
+        if score > best then best = score end
+    end
+    if best <= 0 then return {} end
+
+    local leaders = {}
+    for key, score in pairs(scores) do
+        if score == best then leaders[#leaders + 1] = key end
+    end
+    if #leaders ~= 1 then return {} end
+
+    if teamMode then return membersOfTeam(match, leaders[1]) end
+    return leaders
+end
+
+--- Who is winning a gun game when the clock runs out: the player standing
+--- highest on the ladder.
+---
+--- NOT decideOnKills, AND THE DIFFERENCE IS THE MODE. A tier is kills less
+--- deaths, so a player who traded twelve for eleven is standing one step up
+--- and a player who took six for nothing is standing six -- raw kills would
+--- crown the first of those, which is not the race anybody in the round
+--- thought they were running.
+---
+--- KILLS BREAK A TIE, and only a tie. Two players level on tiers have
+--- climbed the same distance; the one who fought more to get there takes it.
+--- Level on both is a DRAW and returns nobody, which refunds the pot: paying
+--- one of two identical runs out of the other's stake is a coin toss with
+--- somebody else's money. A round where nobody climbed at all is a draw for
+--- the same reason.
+---
+--- ONLY PLAYERS STILL IN THE ROUND ARE CANDIDATES, exactly as in
+--- decideOnKills. Nobody is eliminated in a gun game, so in practice that is
+--- everybody -- but the two functions answer the same question and must not
+--- be able to disagree about who is eligible for it.
+--- @param match table
+--- @return integer[] winners -- empty when there is no clear leader
+local function decideOnLadder(match)
+    local bestTier, bestKills, leaders = 0, 0, {}
+
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if stillIn(player) then
+            local tier = tierScore(player)
+            -- THE TIE IS BROKEN ON LADDER KILLS, NOT RAW ONES.
+            --
+            -- `kills` is the one number in this mode the anti-collusion cap
+            -- deliberately leaves uncapped -- a kill past the cap still
+            -- counts as a kill, it just stops buying tiers -- so breaking a
+            -- tier tie on it handed the decider straight back to the farm
+            -- the cap exists to stop. `ladderKills` is the capped number and
+            -- is what the tiers were actually climbed on.
+            local kills = math.max(0, Arena.ToInt(player.ladderKills) or 0)
+            if tier > bestTier or (tier == bestTier and kills > bestKills) then
+                bestTier, bestKills, leaders = tier, kills, { player.src }
+            elseif tier == bestTier and kills == bestKills then
+                leaders[#leaders + 1] = player.src
+            end
+        end
+    end
+
+    if bestTier <= 0 then return {} end
+    if #leaders ~= 1 then return {} end
+    return leaders
+end
+
+local function reachedScoreLimit(match, teamMode)
+    local limit = Arena.ScoreLimitFor(match.scoreLimit)
+
+    if teamMode then
+        for _, score in pairs(teamKills(match)) do
+            if score >= limit then return true end
+        end
+        return false
+    end
+
+    -- Same candidates as decideOnKills, for the same reason and so the two
+    -- cannot disagree: a limit reached by a player who is out would end the
+    -- round on their score and then hand it to somebody else's.
+    for _, player in pairs(match.players) do
+        if stillIn(player) and (Arena.ToInt(player.kills) or 0) >= limit then return true end
+    end
+    return false
+end
+
+local function evaluate(match)
+    local teamMode = Arena.ModeUsesTeams(match.modeKey)
+
+    local total, standing, lastStanding = 0, 0, nil
+    local standingTeams = {}
+    for _, player in pairs(match.players) do
+        total = total + 1
+        if stillIn(player) then
+            standing = standing + 1
+            lastStanding = player
+            if teamMode and Arena.IsKey(player.team) then
+                standingTeams[player.team] = (standingTeams[player.team] or 0) + 1
+            end
+        end
+    end
+
+    if total == 0 then return {}, 'match.ended_abandoned' end
+
+    local ladder = ladderOf(match)
+    local playingLadder = #ladder > 0
+
+    local climbed = {}
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if playingLadder and stillIn(player) and topped(player, #ladder) then
+            climbed[#climbed + 1] = player.src
+        end
+    end
+    if #climbed == 1 then return climbed, 'match.ended_ladder' end
+    if #climbed > 1 then return {}, 'match.ended_draw' end
+
+    -- AND THE OTHER TWO CONDITIONS DO NOT APPLY TO A LADDER AT ALL.
+    --
+    -- Nobody is eliminated in a gun game -- a death costs a tier, not a life
+    -- -- so the last-standing rule below can never fire in one: everybody is
+    -- standing until the clock stops. It is skipped rather than left to be
+    -- unreachable, because "unreachable" is a property of today's rules and
+    -- a mode that ends on a count of survivors would silently start ending
+    -- gun games on the wrong thing.
+    --
+    -- The score limit is different: it CAN fire, and it would be wrong when
+    -- it did. It ends the round on raw kills, and a ladder is not raw kills
+    -- -- a player who traded fifteen deaths for fifteen kills is standing on
+    -- tier 1 and would take the pot off somebody six tiers above them.
+    -- THE MATCH'S OWN CONDITION, not the config's. The host picks it when
+    -- they create the round and it is stored on the match, so re-reading the
+    -- config here would let an operator's mid-session edit change how a match
+    -- already being fought is won.
+    if not playingLadder and Arena.WinConditionFor(match.winCondition) == 'score_limit'
+        and reachedScoreLimit(match, teamMode)
+    then
+        local winners = decideOnKills(match, teamMode)
+        if #winners > 0 then return winners, 'match.ended_score_limit' end
+
+        -- NOBODY STILL IN REACHED IT, AND ONE SIDE IS ALL THAT IS LEFT. The
+        -- limit counts a side's banked kills, so a side can reach it and walk
+        -- out before the sweep sees it. If the side left standing had not
+        -- scored, the decider found nobody to crown and the round was called
+        -- a draw -- and the leavers' forfeited stakes were destroyed with it
+        -- -- while the same side with a single kill won it outright. A side
+        -- alone in the round wins it as the last one standing, which the
+        -- rule below this one would have said at this same sweep had the
+        -- limit not been counted first. Two or more still standing and level
+        -- is still a draw.
+        local alone = (teamMode and Arena.Count(standingTeams) == 1) or (not teamMode and standing == 1)
+        if not alone then return {}, 'match.ended_draw' end
+    end
+
+    if not playingLadder then
+        if teamMode then
+            local occupied = Arena.Count(standingTeams)
+            if occupied == 0 then return {}, 'match.ended_draw' end
+            if occupied == 1 then return membersOfTeam(match, (next(standingTeams))), 'match.ended_last_standing' end
+        else
+            if standing == 0 then return {}, 'match.ended_draw' end
+            if standing == 1 and total > 1 then return { lastStanding.src }, 'match.ended_last_standing' end
+        end
+    end
+
+    if not teamMode and total == 1 then
+        if lastStanding then return { lastStanding.src }, 'match.ended_abandoned' end
+        return {}, 'match.ended_abandoned'
+    end
+
+    if match.endsAt and os.time() >= match.endsAt then
+        local winners = playingLadder and decideOnLadder(match) or decideOnKills(match, teamMode)
+        return winners, #winners > 0 and 'match.ended_time_up' or 'match.ended_draw'
+    end
+
+    return nil, nil
+end
+
+local function assignFinalPlacements(match, winners)
+    local ordered = {}
+    for _, player in pairs(match.players) do ordered[#ordered + 1] = player end
+
+    local won = {}
+    for _, src in ipairs(winners or {}) do won[src] = true end
+
+    local ladder = #ladderOf(match)
+
+    table.sort(ordered, function(a, b)
+        local aWon, bWon = won[a.src] == true, won[b.src] == true
+        if aWon ~= bWon then return aWon end
+
+        local aOut, bOut = a.placement ~= nil, b.placement ~= nil
+        if aOut ~= bOut then return bOut end
+        if aOut and a.placement ~= b.placement then return a.placement < b.placement end
+
+        if ladder > 0 then
+            local aTier, bTier = tierScore(a), tierScore(b)
+            if aTier ~= bTier then return aTier > bTier end
+            -- LEVEL ON TIER: the kills that CLIMBED, as decideOnLadder breaks
+            -- it. Raw kills part company with them once a kill stops climbing
+            -- -- a per-victim cap -- and ranked the rest differently from the
+            -- rule that picked the winner.
+            local aClimbed = math.max(0, Arena.ToInt(a.ladderKills) or 0)
+            local bClimbed = math.max(0, Arena.ToInt(b.ladderKills) or 0)
+            if aClimbed ~= bClimbed then return aClimbed > bClimbed end
+        end
+        local aKills, bKills = Arena.ToInt(a.kills) or 0, Arena.ToInt(b.kills) or 0
+        if aKills ~= bKills then return aKills > bKills end
+        local aDeaths, bDeaths = Arena.ToInt(a.deaths) or 0, Arena.ToInt(b.deaths) or 0
+        if aDeaths ~= bDeaths then return aDeaths < bDeaths end
+        return a.src < b.src
+    end)
+
+    for index, player in ipairs(ordered) do player.placement = index end
+end
+
+local function scoreboardOf(players, tiers)
+    local ladder = math.max(0, Arena.ToInt(tiers) or 0)
+    local rows = {}
+    -- The kills that climbed, by row, for the sort below and nothing else:
+    -- the screen has no column for them, so they are not sent.
+    local climbedBy = {}
+    for _, player in ipairs(players) do
+        rows[#rows + 1] = {
+            id = player.src,
+            name = player.name or ArenaPlayerName(player.src),
+            team = player.team,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+            -- THE TIER, and the height of the ladder, so the board everybody
+            -- is already looking at is where a gun game is read. Absent in
+            -- every other mode, which is how the panel knows not to draw a
+            -- column for it.
+            --
+            -- This is the whole of the tier display. The client event that
+            -- used to carry it is gone: ox_inventory owns weapons, the
+            -- server has already swapped the item by the time anybody could
+            -- be told, and a second channel saying the same thing is a
+            -- second channel that can disagree.
+            -- THE TIER THEIR SCORE HAS EARNED, not the one their pockets
+            -- happen to hold. The two are the same in every ordinary round
+            -- and diverge the moment a swap is refused -- and when they
+            -- diverged, this board sorted on one number while
+            -- `decideOnLadder` crowned the other, so the race was ranked
+            -- backwards for the rest of the round and the winner came off
+            -- the bottom of it. Read through the same two functions the
+            -- winner is read through, and they cannot disagree.
+            tier = ladder > 0 and (tierForScore(tierScore(player), ladder)) or nil,
+            tiers = ladder > 0 and ladder or nil,
+            alive = player.alive == true,
+            remaining = stillIn(player),
+        }
+        climbedBy[rows[#rows]] = math.max(0, Arena.ToInt(player.ladderKills) or 0)
+    end
+
+    table.sort(rows, function(a, b)
+        if a.tier ~= b.tier then return (a.tier or 0) > (b.tier or 0) end
+        -- LEVEL ON TIER: the kills that climbed come first, as decideOnLadder
+        -- breaks the tie. Raw kills first put a fighter in front all round
+        -- whom the clock would not pay, once a per-victim cap stopped some
+        -- kills climbing.
+        if ladder > 0 and climbedBy[a] ~= climbedBy[b] then return climbedBy[a] > climbedBy[b] end
+        if a.kills ~= b.kills then return a.kills > b.kills end
+        if a.deaths ~= b.deaths then return a.deaths < b.deaths end
+        return a.id < b.id
+    end)
+    return rows
+end
+
+local function winningPick(match, winners, teamMode)
+    local first = winners and winners[1]
+    if first == nil then return nil end
+    if not teamMode then return first end
+
+    local player = match.players[first]
+    return player and player.team or nil
+end
+
+local instanced = {}
+
+--- The ONE way anybody is told to leave the arena.
+---
+--- Every exit path in this file routes through here specifically so the
+--- dispatch flag cannot be left set: there are five separate places a
+--- player can be sent home from -- winning, watching someone else win, an
+--- abort, an admin stop, walking out mid-round -- and a flag that survives
+--- any one of them would suppress that player's police and medical alerts
+--- for the rest of their session. One choke point, rather than five call
+--- sites and the hope that a sixth remembers.
+---
+--- THE ROUTING BUCKET RIDES ON THE SAME CHOKE POINT, and deliberately so:
+--- put the two on separate call sites and they can disagree about who is in
+--- a match, which means either a player left instanced in an empty world
+--- after the flag says they went home, or a player back in the world with
+--- the flag still suppressing their alerts. Neither is visible from a log.
+--- @param src number
+--- @param payload table
+local function sendExitArena(src, payload)
+    ArenaAmmo.Reclaim(src, 'left the arena')
+
+    ArenaDispatch.Clear(src)
+
+    -- AND THEY ARE NO LONGER WATCHING IT EITHER, which this choke point did
+    -- not say and had to.
+    --
+    -- THE DEFECT, traced off a live server through the client's own console.
+    -- An eliminated fighter is made a SPECTATOR of the round that just put
+    -- them out -- AddSpectator sets spectatorIndex[src] and the client starts
+    -- its camera, which hides their ped. That is correct while the round runs.
+    -- What was missing is the other half: being sent home did not stop them
+    -- being a watcher, so `spectating` was still set in the very next state
+    -- broadcast -- and client/spectate.lua starts watching whatever that
+    -- field names. So the client was told to start spectating a match it had
+    -- just been sent home from, and hid the player's ped again AFTER
+    -- leaveArena had finished putting them right.
+    --
+    -- The tell in the client log, one frame apart:
+    --
+    --   you left the arena invisible and this resource has just put you back
+    --   arena scenery: 87 of 87 piece(s) built
+    --
+    -- The second line is the spectator camera building the arena to look at.
+    --
+    -- IT BELONGS HERE AND NOWHERE ELSE, for the reason this function's own
+    -- header gives about the dispatch flag and the bucket: there are five
+    -- ways out of a round and a flag cleared at only some of them is a flag
+    -- that outlives the round. Quiet, because the player is not being told
+    -- they stopped watching -- they are being told they left.
+    if type(ArenaLobby) == 'table' and type(ArenaLobby.RemoveSpectator) == 'function' then
+        ArenaLobby.RemoveSpectator(src, true)
+    end
+
+    ArenaDispatch.ExitBucket(src)
+    instanced[src] = nil
+
+    ArenaDispatch.Revive(src)
+
+    TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
+
+    -- AND THE FENCE GOES UP BEHIND THEM. A fighter who walked out of a live
+    -- round, or whose round ended while another was being fought on the
+    -- same ground, was never sent another word of state: the leave takes
+    -- them off the roster BEFORE the broadcast, and End tears the match down
+    -- before its own. So their client kept the last thing it was told -- no
+    -- fence for their own arena, because they were in it -- and they could
+    -- walk or drive straight back into a round being fought there. This is
+    -- the mirror of the fence that never came DOWN, which fenceHeld fixed,
+    -- and it is closed the same way: one push, to them alone, now that the
+    -- flag is clear and their own arena is no longer exempt. fenceHeld then
+    -- remembers them and takes it down when that round ends. AFTER the exit
+    -- event, so the client has already left before it learns the fence.
+    ArenaLobby.PushState(src)
+end
+
+local function sendPlayerHome(player, payload)
+    if player.leftArena then return false end
+    player.leftArena = true
+    sendExitArena(player.src, payload)
+    return true
+end
+
+local function pushToMatch(match, event, payload)
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        TriggerClientEvent(event, player.src, payload)
+    end
+    for src in pairs(match.spectators or {}) do
+        -- An eliminated fighter who stayed to watch is in both tables and
+        -- must not be sent the same thing twice.
+        if not match.players[src] then
+            TriggerClientEvent(event, src, payload)
+        end
+    end
+end
+
+local function pushHud(match)
+    local players = ArenaLobby.PlayerArray(match)
+    local scoreboard = scoreboardOf(players, #ladderOf(match))
+
+    local remaining = 0
+    for _, row in ipairs(scoreboard) do
+        if row.remaining then remaining = remaining + 1 end
+    end
+
+    -- THE SIDES STILL IN THE ROUND, by the same rule decideOnKills applies
+    -- when the clock stops -- read through standingTally, which the results
+    -- card reads too, so the overlay and the card cannot disagree about it.
+    -- Declared out here because the table below calls it while it is built.
+    local sideScores, sideBanked = standingTally(match)
+
+    local common = {
+        remaining = remaining,
+        total = #players,
+        livesSpent = #ladderOf(match) == 0
+            and Arena.WinConditionSpendsLives(match.winCondition),
+        timeLeft = match.endsAt and math.max(0, match.endsAt - os.time()) or nil,
+        pot = ArenaBetting.GetPrizePool(match.id),
+        scoreboard = scoreboard,
+        -- WHAT THIS ROUND IS WON ON, on the screen of the player fighting it.
+        --
+        -- MEASURED, by driving four fighters through a real score_limit
+        -- round: the round ends the moment a side or a player reaches the
+        -- limit, and NOTHING on the in-match overlay named the limit or said
+        -- how close anybody was to it. The overlay carried "Kills 4 Deaths
+        -- 1" and a per-player board, so a team racing to 25 had to add its
+        -- own four rows up in its head, every kill, while being shot at --
+        -- and under `most_kills` nobody was told the clock decides it on
+        -- kills at all. `last_standing` was the only rule the overlay
+        -- expressed, through "Remaining 3 / 6".
+        --
+        -- The numbers are read through the DECIDER'S OWN functions --
+        -- teamKills is what reachedScoreLimit counts, ScoreLimitFor is what
+        -- it compares against -- so the figure a player is racing cannot
+        -- disagree with the figure that ends their round.
+        --
+        -- THE MATCH'S OWN CONDITION, not the config's, for the reason
+        -- `evaluate` gives: the host picked it when the round was made, and
+        -- re-reading the config would let a mid-session edit change the rule
+        -- on a round already being fought.
+        --
+        -- A LADDER SENDS NONE OF IT. `evaluate` skips both counting rules
+        -- outright in a gun game, so a limit on that overlay would be a
+        -- target that ends nothing.
+        winCondition = #ladderOf(match) == 0
+            and Arena.WinConditionFor(match.winCondition) or nil,
+        scoreLimit = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if Arena.WinConditionFor(match.winCondition) ~= 'score_limit' then return nil end
+            return Arena.ScoreLimitFor(match.scoreLimit)
+        end)(),
+        teamScores = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+            -- ONLY SIDES STILL IN IT, as above. Never empty here: a round
+            -- with nobody left in it has already ended before this is sent,
+            -- and a side that reached the limit before it left has ended
+            -- the round on that same sweep.
+            return sideScores
+        end)(),
+        -- THE KILLS NOBODY ON THE BOARD CAN ACCOUNT FOR.
+        --
+        -- teamKills BANKS a departing fighter's kills so a side does not lose
+        -- its progress when somebody quits -- and that is right: MEASURED, a
+        -- crimson pair on 2 had their 2-kill fighter walk out, the remaining
+        -- one took a third, and the round ended on the limit of 3. The
+        -- banked kills decide the round.
+        --
+        -- But the scoreboard beside the total lists who is HERE, so the rows
+        -- added up to 1 while the line above them said 3. Both numbers are
+        -- right and they cannot be reconciled by looking, which is the shape
+        -- a player reports as "the score is broken". Reachable by all three
+        -- ways out -- the button, the command and a disconnect -- and by
+        -- nothing else, which is the control.
+        --
+        -- Sent only when there is something to explain, so the ordinary
+        -- round carries no extra clause. Free-for-all never sends any of
+        -- this: reachedScoreLimit reads the live roster there, so a leaver's
+        -- kills stop counting and there is nothing to reconcile.
+        departedScores = (function()
+            if #ladderOf(match) > 0 then return nil end
+            if not Arena.ModeUsesTeams(match.modeKey) then return nil end
+            return sideBanked
+        end)(),
+    }
+
+    local function hudFor(kills, deaths, team)
+        return {
+            -- WHOSE ROUND THIS BOARD IS, which it never said.
+            --
+            -- The client assigned `roster = data.scoreboard` unconditionally
+            -- and the payload carried nothing to check it against, so the one
+            -- thing standing between a stranger's dots on your map was the
+            -- routing being perfect. blipscope_spec has a test named for
+            -- exactly this risk; an audit found it could not fail, because
+            -- its helper silently dropped the foreign ids it was handed.
+            --
+            -- Nothing leaks today -- pushHud only reaches this match's
+            -- players and spectators -- but the guarantee the test names did
+            -- not exist on the client side at all, and a stale board arriving
+            -- after a new enterArena is the shape that would break it.
+            matchId = match.id,
+            remaining = common.remaining,
+            total = common.total,
+            kills = kills,
+            deaths = deaths,
+            timeLeft = common.timeLeft,
+            pot = common.pot,
+            scoreboard = common.scoreboard,
+            livesSpent = common.livesSpent,
+            winCondition = common.winCondition,
+            scoreLimit = common.scoreLimit,
+            teamScores = common.teamScores,
+            departedScores = common.departedScores,
+            -- WHICH SIDE IS READING IT. The board already carries a team per
+            -- row, but the overlay has to put THIS player's side first in a
+            -- two-team score line, and a row is matched by src -- which the
+            -- spectator branch below has none of.
+            team = team,
+        }
+    end
+
+    for _, player in ipairs(players) do
+        -- NOT TO A FIGHTER WHO WAS SENT HOME AND IS NOT WATCHING.
+        --
+        -- An eliminated fighter keeps their row -- the results board ranks
+        -- off it and the payout reads it -- so with spectateOnElimination
+        -- off, or a watch that could not be registered, sendPlayerHome put
+        -- them back at the lobby and this loop went on sending them the
+        -- whole board once a second until the round ended. Their client had
+        -- already left: currentMatch is nil, nothing draws from the board,
+        -- and the overlay is told to stay hidden. Measured at twenty
+        -- fighters with ten of them out: half of every tick's HUD bytes,
+        -- all of it thrown away on arrival.
+        --
+        -- WHY IT IS SAFE TO SKIP THEM. `leftArena` is written true by
+        -- sendPlayerHome alone, and Start writes nil on every row of the
+        -- next round, so it means exactly "sent back to the lobby from THIS
+        -- round". Of sendPlayerHome's callers only elimination leaves the
+        -- round running -- End, Abort and RemovePlayer end it or take the
+        -- row away -- so that is the one fighter this reaches. Only who
+        -- RECEIVES the board changes: the scoreboard, `total` and
+        -- `remaining` above are still built off the whole roster.
+        --
+        -- THE SPECTATOR HALF IS NOT OPTIONAL. A fighter sent home can still
+        -- pick Watch on the same round -- AddSpectator lets an eliminated
+        -- fighter watch their own -- and the spectator loop below skips
+        -- anybody still on the roster. Without it the one person who asked
+        -- to see the round would be the one person sent nothing. A plain
+        -- `if` rather than a goto, so both halves read as one condition.
+        --
+        -- WHAT IT GIVES UP, which only shows after another failure: this
+        -- push used to re-hide a stale overlay within a second when the
+        -- client's leaveArena threw between clearing currentMatch and
+        -- hiding the HUD. That overlay now stays until the results hide it,
+        -- the exposure a walk-out and a round's end already had.
+        --
+        -- The shipped config watches on elimination, so there it skips
+        -- nobody. tests/hudsenthome_spec.lua pins both halves.
+        local sentHome = player.leftArena == true and not (match.spectators or {})[player.src]
+        if not sentHome then
+            TriggerClientEvent('crimson_arena:client:matchHud', player.src,
+                hudFor(math.max(0, Arena.ToInt(player.kills) or 0),
+                    math.max(0, Arena.ToInt(player.deaths) or 0), player.team))
+        end
+    end
+
+    for src in pairs(match.spectators or {}) do
+        if not match.players[src] then
+            TriggerClientEvent('crimson_arena:client:matchHud', src, hudFor(0, 0))
+        end
+    end
+end
+
+local function sendEnterArena(match, player, index, arena, freezeSeconds)
+    local teamKey = teamOf(match, player)
+
+    -- WHICH SIDE THIS FIGHTER IS ON, SAID OUT LOUD, ON THE WAY IN.
+    --
+    -- IN A PLAYER'S WORDS, three times over, the last of them: "so the
+    -- friendly fire stuff wasnt working right when you switch teams prior
+    -- to the match starting". The friendly-fire rule was working. His log
+    -- for that round says `ash 1 v crimson 2 (0 assigned, 3 chose their
+    -- own)` and then `crossfire: 4 may not damage 3 -- they are on the same
+    -- team`: the server had those two on ONE side, refused the shot because
+    -- that is the rule, and one of them believed he had left that side.
+    --
+    -- NOTHING IN THIS RESOURCE HAS EVER TOLD A FIGHTER WHICH SIDE HE IS ON.
+    -- The panel lights a tile in a menu that is closed a line below this
+    -- one; in the arena there is the teammate outline and the teammate
+    -- marker, and a fighter alone on a side has neither -- so the man who
+    -- thinks he switched and did not sees exactly what he expects to see,
+    -- right up until his bullets stop working on the person beside him.
+    --
+    -- ArenaToastKey RATHER THAN ArenaNotifyKey, for the reason the comment
+    -- on ArenaToast in server/util.lua gives: this function sends
+    -- closePanel a dozen lines down, so a message painted into the panel
+    -- goes to a surface that is about to be torn down -- and the players it
+    -- is written for are exactly the ones who sat watching that panel.
+    --
+    -- server/lobby.lua says the same line for every pick and switch in the
+    -- lobby. This is the last moment it can be said, and the one that
+    -- cannot be missed.
+    if Arena.IsKey(teamKey) then
+        local side = Arena.GetTeamByKey(teamKey)
+        ArenaToastKey(player.src, 'notify.team_side', 'info', (side and side.label) or teamKey)
+    end
+
+    -- NOBODY STARTS A ROUND DEAD.
+    --
+    -- IN A PLAYER'S WORDS: "if i kill someone prior to a match start they
+    -- spawn in dead". Being shot in the street is a thing that happens to
+    -- somebody queued for a round, and nothing between the lobby and the
+    -- arena floor looked at whether they were on their feet -- so they were
+    -- teleported in, frozen for the countdown, and then stood there down for
+    -- the whole match while everybody else fought over them.
+    --
+    -- THE SAME CALL THE RESPAWN AND THE TABLET MAKE, so a server's own
+    -- medical script decides what standing somebody up means; this resource
+    -- has not had a revive of its own since it was deliberately removed.
+    -- Harmless for the overwhelming majority who walk in alive: reviving
+    -- somebody who is already up is what the medical script is asked to
+    -- ignore, and it does.
+    -- THE FLAG GOES UP FIRST, AND THE ORDER IS THE WHOLE POINT.
+    --
+    -- ArenaDispatch.Revive ends by calling RetractCallsFor, which withdraws
+    -- any police or medical call this server's dispatch script has already
+    -- filed about this player. That function refuses to act for somebody it
+    -- cannot see a claim on -- `active[src] == nil` and not recently left --
+    -- because asking for call ids blind would otherwise clear a REAL
+    -- ambulance off the responders' screen.
+    --
+    -- Run the other way round, as this was, the flag did not exist yet, so
+    -- entry-time retraction did nothing at all and said so:
+    --
+    --   retract: 1 is not in a match and did not just leave one -- withdrew
+    --   nothing.
+    --
+    -- WORSE THAN SIMPLY BROKEN, it was intermittent: a fighter who had been
+    -- in a round within the last minute still carried `leftAt`, so the same
+    -- code path worked for them and not for the player walking in fresh.
+    -- That is the shape of a safety net nobody notices is gone.
+    --
+    -- It matters most on exactly the servers this layer is for -- one whose
+    -- dispatch resource starts BEFORE this one and answers a death first, so
+    -- the call filed as the round begins is the one that needs withdrawing.
+    -- `true` = A FIGHTER, which is the half that decides whether leaving
+    -- earns a grace window. ArenaDispatch.Set says why. The other call site
+    -- in this file -- the sweep, further down -- is the spectator one and
+    -- deliberately does not pass it.
+    ArenaDispatch.Set(player.src, match.id, true)
+
+    ArenaDispatch.Revive(player.src)
+
+    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, player.loadout)
+    if #missingAmmo > 0 then
+        ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))
+    end
+
+    -- Instanced BEFORE the client is told to teleport in, so the player
+    -- materialises inside the match's own network instance rather than
+    -- appearing in the arena in front of the whole server for the frame in
+    -- between. Same choke point as the flag above for the reason given on
+    -- sendExitArena: split them and they can disagree.
+    ArenaDispatch.EnterBucket(player.src, match.id)
+    instanced[player.src] = match.id
+
+    TriggerClientEvent('crimson_arena:client:closePanel', player.src)
+
+    TriggerClientEvent('crimson_arena:client:enterArena', player.src, {
+        matchId = match.id,
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        teamKey = teamKey,
+        spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
+            or Arena.PickSpawn(match.arenaKey, teamKey, index)),
+        scatterRadius = (match.spawnPlan and match.spawnPlan[player.src]) and 0.0 or scatterRadius(),
+        -- The client builds the floor and the cover, so it needs the same
+        -- number the spawns and the boundary were worked out from. Sent
+        -- rather than recomputed on that side: the roster is not a thing the
+        -- client can see, and two ends deriving the same number separately
+        -- is how they come to disagree.
+        sizeFactor = match.sizeFactor,
+        radar = match.radar == true,
+        loadout = player.loadout,
+        boundary = boundaryPayload(arena, match.sizeFactor),
+        weatherOverride = arena.weatherOverride,
+        timeOverride = arena.timeOverride,
+        freezeSeconds = freezeSeconds,
+    })
+end
+
+local function positionOf(src)
+    local ped = GetPlayerPed(Arena.ToInt(src) or -1)
+    if not ped or ped == 0 then return nil end
+
+    local coords = GetEntityCoords(ped)
+
+    -- THROUGH Arena.IsPoint, AND NEVER A TYPE LIST WRITTEN OUT HERE.
+    --
+    -- THE DEFECT: this asked for 'table' or 'userdata'. In the CitizenFX Lua
+    -- runtime a vector is its OWN type -- `type(v)` answers 'vector3', never
+    -- 'table' and never 'userdata' -- so on a real server this rejected EVERY
+    -- reading and answered nil for every player, while every test passed,
+    -- because a fixture can only hand back a plain table.
+    --
+    -- What that cost, silently: this is the only way the server can see where
+    -- anybody is standing. The kill-distance ceiling, the out-of-bounds fence
+    -- and the death corroboration all read it, all treat nil as "cannot see
+    -- them", and all FAIL OPEN on that -- so four guards were switched off at
+    -- once and nothing anywhere said so.
+    --
+    -- Arena.IsPoint is the one place that knows the list, and toPoint above
+    -- already went through it. This is the third time this exact mistake has
+    -- been made in this codebase. Do not write the types out again.
+    if not Arena.IsPoint(coords) then return nil end
+
+    local function zeroed(value) return value == 0.0 or value == 0 end
+    if zeroed(coords.x) and zeroed(coords.y) and zeroed(coords.z) then return nil end
+    return coords
+end
+
+local function metresBetween(a, b)
+    if not a or not b then return nil end
+    local dx = (a.x or 0.0) - (b.x or 0.0)
+    local dy = (a.y or 0.0) - (b.y or 0.0)
+    local dz = (a.z or 0.0) - (b.z or 0.0)
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function livePositions(match, player, sameSideWanted)
+    local teams = Arena.ModeUsesTeams(match.modeKey)
+    local own = teams and teamOf(match, player) or nil
+
+    if sameSideWanted and not (teams and Arena.IsKey(own)) then return {} end
+
+    local out = {}
+    for src, entry in pairs(match.players or {}) do
+        local sameSide = teams and Arena.IsKey(own) and teamOf(match, entry) == own
+        if src ~= player.src and entry.alive == true and sameSide == sameSideWanted then
+            local ped = GetPlayerPed(src)
+            if ped and ped ~= 0 then
+                local coords = GetEntityCoords(ped)
+                if coords and (coords.x ~= 0.0 or coords.y ~= 0.0) then
+                    out[#out + 1] = coords
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function serverChecks()
+    local block = (Config.Match or {}).serverChecks
+    if type(block) ~= 'table' or block.enabled ~= true then return false, 0.0, 0, 0 end
+
+    return true,
+        math.max(0.0, tonumber(block.outsideMetres) or 60.0),
+        math.max(1, Arena.ToInt(block.outsideTicks) or 8),
+        math.max(0, Arena.ToInt(block.deadTicks) or 4)
+end
+
+local function metresOutside(match, src)
+    local arena = Arena.GetArenaByKey(match.arenaKey)
+    local boundary = Arena.BoundaryOf(arena)
+    if not boundary then return nil end
+
+    local centre = toPoint(boundary.center)
+    if not centre then return nil end
+
+    local radius = (tonumber(boundary.radius) or 0.0)
+        * math.max(1.0, tonumber(match.sizeFactor) or 1.0)
+    if radius <= 0 then return nil end
+
+    local far = metresBetween(centre, positionOf(src))
+    if not far then return nil end
+    return far - radius
+end
+
+local function readsAsDead(src)
+    if type(GetEntityHealth) ~= 'function' then return false end
+    if positionOf(src) == nil then return false end
+
+    local ped = GetPlayerPed(Arena.ToInt(src) or -1)
+    if not ped or ped == 0 then return false end
+
+    local health = tonumber(GetEntityHealth(ped))
+    if health == nil then return false end
+
+    -- AND WHETHER THE BODY COULD BE READ AT ALL, as a second answer: the dead
+    -- sweep's witness below keeps its copy through a reading that saw
+    -- nothing, and lets it go only on one that saw a living body.
+    return health <= 0, true
+end
+
+--- How many readings in a row the dead sweep's copy of a body's damage
+--- memory survives the body being unreadable. ONE is the hitch
+--- killwitness_spec pins; the limit is what stops a copy from before a long
+--- blindness paying out for a death after it. See runServerChecks.
+local DEAD_WITNESS_BLIND_READINGS = 2
+
+local function strike(store, src, sighted, needed)
+    if not sighted then
+        store[src] = nil
+        return false
+    end
+
+    local count = (Arena.ToInt(store[src]) or 0) + 1
+    store[src] = count
+    if count < needed then return false end
+
+    store[src] = nil
+    return true
+end
+
+local function runServerChecks(match)
+    local on, outsideMetres, outsideTicks, deadTicks = serverChecks()
+    if not on then return end
+
+    match.fenceStrikes = match.fenceStrikes or {}
+    match.deadStrikes = match.deadStrikes or {}
+    match.deadWitness = match.deadWitness or {}
+
+    -- A DEAD FIGHTER IS NOT A SUSPECT, AND SKIPPING THEM IS NOT THE SAME AS
+    -- CLEARING THEM.
+    --
+    -- THE DEFECT: this loop only ever built the roster, so a player who was
+    -- between a death and a respawn was passed over entirely -- and `strike`,
+    -- which is the ONLY thing that resets a count, was never called for them.
+    -- Their fenceStrikes and deadStrikes froze at whatever they had reached
+    -- and carried on from there when they stood back up, so strikes
+    -- accumulated ACROSS a round instead of having to be consecutive within
+    -- one. serverchecks_spec says the opposite in as many words: a hitch is
+    -- not a cheat, and neither is being on the floor waiting to respawn.
+    --
+    -- AND THE STORES ARE KEYED BY SERVER ID, WHICH THE SERVER RECYCLES. A
+    -- count left behind by somebody who has left the round is inherited by
+    -- the next player handed that id, so anything with no row on this match
+    -- is cleared too. Both halves make ejection LESS likely, which is the
+    -- direction this guard must always err in: throwing an honest player out
+    -- of a paid round is worse than the thing it exists to stop.
+    local roster = {}
+    for src, player in pairs(match.players or {}) do
+        if player.alive == true and player.leftArena ~= true then
+            roster[#roster + 1] = src
+        else
+            match.fenceStrikes[src] = nil
+            match.deadStrikes[src] = nil
+            match.deadWitness[src] = nil
+        end
+    end
+
+    for src in pairs(match.fenceStrikes) do
+        if (match.players or {})[src] == nil then match.fenceStrikes[src] = nil end
+    end
+    for src in pairs(match.deadStrikes) do
+        if (match.players or {})[src] == nil then match.deadStrikes[src] = nil end
+    end
+    for src in pairs(match.deadWitness) do
+        if (match.players or {})[src] == nil then match.deadWitness[src] = nil end
+    end
+
+    for _, src in ipairs(roster) do
+        local player = (match.players or {})[src]
+        if player and player.alive == true and match.state == 'live' then
+            local past = metresOutside(match, src)
+            if strike(match.fenceStrikes, src, past ~= nil and past > outsideMetres, outsideTicks) then
+                ArenaLog('FENCE: %s has been %.0fm outside match %s for %d checks running -- removed from the round.',
+                    tostring(src), past, tostring(match.id), outsideTicks)
+                ArenaNotifyKey(src, 'notify.fence_removed', 'error')
+                ArenaMatch.RemovePlayer(src, 'notify.fence_removed', true, true)
+            elseif deadTicks > 0 then
+                local dead, readable = readsAsDead(src)
+
+                -- WHAT THE SERVER HAD SEEN HIT THEM, TAKEN WHEN THE BODY
+                -- FIRST READS DEAD -- NOT WHEN THE DEATH IS BOOKED, and the
+                -- gap between the two is the defect this fixes.
+                --
+                -- Booking waits for deadTicks readings in a row -- three to
+                -- four seconds at the shipped four -- and the damage memory
+                -- is five seconds wide. Asked at booking, a fighter who took
+                -- the last hit two seconds before they dropped had already
+                -- aged out of it, so a victim whose report never arrived cost
+                -- the shooter a kill the same death paid when it was
+                -- reported; at six ticks not even a one-shot kill survived.
+                -- And the body still reads alive to RememberDamage until the
+                -- booking, so whoever shot the CORPSE in those seconds was the
+                -- last hit on record and took the kill.
+                --
+                -- A COPY OF THE ROW, NOT A NOTE TO LOOK LATER: damagerOf
+                -- sweeps the whole memory against its own clock whenever any
+                -- other death reads it. And a copy is written even when there
+                -- is nothing to copy -- that empty copy is what stops a shot
+                -- into the body of somebody who FELL from being paid, since
+                -- OnDeath reads nothing else for a death booked here.
+                --
+                -- KEPT UNTIL THE BODY READS ALIVE. A reading that could not
+                -- see the body at all resets the count -- that is the fence's
+                -- own rule and it stays -- but it is no evidence they got up,
+                -- so the copy and the moment it was taken stay with it. A
+                -- hitch that read dead once and then alive leaves nothing
+                -- behind for a later death to be paid out of.
+                --
+                -- BUT NOT THROUGH A LONG BLINDNESS. With no limit, a copy
+                -- taken before a minute the body could not be read was still
+                -- there when it next read dead, and paid the fighter who hit
+                -- them a minute ago for a death somebody else had just made.
+                -- Measured: sixty blind readings, then a fresh hit and a real
+                -- death, credited to the stale shooter. A body that cannot be
+                -- read for longer than DEAD_WITNESS_BLIND_READINGS is more
+                -- likely a ped being swapped for a new one than a corpse, so
+                -- the copy goes, and the next dead reading takes a fresh one.
+                --
+                -- AND IT KEEPS WHO HAD HIT THEM, as well as who hit last: a
+                -- report that arrives after this reading is judged on this
+                -- copy, sparing included -- see ArenaMatch.OnDeath.
+                --
+                -- NOT OFF A BODY NOT YET SEEN STANDING SINCE A RESPAWN. The
+                -- client stands the body up only when the respawn event
+                -- reaches it, and until then the server reads the corpse it
+                -- left. A copy taken off that corpse was empty, and outlived
+                -- it: a fighter killed again before the next reading was paid
+                -- to nobody, where the live memory named the shooter -- and on
+                -- a capped ladder, a victim the server HAD seen shot was
+                -- charged a tier. A fixed one-second grace was the first
+                -- answer, and a stand-up slower than one check beat it
+                -- (measured at 1.2 s). So the respawn marks the fighter
+                -- seenUp = false and the first reading of a living body sets
+                -- it back: until then no copy is taken at all, and a death in
+                -- that window is read off the live memory, as it was before
+                -- the copy existed.
+                --
+                -- THE CLOCK IS READ ONLY FOR A DEAD BODY, and asked whether
+                -- it is there at all: this runs for every fighter every
+                -- second, and a throw here stops the sweep for the round.
+                local held = match.deadWitness[src]
+                if readable and not dead then
+                    match.deadWitness[src] = nil
+                    player.seenUp = true
+                elseif dead and held == nil then
+                    if player.seenUp ~= false then
+                        local now = type(GetGameTimer) == 'function' and tonumber(GetGameTimer()) or nil
+                        local row = type(match.recentDamage) == 'table' and match.recentDamage[src] or nil
+                        if type(row) ~= 'table' then row = {} end
+                        local hitters = {}
+                        if type(row.hitters) == 'table' then
+                            for attacker, at in pairs(row.hitters) do hitters[attacker] = at end
+                        end
+                        match.deadWitness[src] = {
+                            by = row.by, at = row.at, hitters = hitters,
+                            seenAt = now, blind = 0,
+                        }
+                    end
+                elseif held ~= nil and not readable then
+                    held.blind = (Arena.ToInt(held.blind) or 0) + 1
+                    if held.blind > DEAD_WITNESS_BLIND_READINGS then match.deadWitness[src] = nil end
+                elseif held ~= nil then
+                    held.blind = 0
+                end
+
+                if strike(match.deadStrikes, src, dead, deadTicks) then
+                    ArenaLog('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
+                        tostring(src), tostring(match.id), deadTicks)
+                    ArenaMatch.OnDeath(src, nil, true, nil, nil, match.deadWitness[src])
+                end
+            end
+        end
+    end
+end
+
+local RECENT_SPAWN_MS = 3000
+
+--- Points already handed to OTHER fighters a moment ago.
+---
+--- WHY THE ROSTER CANNOT ANSWER THIS. scheduleRespawn yields exactly once,
+--- at its Wait, and then runs to the client event without yielding again. So
+--- two fighters killed in the same frame -- a trade, a grenade -- produce two
+--- threads that wake on the same tick and run back to back. Neither can see
+--- where the other was just sent: liveOpponentPositions reads
+--- GetEntityCoords, which for a player told to respawn microseconds ago is
+--- still their CORPSE.
+---
+--- Both calls then run the same maximin over the same threats, and a maximin
+--- on a disc with a handful of threats has one sharp optimum. Both find it.
+--- Measured against the shipped arenas: on the skydome, 62-76% of same-tick
+--- pairs land within ten metres of each other and over a third within five,
+--- closest 0.03m -- two fighters materialising inside one another with full
+--- loadouts, in a round whose stated contract is a 10m separation.
+---
+--- Entry placement has never had this problem because Arena.PlanSpawns plans
+--- the whole roster at once, and says why: keeping two players apart is a
+--- fact about the PAIR, so it cannot be decided by looking at either alone.
+--- The respawn path is per-player and has no equivalent. This is the smallest
+--- thing that gives it one: the points go into the avoid list, which
+--- PickRespawn already takes.
+--- @param match table
+--- @param player table
+--- @return table[] points
+local function recentSpawnPoints(match, player)
+    local out = {}
+    local recent = match.recentSpawns
+    if type(recent) ~= 'table' then return out end
+
+    local now = GetGameTimer()
+    for src, row in pairs(recent) do
+        if type(row) ~= 'table' or (now - (row.at or 0)) > RECENT_SPAWN_MS then
+            recent[src] = nil
+        elseif src ~= player.src and type(row.point) == 'table' then
+            out[#out + 1] = row.point
+        end
+    end
+    return out
+end
+
+local function liveOpponentPositions(match, player)
+    return livePositions(match, player, false)
+end
+
+local function liveTeammatePositions(match, player)
+    return livePositions(match, player, true)
+end
+
+--- WHAT A DEATH THAT NAMES NOBODY COSTS, AND WHY IT IS NOT A LIFE.
+---
+--- THE DEFECT, MEASURED: a client reports its own death, and a report that
+--- names no killer is booked unconditionally -- resolveKiller answers nil
+--- before it has asked a single question about distance, so the death stands
+--- from anywhere on the map. Under 'score_limit' and 'most_kills' nothing is
+--- ever spent for it, so one keypress every respawn delay bought a full
+--- resupply, a teleport away from whoever was shooting, and the denial of the
+--- killer's credit -- 120 times in a ten-minute round.
+---
+--- COST, BUT NEVER ELIMINATION. Spending a life here would start eliminating
+--- players in the two win conditions that eliminate nobody today, which is a
+--- rule change wearing a bug fix's clothes. So the price is paid in the two
+--- things the press was actually buying: the resupply does not happen, and
+--- the wait is long enough that the escape is worse than the fight.
+---
+--- A FLAT MULTIPLE, NEVER AN ESCALATING ONE. What a player pays must not grow
+--- the longer they play. The floor is for a server that sets
+--- respawnDelaySeconds to 0, where a multiple of nothing is nothing.
+local UNWITNESSED_RESPAWN_FACTOR = 4
+local UNWITNESSED_RESPAWN_FLOOR_SECONDS = 15
+
+--- THE REGRESSION THIS PRICE CAUSED, AND WHY IT IS NOW A RATE.
+---
+--- IN A PLAYER'S OWN LOG, THREE TIMES IN ONE ROUND, ON THE OWNER'S SERVER:
+--- "1 reported their own death and named nobody -- booked, but with no
+--- resupply and a longer wait." Every one of those was a FALL. The skydome is
+--- an elevated arena whose lethal edge IS its boundary -- step off the floor
+--- and you are hundreds of metres outside it on the way down -- so falling is
+--- the ORDINARY way to die there, and a fall names nobody. Pricing every
+--- killer-less death flat took the resupply off an honest fighter for dying
+--- the way the arena he was in kills people, and it is one of only two arenas
+--- this resource ships. A false positive on honest play is the one thing this
+--- guard may NEVER produce.
+---
+--- SO THE SHAPE IS PRICED, NOT THE CAUSE. Naming nobody is not the exploit.
+--- Naming nobody TWELVE TIMES A MINUTE is: the press is a RATE -- one every
+--- respawn delay, for as long as the round lasts -- and a fall is occasional
+--- and real. An occasional killer-less death is now worth exactly what it was
+--- worth before this price existed: a full resupply and the normal wait.
+---
+--- NO CHEAPER HONEST SIGNAL EXISTS, AND ALL THREE WERE TRIED ON PAPER FIRST.
+--- WAS THE SERVER SEEING THEM OFF THE FLOOR -- metresOutside, already computed
+--- in this file -- reads a skydome fall as ~1,000m outside, but a modified
+--- client that can fire this event can also put its own ped there, and the
+--- respawn drops it back inside before the fence sweep can count to
+--- outsideTicks. It would be a complete bypass. It is also blind to the
+--- trailer park, which is at ground level, where a fire or an explosion is
+--- just as killer-less and reads perfectly inside. WERE THEY FALLING -- there
+--- is no such reading anywhere on this side, and by the time a death is
+--- reported the body is on the ground, not falling. WAS THEIR HEALTH ALREADY
+--- DROPPING -- only readsAsDead exists, an instant, not a trend; the dead
+--- sweep needs deadTicks readings of it because ONE is not trusted, it answers
+--- false for a body the server cannot see, and it races the report. Used as an
+--- accusation it manufactures the exact false positive being removed here.
+---
+--- THE NUMBERS ARE READ OFF THE SHIPPED CONFIG, NEVER INVENTED.
+--- `respawnDelaySeconds` is 5, and ArenaMatch.OnDeath refuses a report from a
+--- player who is not standing up -- so the press CANNOT be made faster than
+--- once per respawn: 120 of them in the 600-second default round, which is the
+--- number that was measured. The rate this assumes for honest play is HALF
+--- that ceiling, one every ten seconds sustained, and the window is six of
+--- those: sixty seconds on the shipped numbers. Six killer-less deaths inside
+--- it are free and the seventh is the first that costs anything.
+---
+--- AND THE ARENA'S OWN NUMBERS SAY THE HONEST SIDE CANNOT REACH IT. A skydome
+--- death by falling is not instant: the floor is at z = 1201 inside a sphere of
+--- radius 110, and the boundary gives `warningSeconds` 5 before it starts
+--- taking `damagePerTick` 20 every `tickMs` 500 -- 40 a second against 200
+--- health. Stepping off the edge is therefore about five seconds of falling to
+--- leave the sphere, five of warning and five of bleed before the death is
+--- reported at all, and only then the respawn delay. FIFTEEN SECONDS IS THE
+--- FLOOR ON A DELIBERATE EDGE-JUMP, and the line sits at one every ten. Nothing
+--- an honest fighter can do on that arena gets near it.
+---
+--- WHAT THAT MEANS AT BOTH ENDS. The log this was written for is three falls
+--- in a 600-second round -- one every 200 seconds, twenty times under the line
+--- -- so an honest skydome fighter never reaches it and their round is now
+--- strictly better than it was before this price shipped. The press reaches it
+--- thirty seconds in, and 114 of the round's 120 go unpaid.
+---
+--- WHAT IT DOES NOT BUY, SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED: a
+--- patient client that presses only once every eleven seconds stays under the
+--- line for the whole round. That is the trade a rate makes, and it is the
+--- right one -- the thing the press was worth was an escape from whoever was
+--- shooting, available AGAIN before they could close the distance, and a
+--- button with a ten-second cooldown is not that. Tightening the line far
+--- enough to catch the patient version would put it under the edge-jump floor
+--- above, which is to say back on top of the honest player.
+---
+--- max(1, delay) IS THE FLOOR AND IT IS DELIBERATE: at respawnDelaySeconds = 0
+--- the window would otherwise be zero seconds wide, which is a rate limit that
+--- never limits anything.
+local UNWITNESSED_FREE_IN_WINDOW = 6
+local UNWITNESSED_HONEST_PRESS_MULTIPLE = 2
+
+local function respawnDelaySeconds()
+    return math.max(0, Arena.ToInt(Config.Match.respawnDelaySeconds) or 0)
+end
+
+--- WHAT THE DYING CLIENT SAID WENT WRONG, IN THE OPERATOR'S OWN WORDS.
+---
+--- THE CODE IS A NUMBER AND THE SENTENCE LIVES HERE, ON PURPOSE. The reason
+--- arrives from the one client whose account of the death is already being
+--- doubted, and it lands in the server console. Taking a STRING from there
+--- would let any client write its own line into the operator's log -- fake
+--- warnings, fake match ids, a wall of newlines. A small integer it cannot
+--- do anything with is the whole defence, and these four sentences are this
+--- file's, not theirs.
+---
+--- IT NAMES A SYMPTOM AND NEVER A CULPRIT. Nothing reads this to decide who
+--- gets a kill, and it must not start: a client picks its own reason, so a
+--- reason that paid would simply always be the one that pays.
+local UNATTRIBUTED_REASON = {
+    [1] = 'The client says nothing it could name hit them -- a fall, a drowning, the boundary bleed or a fire.',
+    [2] = 'The client says the only thing that hit them was themselves -- their own explosive, or the boundary.',
+    [3] = 'The client says what hit them was not a player -- an NPC, a prop, or a vehicle with nobody driving.',
+    [4] = 'The client says a player hit them but their character was not on its network list by then -- too far off, or gone.',
+}
+
+--- WHY THE ROSTER TURNED DOWN A KILLER THE CLIENT DID NAME, keyed by
+--- rosterKiller's own reason.
+---
+--- THESE ARE NOT "NAMED NOBODY", AND THEY WERE BEING REPORTED AS IF THEY
+--- WERE. The client sends a reason code only when it names nobody -- see
+--- handleDeath in client/match.lua -- so a named claim the roster refused
+--- arrived with no code at all, and the fallback below told the operator it
+--- came from "an older client than this resource". It did not. An honest
+--- client in a last-life trade names a fighter who is out by the time its
+--- report lands; one whose killer walked out a moment earlier names somebody
+--- no longer on the roster; a team-mate's blade names the team-mate. Each of
+--- those is the roster refusing a claim it should refuse.
+---
+--- 'not_on_roster' DOES NOT SAY "LEFT". ArenaLobby.Leave deletes the row, so
+--- the server cannot tell a fighter who walked out from a server id that was
+--- never in the round -- which a modded client can name -- and a line in the
+--- operator's log must not assert what the server cannot know.
+---
+--- 'nobody' AND 'self' ARE DELIBERATELY ABSENT. Neither names anybody, and
+--- the honest client never puts its own id on the wire, so both still read
+--- as naming nobody, with whatever reason code the client sent.
+local REFUSED_CLAIM = {
+    not_on_roster = 'is not on this round\'s roster -- they left it before the report arrived, or were never in it',
+    team = 'is on their own side, and friendly fire is off',
+    out_of_round = 'was already out of the round -- eliminated, or sent back to the lobby -- when the report arrived',
+}
+
+local function unattributedReason(why, claimed, refused)
+    -- A NAMED CLAIM IS ASKED ABOUT FIRST, because it carries no reason code
+    -- and the fallback at the bottom would call it an older client.
+    local named = REFUSED_CLAIM[refused]
+    if named then
+        return ('The client named %s as their killer, who %s -- a claim the roster refuses, '
+            .. 'which counts as naming nobody.'):format(tostring(claimed), named)
+    end
+
+    local code = Arena.ToInt(why)
+    return (code and UNATTRIBUTED_REASON[code])
+        or 'The client gave no reason, which means it is an older client than this resource.'
+end
+
+--- Books one killer-less death against the run this player is on.
+---
+--- KEPT ON THE ROSTER ROW, NEVER IN A STORE KEYED BY SERVER ID. The server
+--- recycles ids, and ArenaLobby.Join builds a fresh row for whoever is handed
+--- one next -- so a run cannot be inherited from somebody who has left, which
+--- is the trap fenceStrikes and deadStrikes had to be taught to avoid.
+--- @param player table -- the victim's roster row
+--- @return integer inWindow -- how many killer-less deaths this one makes
+--- @return boolean priced -- has the run passed the rate above
+local function unwitnessedRun(player)
+    local at = tonumber(GetGameTimer())
+
+    -- NO CLOCK MEANS NO RATE, AND A RATE NOBODY CAN MEASURE MUST NOT CONVICT.
+    -- Everything in this block fails open, the same way the fence and the
+    -- dead sweep do: a thing the server cannot see counts as nothing at all.
+    if at == nil then return 1, false end
+
+    local window = UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
+        * math.max(1, respawnDelaySeconds()) * 1000
+
+    local kept, count = {}, 0
+    for _, stamp in ipairs(player.unwitnessedAt or {}) do
+        if type(stamp) == 'number' and (at - stamp) < window then
+            count = count + 1
+            kept[count] = stamp
+        end
+    end
+
+    count = count + 1
+    kept[count] = at
+    player.unwitnessedAt = kept
+
+    return count, count > UNWITNESSED_FREE_IN_WINDOW
+end
+
+--- @param unwitnessed boolean? -- the reporter named nobody; see above
+local function scheduleRespawn(match, player, unwitnessed)
+    local matchId, src = match.id, player.src
+    local delay = respawnDelaySeconds()
+
+    if unwitnessed then
+        delay = math.max(delay * UNWITNESSED_RESPAWN_FACTOR, UNWITNESSED_RESPAWN_FLOOR_SECONDS)
+    end
+
+    ArenaNotifyKey(src, 'notify.respawning', 'info', delay)
+
+    CreateThread(function()
+        if delay > 0 then Wait(delay * 1000) end
+
+        local current = ArenaLobby.Get(matchId)
+        if not current or current.state ~= 'live' then return end
+
+        local entry = current.players[src]
+        if not entry or entry.alive then return end
+
+        current.spawnCursor = (current.spawnCursor or 0) + 1
+
+        -- A PROMOTION THE CORPSE COULD NOT TAKE, TAKEN NOW.
+        --
+        -- THE DEFECT, MEASURED: a climber on rung 2 is shot dead, ox_inventory
+        -- drops their pockets, and then a bullet of theirs still in flight
+        -- kills somebody. The kill is credited, the score says tier 3 and the
+        -- board shows it -- but the swap found no rung to take back, read that
+        -- as parking, and refused, and nothing ever asked again. They
+        -- respawned holding the pistol, and their next kill jumped them from
+        -- rung 2 to rung 4: the combat pistol was never held, and a climber
+        -- one short of the top was never announced to the room before the
+        -- winning kill.
+        --
+        -- loadoutFor below re-arms from `entry.tier`, which is the tier the
+        -- last swap LANDED, so it is caught up to the score first. It is the
+        -- same settleTier every kill runs, told the one thing it could not
+        -- know at the kill: a death emptied these pockets.
+        --
+        -- ONLY UPWARDS, on purpose. A tier sitting ABOVE the score is a
+        -- demotion ox_inventory refused, which already had the emptied-pocket
+        -- allowance and is retried on the next kill or death as it always
+        -- was. This is not the place to change that.
+        local ladder = ladderOf(current)
+        if #ladder > 0 and tierForScore(tierScore(entry), #ladder) > (Arena.ToInt(entry.tier) or 1) then
+            settleTier(current, entry, 'notify.gungame_promoted', true)
+        end
+
+        local loadout = loadoutFor(current, entry)
+        entry.loadout = loadout
+        entry.alive = true
+        -- NOT SEEN STANDING YET, for the dead sweep: the client stands the
+        -- body back up only once the event below reaches it, and until then
+        -- the server still reads the old corpse. runServerChecks sets this
+        -- back on the first reading of a living body.
+        entry.seenUp = false
+
+        -- EVERY MODE, AND THE LADDER IS THE ONE THAT NEEDED IT MOST.
+        --
+        -- THE DEFECT, MEASURED OVER SIX LIVES: 1, 0, 0, 0, 0, 0 weapons. This
+        -- was the only re-arm on the respawn path and it was withheld from
+        -- ladders, on the reasoning that the ladder arms its own players --
+        -- which settleTier does, but ONLY when the tier changes, and it
+        -- returns at its first line when it has not. ox_inventory drops a
+        -- dead fighter's whole inventory on the floor, so a climber who dies
+        -- before their first kill -- the ordinary thing, since everybody
+        -- starts on tier 1 -- stood there holding nothing for the rest of the
+        -- round, and the arena's record went on naming the weapon their
+        -- corpse dropped, which every later promotion then read as parking.
+        --
+        -- `loadout` is loadoutFor(current, entry), which reads player.tier --
+        -- so this hands back the rung they are standing on now, NEVER the one
+        -- a demotion has just taken away.
+        --
+        -- AND IT IS A TOP-UP, NOT A SECOND ISSUE. ArenaAmmo.Refresh counts
+        -- what they are holding first and grants only the shortfall; measured
+        -- flat at 170 rounds and 5 bandages across five deaths on one tier.
+        --
+        -- The one thing it is withheld for is a death the round has no
+        -- witness for -- see the note on scheduleRespawn -- and that never
+        -- applies in a ladder, where the same death has already cost a tier.
+        if not unwitnessed then
+            ArenaAmmo.Refresh(src, current.id, loadout)
+        end
+
+        local team = teamOf(current, entry)
+
+        local avoid = liveOpponentPositions(current, entry)
+        for _, taken in ipairs(recentSpawnPoints(current, entry)) do
+            avoid[#avoid + 1] = taken
+        end
+
+        local planned = Arena.PickRespawn(current.arenaKey, team, avoid,
+            nil, current.sizeFactor, liveTeammatePositions(current, entry))
+        local point = planned or Arena.PickSpawn(current.arenaKey, team, current.spawnCursor)
+
+        -- NO POINT MEANS NO RESPAWN, AND THE ROSTER MUST NOT SAY OTHERWISE.
+        --
+        -- Both producers answer nil for the same arena -- one with no spawn
+        -- area and no spawn list -- and Arena.GetArenaByKey answers nil for a
+        -- DISABLED arena, so an operator switching one off mid-round reaches
+        -- this with nothing to send.
+        --
+        -- The client refuses a payload with no spawn in it, so it stayed a
+        -- corpse with its death already reported and could never report
+        -- another. `entry.alive` had been set true above regardless -- which
+        -- made a body nobody could see or kill count as a living fighter, so
+        -- `stillIn` never fell to one and the last-man-standing rule could
+        -- never fire. On a round with no clock that is a match that never
+        -- ends, swept and pushed for the life of the server.
+        --
+        -- Put back where they were instead: still dead, still holding the
+        -- life, and now visible to the server's own unreported-death check
+        -- rather than hidden behind an `alive` flag that was not true.
+        if point == nil then
+            entry.alive = false
+            ArenaLog('RESPAWN REFUSED on match %s: arena "%s" gave no spawn point for %s -- it has no spawn area, no spawn list, or it was switched off mid-round. They stay down.',
+                tostring(current.id), tostring(current.arenaKey), tostring(src))
+            ArenaNotifyKey(src, 'notify.respawn_no_point', 'error')
+            return
+        end
+
+        -- WHY THIS IS NOT `type(point) == 'table'`.
+        --
+        -- In this runtime a vector is its OWN type: `type()` on one answers
+        -- 'vector4', NEVER 'table'. Both of the ways a point gets here can be
+        -- a vector -- Arena.PickSpawn returns the operator's hand-written
+        -- `spawns` entry untouched, and those are written as vector4 in
+        -- config; so does PickRespawn's hand-written-list branch. Only the
+        -- spawn-area sampler builds a plain table, which is the single reason
+        -- this read clean: both shipped arenas switch that on.
+        --
+        -- Turn `spawnArea.enabled` off -- documented and supported -- and the
+        -- test was false for every respawn, `recentSpawns` was never written,
+        -- and the same-tick anti-stacking rule this block exists to feed
+        -- quietly did nothing at all. Two fighters materialising inside one
+        -- another is the exact failure it was built to stop.
+        if Arena.IsPoint(point) then
+            current.recentSpawns = current.recentSpawns or {}
+            current.recentSpawns[src] = {
+                point = { x = point.x, y = point.y, z = point.z },
+                at = GetGameTimer(),
+            }
+        end
+
+        TriggerClientEvent('crimson_arena:client:respawn', src, {
+            spawn = toPoint(point),
+            scatterRadius = planned and 0.0 or scatterRadius(),
+            loadout = loadout,
+        })
+
+        local reviveAfter = math.max(0, Arena.ToInt(((Config.Dispatch or {}).revive or {}).afterRespawnDelayMs) or 0)
+        if reviveAfter > 0 then
+            CreateThread(function()
+                Wait(reviveAfter)
+
+                local live = ArenaLobby.Get(matchId)
+                if not live or live.state ~= 'live' then return end
+                if not live.players[src] then return end
+
+                ArenaDispatch.Revive(src)
+            end)
+        else
+            ArenaDispatch.Revive(src)
+        end
+    end)
+end
+
+--- The killer this claim names, asking ONLY the questions the ROSTER can
+--- answer -- who they are, whether they are in this match, whether they are
+--- allowed to have shot the victim, and whether they are still in the round.
+---
+--- SPLIT OUT SO THERE IS EXACTLY ONE OF IT. resolveKiller is not the only
+--- caller that needs to know whether a claim names anybody: OnDeath's
+--- unwitnessed-death price asks the same question, and for years it asked it
+--- by hand -- `claimed == nil or claimed <= 0 or claimed == id or
+--- match.players[claimed] == nil`, four of these five refusals. The two
+--- drifted exactly the way a copied predicate drifts, and the gap was a
+--- rate-limit bypass: a modded client naming a TEAM-MATE, or a player who had
+--- left, or one already eliminated, had the kill refused here AND was excused
+--- the price for an unwitnessed death, because the hand-rolled copy read
+--- "somebody was named". Free silent deaths on demand, at whatever rate the
+--- client liked. A comment at the call site claimed "the two predicates are
+--- one expression now". They were two. Now there is one, and it is this.
+---
+--- POSITION IS DELIBERATELY NOT IN HERE. Everything below this in
+--- resolveKiller -- the fence and the kill-distance ceiling -- refuses a
+--- claim that FAILED A CHECK rather than one that named nobody, and an
+--- honest player catches those: crossfire from outside the boundary is real,
+--- and a long shot across a big arena is the good kind of kill. Those must
+--- not price a death as unwitnessed, so they stay where they are.
+---
+--- AND IT SAYS WHICH REFUSAL IT WAS, because "refused" had come to mean
+--- "named nobody" everywhere downstream. The last-life trade, the killer who
+--- walked out before the report landed and the team-mate's blade all name a
+--- real fighter, and OnDeath logged every one of them as UNATTRIBUTED --
+--- "nobody named ... an older client ... this resource to blame" -- and told
+--- the victim nothing could be pinned on anybody. The reason is what lets it
+--- tell those apart from a client that really named nobody. It changes no
+--- answer: the killer is nil on every one of these paths, as it always was.
+--- @return table|nil killer
+--- @return string|nil refused -- 'nobody', 'self', 'not_on_roster', 'team' or 'out_of_round'
+local function rosterKiller(match, victim, killerSrc)
+    local killerId = Arena.ToInt(killerSrc)
+    if not killerId or killerId <= 0 then return nil, 'nobody' end
+    if killerId == victim.src then return nil, 'self' end
+
+    local killer = match.players[killerId]
+    if not killer then return nil, 'not_on_roster' end
+    if not Arena.CanDamage(match.modeKey, killer.team, victim.team) then return nil, 'team' end
+
+    -- AND ARE THEY STILL IN THE FIGHT. A fighter who is out of the round --
+    -- eliminated, or already sent back to the lobby ped -- was being
+    -- credited with kills, and those kills decided the round: they ranked
+    -- last on the board, stood at the NPC with `spectateOnElimination` off,
+    -- and won on most-kills anyway.
+    --
+    -- THIS IS NOT THE "killer is dead" CASE, which stays credited on
+    -- purpose: two fighters who kill each other in the same tick are both
+    -- corpses when the reports arrive, and refusing those would delete half
+    -- of every trade. Elimination is a different fact -- they have no lives
+    -- left and the round has finished with them. The one case this does cost
+    -- is a fighter whose own last life ran out in the same tick as the kill
+    -- they were making, which is rare and errs toward "you were out" rather
+    -- than "you win from the lobby".
+    if killer.leftArena == true or Arena.IsEliminated(killer) then
+        ArenaDebug('kill refused on match %s: %s named %s, who is out of the round.',
+            tostring(match.id), tostring(victim.src), tostring(killerId))
+        return nil, 'out_of_round'
+    end
+
+    return killer
+end
+
+--- @return table|nil killer
+--- @return boolean named -- did the claim name a fighter the ROSTER accepts
+--- @return string|nil refused -- rosterKiller's reason, when it was the one that said no
+local function resolveKiller(match, victim, killerSrc)
+    -- THE SECOND RETURN IS NOT A CONVENIENCE. OnDeath needs both answers --
+    -- "is this a kill" and "did they name anybody" -- and asking rosterKiller
+    -- a second time down there would log the refusal twice and re-read state
+    -- this function has already moved past. One call, both answers. THE THIRD
+    -- IS THE SAME ARGUMENT: OnDeath's log line needs to know WHICH refusal,
+    -- and this call is the one that already knows.
+    local killer, refused = rosterKiller(match, victim, killerSrc)
+    if not killer then return nil, false, refused end
+
+    local killerId = killer.src
+    -- AND WERE THEY ANYWHERE NEAR. Everything above this line is a question
+    -- about the ROSTER; none of it asks whether the kill could have happened.
+    -- A dying client names its own killer, so without this one accomplice
+    -- hands another every kill in the round from across the map, and that
+    -- decides a team deathmatch, a last-man-standing round and the pot.
+    --
+    -- IT DOES NOT MAKE THE REPORT HONEST -- two players standing together
+    -- can still trade kills nobody fired -- but it forces them to be there,
+    -- which costs them the round they are trying to win.
+    --
+    -- FAILS OPEN, ON PURPOSE. GetEntityCoords answers a zero vector for a
+    -- ped that has not streamed in, and refusing a real kill because the
+    -- server could not see one of the two bodies would take a fought kill
+    -- off an honest player. A ceiling nobody can reach is worth more than a
+    -- guard that eats real results.
+    --
+    -- MEASURED AGAINST THIS ARENA, NOT A FLAT NUMBER. Config.Match
+    -- .maxKillDistance is a floor; Arena.KillCeilingFor raises it to the span
+    -- of the boundary the fight is being held inside, grown with the roster.
+    -- Read flat it was SMALLER than both shipped arenas, so two fighters at
+    -- opposite edges of the arena they were put in had their kills refused --
+    -- the long shots, which is to say the good ones.
+    -- AND WAS THE VICTIM EVEN IN THE ARENA. A death is reported by the dying
+    -- player's own game, so a client sat out of the fight could report one
+    -- every respawn delay and hand an accomplice a kill for each.
+    --
+    -- IT REFUSES THE CREDIT, NOT THE DEATH, AND THAT DISTINCTION IS THE
+    -- WHOLE OF IT. Refusing the death was tried and broke a shipped arena:
+    -- the skydome's lethal edge IS its boundary -- step off the floor and you
+    -- are hundreds of metres outside it on the way down -- so every fall
+    -- killed a player whose death the server then would not book. They lay
+    -- there unable to report again, no respawn was ever scheduled, and eight
+    -- seconds later the fence threw them out of the round they had paid for.
+    -- One life became the whole match.
+    --
+    -- A death out there is real. What is not real is somebody claiming to
+    -- have been killed BY a fighter, from a place no fighter could reach
+    -- them -- so the death stands, spends its life and schedules its
+    -- respawn, and only the kill goes unpaid.
+    local past = metresOutside(match, victim.src)
+    local _, outsideMetres = serverChecks()
+    if past ~= nil and outsideMetres > 0 and past > outsideMetres then
+        ArenaDebug('kill refused on match %s: %s says %s killed them from %.0fm outside the arena.',
+            tostring(match.id), tostring(victim.src), tostring(killerId), past)
+        return nil, true
+    end
+
+    local ceiling = Arena.KillCeilingFor(match.arenaKey, match.sizeFactor)
+    if ceiling > 0 then
+        local far = metresBetween(positionOf(killer.src), positionOf(victim.src))
+        if far and far > ceiling then
+            ArenaDebug('kill refused on match %s: %s says %s killed them from %.1fm, over the %.1fm ceiling.',
+                tostring(match.id), tostring(victim.src), tostring(killerId), far, ceiling)
+            return nil, true
+        end
+    end
+
+    return killer, true
+end
+
+--- Drops anyone who never picked a side onto the smallest team.
+---
+--- Config.Teams.autoAssignIfUnchosen is applied at start rather than at join
+--- time on purpose: "smallest team" means smallest when the fighting starts,
+--- not smallest when the first player wandered in.
+---
+--- WHO IT PLACED COMES BACK WITH IT, so a refusal further down Begin can put
+--- them back. This function is not the last word on whether the round starts
+--- -- CanStartMatch and arenaIsFree are still to come -- and leaving somebody
+--- on a side after a start that did not happen is a commitment they never
+--- made. What it cost: a host pressing "Start Match Now" before the second
+--- player arrived was told 'error.not_enough_players' and was silently put on
+--- Crimson, with their tile lit and their roster row beside it. Worse than
+--- cosmetic, because the placement then SHAPES the next attempt: the second
+--- player picks the host's side to be with them, and a lobby that would have
+--- begun as a 1v1 -- the host auto-placed on the empty side -- is refused
+--- 'error.need_two_teams' instead.
+--- @param match table
+--- @return boolean ok -- false only when the setting is off and somebody has no side
+--- @return table placed -- the players this call gave a side to, in order
+local function assignMissingTeams(match)
+    if not Arena.ModeUsesTeams(match.modeKey) then return true, {} end
+
+    local players = ArenaLobby.PlayerArray(match)
+    local assigned, placed = 0, {}
+    for _, player in ipairs(players) do
+        if not Arena.GetTeamByKey(player.team) then
+            -- NOTHING HAS BEEN WRITTEN YET ON THIS PATH. The setting being
+            -- off means this returns on the FIRST player without a side,
+            -- before assigning anybody -- so the empty list is the truth and
+            -- not an omission.
+            if Config.Teams.autoAssignIfUnchosen == false then return false, placed end
+            player.team = Arena.SuggestTeam(players)
+            placed[#placed + 1] = player
+            assigned = assigned + 1
+        end
+    end
+
+    local counts, order = {}, {}
+    for _, player in ipairs(players) do
+        local key = Arena.IsKey(player.team) and player.team or 'none'
+        if counts[key] == nil then order[#order + 1] = key end
+        counts[key] = (counts[key] or 0) + 1
+    end
+    table.sort(order)
+
+    local parts = {}
+    for _, key in ipairs(order) do
+        parts[#parts + 1] = ('%s %d'):format(key, counts[key])
+    end
+    -- "WOULD START", not "starts". Two gates below this one can still turn
+    -- the start down, and everything above is put back when they do.
+    ArenaDebug('teams: match %s would start %s (%d assigned, %d chose their own). Anyone alone on a side has no teammate to outline.',
+        tostring(match.id), table.concat(parts, ' v '), assigned, #players - assigned)
+
+    return true, placed
+end
+
+--- Undo an auto-assignment made by a start that did not happen.
+---
+--- WHY THE LIST LIVES ON THE MATCH. assignMissingTeams hands back the rows it
+--- placed, and for a long time that list was a local of ArenaMatch.Begin --
+--- so only the two exits inside Begin could put anybody back. There are five
+--- ways a countdown returns to a lobby, and the other three could not:
+---
+---   * Begin's own countdown thread, when its CanStartMatch re-check fails
+---   * ArenaMatch.Start, refusing at the moment of the teleport
+---   * ArenaLobby.HoldCountdown -- the host's "Stop The Countdown" button
+---
+--- All three left a side on somebody who never picked one. The comment above
+--- the old local called that "both a lie on their screen and a constraint on
+--- the next attempt", and it is the second half that bites: with
+--- `requireBothTeamsOccupied` on, a roster that was auto-split 1-2 and then
+--- put back through any of those three exits could end up entirely on one
+--- side, and the next start was refused with 'error.need_two_teams' --
+--- a lobby wedged shut by the button that was supposed to un-wedge it.
+---
+--- SOURCE IDS, NOT ROWS. A player who left in the meantime has no row to put
+--- back, and holding their table here would resurrect a side for somebody who
+--- is not in the match any more.
+--- @param match table|nil
+--- @return boolean moved
+local function unplaceAuto(match)
+    if type(match) ~= 'table' then return false end
+
+    local placed = match.autoPlaced
+    match.autoPlaced = nil
+    if type(placed) ~= 'table' then return false end
+
+    local moved = false
+    for _, src in ipairs(placed) do
+        local player = type(match.players) == 'table' and match.players[src] or nil
+        if player and player.team ~= nil then
+            player.team = nil
+            moved = true
+        end
+    end
+    return moved
+end
+
+--- Undo an auto-assignment from outside this file -- server/lobby.lua's
+--- "Stop The Countdown" is an exit back to a lobby exactly like the two
+--- inside Begin, and must put back exactly what they put back.
+--- @param match table|nil
+--- @return boolean moved
+function ArenaMatch.UnplaceAuto(match)
+    return unplaceAuto(match)
+end
+
+local function goLive(matchId)
+    local match = ArenaLobby.Get(matchId)
+    if not match or match.state ~= 'countdown' then return end
+
+    local players = ArenaLobby.PlayerArray(match)
+    local startable, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = players,
+    })
+    if not startable then
+        ArenaMatch.Abort(matchId, reason or 'match.ended_abandoned')
+        return
+    end
+
+    match.state = 'live'
+    match.startsAt = os.time()
+
+    -- HOW MANY THE ROUND IS FOUGHT WITH, and this is the last moment it can
+    -- be counted: ArenaLobby.Join refuses anything but a lobby, so from here
+    -- the roster only ever shrinks, and every player in it has already paid
+    -- a stake that is now in the pot. End() hands this to the payout as
+    -- `contestants` -- read it there for what depends on it.
+    --
+    -- Counted here rather than in Start() because the two disagree: somebody
+    -- who walks out during the frozen countdown is refunded by
+    -- ArenaLobby.Leave -- that phase is still "before start" to the refund
+    -- rules -- so counting them would judge the pot against a stake that has
+    -- gone home.
+    match.contestants = #players
+
+    -- AND WHO THEY WERE, BY CHARACTER, for the leaderboard's ranked rule.
+    --
+    -- The line above counts server ids and is counted here for the pot. This
+    -- one is a different question with a different answer: ArenaStats reads
+    -- `match.players` at the END of the round, and a fighter who walks out
+    -- mid-round is taken off that table (ArenaLobby.Leave, which records
+    -- their loss on the way past). So the roster the board would otherwise
+    -- judge is "whoever was still standing", and a three-way that one player
+    -- quit would read as a two-man duel -- unranked, and the two who stayed
+    -- would lose a real result to somebody else's disconnect.
+    --
+    -- Written at go-live, where the answer is settled: nobody else can join
+    -- from here. By CITIZEN ID rather than by server id because two logins on
+    -- one character is one person, and it is the count that a farm is trying
+    -- to inflate.
+    local seen = {}
+    match.contestantIds = {}
+    for _, player in ipairs(players) do
+        local id = player.citizenid
+        if Arena.IsKey(id) and not seen[id] then
+            seen[id] = true
+            match.contestantIds[#match.contestantIds + 1] = id
+        end
+    end
+    table.sort(match.contestantIds)
+
+    local roundTime = Arena.RoundSecondsFor(match.modeKey, match.roundTimeSeconds)
+    match.endsAt = roundTime > 0 and (match.startsAt + roundTime) or nil
+
+    pushToMatch(match, 'crimson_arena:client:matchLive', { endsAt = match.endsAt })
+    ArenaLobby.Broadcast()
+
+    local untilClosed = ArenaBetting.SecondsUntilBetsClose(match)
+    if untilClosed then
+        CreateThread(function()
+            Wait(untilClosed * 1000)
+            local current = ArenaLobby.Get(matchId)
+            if current and current.state == 'live' then ArenaLobby.Broadcast() end
+        end)
+    end
+
+    ArenaDebug('match %s is live with %d player(s)', tostring(matchId), #players)
+end
+
+local function arenaIsFree(match)
+    -- ASKED OF ISOLATION, NEVER OF A BUCKET.
+    --
+    -- THE DEFECT: this read ArenaDispatch.GetBucket, which is a
+    -- get-or-CREATE and not a getter. On any server with isolation on it
+    -- therefore answered a bucket -- the one it had just allocated -- for
+    -- every match, every time, so the early return was unconditionally true
+    -- and everything below it was dead. The one-match-per-arena loop, the
+    -- MATCH REFUSED line an operator is supposed to read in their console and
+    -- the error.arena_in_use string in locales/en.json have never run on a
+    -- shipped configuration, and the guard concurrent_spec describes was not
+    -- there.
+    --
+    -- AND MERELY ASKING COST SOMETHING. A bucket allocated here is released
+    -- by ArenaDispatch.ReleaseBucket when the match ends -- but a countdown
+    -- that is held or cancelled never ends, so the mapping was stranded and
+    -- the next match's search stepped over it for the life of the server.
+    --
+    -- IsolationState is the reading with no side effect: `inForce` is the
+    -- same isolationEnabled() GetBucket gates on -- config, OneSync, and a
+    -- move already caught not landing. A dispatch that cannot answer at all
+    -- is read as NOT isolated, which is the safe half: the worst it can do is
+    -- refuse a second match on ground somebody is fighting on.
+    local isolation = type(ArenaDispatch.IsolationState) == 'function'
+        and ArenaDispatch.IsolationState() or nil
+    if type(isolation) == 'table' and isolation.inForce == true then return true end
+
+    for _, other in ipairs(ArenaLobby.All()) do
+        if other.id ~= match.id and other.arenaKey == match.arenaKey
+            and (other.state == 'live' or other.state == 'countdown')
+        then
+            ArenaLog('MATCH REFUSED: %s cannot start in arena "%s" while match %s is being fought there -- this server is not instancing matches, so they would share the ground.',
+                tostring(match.id), tostring(match.arenaKey), tostring(other.id))
+            return false
+        end
+    end
+    return true
+end
+
+function ArenaMatch.Begin(matchId, requestedBy)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if match.state ~= 'lobby' then return false, 'error.match_already_started' end
+
+    -- OPENING HOURS, before anything is mutated. Begin is reachable without
+    -- a fresh Join -- a lobby that formed while the arena was open and is
+    -- started after the bell -- and it is the one gate the host's Start
+    -- Match Now, an admin start and the auto-start when everybody readies
+    -- all pass through.
+    --
+    -- Placed above assignMissingTeams on purpose: a refusal here must leave
+    -- the roster exactly as it found it.
+    if not ArenaHoursOpen() then return false, 'error.arena_shut' end
+
+    if requestedBy ~= nil then
+        local requester = Arena.ToInt(requestedBy)
+        local isHost = requester ~= nil and requester == match.hostSource
+        local isAdmin = ArenaIsAdmin(requester)
+
+        if Config.Match.onlyHostCanStart ~= false and not isHost and not isAdmin then
+            return false, 'error.not_host'
+        end
+        if not isHost and not isAdmin and not (requester and match.players[requester]) then
+            return false, 'error.not_in_match'
+        end
+    end
+
+    -- A HELD START MAY NOT BE CALLED AGAIN STRAIGHT AWAY. Leave is refused
+    -- during a countdown on purpose -- one player must not be able to call
+    -- off every round by standing up -- and that refusal is left exactly as
+    -- it is. But it handed the HOST a stall: press Start, everybody loses
+    -- the Leave button; press Hold, they get it back for the two seconds
+    -- the rate limit allows; press Start. Every player in the room was held
+    -- in a lobby they could not leave, with their stake in escrow, taking a
+    -- "start was called off" toast on every cycle, for as long as the host
+    -- cared to click.
+    --
+    -- THE FIRST HOLD IS FREE, ON PURPOSE. Holding a countdown so somebody
+    -- can switch sides and starting straight back up is what the button is
+    -- for, and a flat grace made that honest host wait ten seconds -- the
+    -- team-switch spec is exactly that flow and it must keep passing. What
+    -- is refused is the SECOND hold in quick succession: from there a start
+    -- inside one countdown's length of the hold is turned away, which
+    -- guarantees a window in which the Leave button works. HoldCountdown
+    -- keeps the count and lets it decay. It applies to the auto-start too,
+    -- or a host re-fires that by toggling their own Ready. Above assignMissingTeams for the
+    -- same reason the hours gate is: a refusal here must leave the roster
+    -- exactly as it found it.
+    local grace = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
+    local heldAt = tonumber(match.heldAt)
+    local stalling = (Arena.ToInt(match.holds) or 0) >= 2
+    if stalling and heldAt and grace > 0 and (os.time() - heldAt) < grace then
+        return false, 'error.start_held'
+    end
+
+    local teamsOk, placed = assignMissingTeams(match)
+    if not teamsOk then return false, 'error.no_team_chosen' end
+
+    -- AND PUT THEM BACK IF THE START DOES NOT HAPPEN. Read the note above
+    -- assignMissingTeams: a side nobody chose, on a round that never began,
+    -- is both a lie on their screen and a constraint on the next attempt.
+    -- Everything above this line already leaves the roster alone on a
+    -- refusal, and says so.
+    --
+    -- RECORDED ON THE MATCH, NOT IN A LOCAL. Two of the five exits back to a
+    -- lobby are below; the other three are elsewhere and could not reach a
+    -- local. See unplaceAuto.
+    match.autoPlaced = {}
+    for _, player in ipairs(placed) do
+        match.autoPlaced[#match.autoPlaced + 1] = player.src
+    end
+
+    local function unplace() unplaceAuto(match) end
+
+    local ok, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = ArenaLobby.PlayerArray(match),
+    })
+    if not ok then
+        unplace()
+        return false, reason
+    end
+
+    if not arenaIsFree(match) then
+        unplace()
+        return false, 'error.arena_in_use'
+    end
+
+    local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
+    match.state = 'countdown'
+
+    match.countdownToken = (Arena.ToInt(match.countdownToken) or 0) + 1
+    local token = match.countdownToken
+    match.startsAt = os.time() + countdown + math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
+    ArenaLobby.Broadcast()
+
+    CreateThread(function()
+        local remaining = countdown
+        while remaining > 0 do
+            local current = ArenaLobby.Get(matchId)
+
+            -- THE TOKEN IS ASKED EVERY TICK, NOT ONLY AT THE END.
+            --
+            -- THE DEFECT: inside the loop this asked only whether the state
+            -- still read 'countdown', and that name comes back the moment the
+            -- host starts again. Hold the countdown and re-Ready inside one
+            -- second and the first thread saw 'countdown', decided it was its
+            -- own, and carried on -- so one host's two clicks left two threads
+            -- counting one lobby down. They push the client a countdown each
+            -- (the number goes twice as fast), and either one reaching a
+            -- CanStartMatch refusal puts the state back to 'lobby' and tells
+            -- everybody the start was called off -- cancelling the OTHER
+            -- thread's live countdown out from under it.
+            --
+            -- `countdownToken` was already written for exactly this and was
+            -- only read after the loop had finished, by which point the damage
+            -- above has been done. DO NOT move it back.
+            if not current or current.state ~= 'countdown'
+                or current.countdownToken ~= token
+            then
+                return
+            end
+
+            local stillOk, why = Arena.CanStartMatch({
+                arenaKey = current.arenaKey,
+                modeKey = current.modeKey,
+                players = ArenaLobby.PlayerArray(current),
+            })
+            if not stillOk then
+                current.state = 'lobby'
+                current.startsAt = nil
+                -- THE THIRD EXIT. It is lexically inside Begin and still did
+                -- not put anybody back -- see unplaceAuto.
+                unplaceAuto(current)
+                for _, player in ipairs(ArenaLobby.PlayerArray(current)) do
+                    ArenaNotifyKey(player.src, why or 'notify.start_cancelled', 'warning')
+                end
+                ArenaLobby.Broadcast()
+                return
+            end
+
+            pushToMatch(current, 'crimson_arena:client:countdown', {
+                seconds = remaining,
+                label = locale('match.countdown_label'),
+            })
+
+            Wait(1000)
+            remaining = remaining - 1
+        end
+
+        local current = ArenaLobby.Get(matchId)
+        if not current or current.state ~= 'countdown' or current.countdownToken ~= token then
+            return
+        end
+
+        local started, refusal = ArenaMatch.Start(matchId)
+        if not started and Arena.IsKey(refusal) then
+            local failed = ArenaLobby.Get(matchId)
+            for _, player in ipairs(failed and ArenaLobby.PlayerArray(failed) or {}) do
+                ArenaNotifyKey(player.src, refusal,
+                    player.src == (failed and failed.hostSource) and 'error' or 'warning')
+            end
+        end
+    end)
+
+    return true, nil
+end
+
+function ArenaMatch.Start(matchId)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false, 'error.match_not_found' end
+    if match.state ~= 'lobby' and match.state ~= 'countdown' then
+        return false, 'error.match_already_started'
+    end
+
+    local players = ArenaLobby.PlayerArray(match)
+    local ok, reason = Arena.CanStartMatch({
+        arenaKey = match.arenaKey,
+        modeKey = match.modeKey,
+        players = players,
+    })
+    if ok and not ArenaHoursOpen() then
+        ok, reason = false, 'error.arena_shut'
+    end
+
+    if ok and not arenaIsFree(match) then
+        ok, reason = false, 'error.arena_in_use'
+    end
+
+    if not ok then
+        match.state = 'lobby'
+        match.startsAt = nil
+
+        -- THE FOURTH EXIT, and the one that hurts most: it also clears every
+        -- Ready, so the lobby it hands back is both mis-sided AND unreadied
+        -- -- which is exactly the state the idle sweep closes. See
+        -- unplaceAuto.
+        unplaceAuto(match)
+
+        for _, player in pairs(match.players) do player.ready = false end
+
+        ArenaLobby.Broadcast()
+        return false, reason
+    end
+
+    -- AND THE ROUND IS HAPPENING, so there is nothing left to put back. From
+    -- here the roster is teleported in; a later hold must not strip sides off
+    -- fighters who are standing in the arena.
+    match.autoPlaced = nil
+
+    local arena = Arena.GetArenaByKey(match.arenaKey)
+    local freeze = math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
+    local lives = math.max(1, Arena.ToInt(match.lives) or 1)
+
+    match.state = 'countdown'
+    match.winners = nil
+    match.payouts = nil
+
+    match.ladder = nil
+
+    -- AND THE BLADE THAT WAS CHOSEN AGAINST IT. bladeOf caches its answer on
+    -- the match, and the whole point of that answer is "a weapon THIS
+    -- ROUND'S ladder did not draw" -- so a blade kept across a redraw is
+    -- chosen against a ladder that no longer exists. Round two can then draw
+    -- the very weapon the cache is still handing out, and SwapWeapon sweeps
+    -- every drawn rung off a climber on each tier change: the blade is
+    -- deleted by the first promotion, silently, for that round only.
+    --
+    -- MEASURED over 200 seeds on the shipped config: 14 second rounds drew a
+    -- ladder containing the blade round one had chosen. It also latches the
+    -- other way -- a round with no usable blade left the whole lobby without
+    -- one for every round after it.
+    --
+    -- `false` IS A REAL ANSWER HERE, not absence: bladeOf writes it to mean
+    -- "asked and there is none", so nil is the only value that means "not
+    -- asked yet". DO NOT write `false`.
+    match.blade = nil
+
+    -- Last round's leavers must not score for this one, nor be recorded
+    -- under its verdict: ArenaLobby.Leave keeps a row that could not count
+    -- yet for RecordMatch to decide, and the verdict it waits for is the
+    -- round they walked out of, not this one.
+    match.departedKills = nil
+    match.departedRows = nil
+
+    match.ladderSpread = #players
+    match.spawnCursor = #players
+
+    match.sizeFactor = Arena.SizeFactor(match.arenaKey, #players)
+
+    match.spawnPlan = Arena.PlanSpawns(match.arenaKey, (function()
+        local roster = {}
+        for _, entry in ipairs(players) do
+            roster[#roster + 1] = { src = entry.src, team = teamOf(match, entry) }
+        end
+        return roster
+    end)(), nil, match.sizeFactor)
+
+    if match.spawnPlan then
+        ArenaDebug('spawns: planned %d placement(s) inside %s\'s spawn area (size factor %.2f).',
+            #players, tostring(match.arenaKey), match.sizeFactor)
+    end
+
+    for index, player in ipairs(players) do
+        player.kills = 0
+        player.deaths = 0
+        player.alive = true
+        player.lives = lives
+        player.placement = nil
+        player.leftArena = nil
+
+        player.tier = nil
+        player.tiersLost = nil
+        player.ladderKills = nil
+        player.ladderVictims = nil
+
+        local loadout, rejected = loadoutFor(match, player)
+        player.loadout = loadout
+        if #rejected > 0 then
+            ArenaDebug('dropped %d loadout entr(ies) for %s on match %s: %s',
+                #rejected, tostring(player.src), tostring(match.id), table.concat(rejected, ', '))
+        end
+
+        sendEnterArena(match, player, index, arena, freeze)
+    end
+
+    match.placed = true
+
+    ArenaLobby.Broadcast()
+
+    CreateThread(function()
+        if freeze > 0 then Wait(freeze * 1000) end
+        goLive(matchId)
+    end)
+
+    return true, nil
+end
+
+--- How long the SERVER'S OWN record of who last hit somebody counts as
+--- evidence about the death that followed it.
+---
+--- FIVE SECONDS, AND IT IS NOT A GUESS ABOUT NETWORKING. It is the longest
+--- gap between the last bullet that landed and the body hitting the floor
+--- that still reads as "that bullet is why they are dead": a bleed-out from
+--- a body shot, or a fighter who took the hit, ran two paces and dropped.
+--- Longer and it starts paying a shooter for somebody else's kill; shorter
+--- and it drops the bleed-outs, which are the deaths a one-shot weapon does
+--- not produce and are therefore not the ones this exists for.
+---
+--- IT IS THE ONLY MEMORY IN THIS FILE THAT CAN HAND OUT A KILL, so it is
+--- read through resolveKiller like every other claim -- same roster, same
+--- teams, same fence, same distance ceiling. Nothing below shortcuts those.
+local DAMAGE_MEMORY_MS = 5000
+
+--- The fighter the SERVER last watched damage this one, or nil.
+---
+--- SWEPT ON EVERY READ, which is `recentSpawns`' pattern a hundred lines
+--- above and is here for the same reason: this table is written once per
+--- bullet by server/dispatch.lua, and a round of two people firing pistols
+--- at each other writes it thousands of times. Nothing else ever comes back
+--- to tidy it, so the read does it -- and because the store hangs off the
+--- match table it goes when the match goes, however the round ended.
+--- @param match table
+--- @param victimSrc integer
+--- @return integer|nil attackerSrc
+local function damagerOf(match, victimSrc)
+    local seen = match.recentDamage
+    if type(seen) ~= 'table' then return nil end
+
+    local now = tonumber(GetGameTimer())
+
+    -- NO CLOCK MEANS NO WITNESS. Everything time-stamped in this file fails
+    -- open the same way -- unwitnessedRun says so in as many words -- and
+    -- failing open here means crediting nobody, which is the behaviour this
+    -- whole block exists to improve on rather than a new harm.
+    if now == nil then return nil end
+
+    for src, row in pairs(seen) do
+        if type(row) ~= 'table' or (now - (tonumber(row.at) or 0)) > DAMAGE_MEMORY_MS then
+            seen[src] = nil
+        end
+    end
+
+    local row = seen[victimSrc]
+    return row and Arena.ToInt(row.by) or nil
+end
+
+--- The fighter the dead sweep's copy of this memory names, or nil.
+---
+--- THE SAME FIVE SECONDS, MEASURED TO WHEN THE BODY FIRST READ DEAD rather
+--- than to whenever the sweep got round to booking it -- which is what the
+--- window above has always said it was: the last bullet that landed and the
+--- body hitting the floor. runServerChecks takes the copy and says why.
+--- @param held table|nil -- { by, at, seenAt }
+--- @return integer|nil attackerSrc
+local function heldWitness(held)
+    if type(held) ~= 'table' then return nil end
+    local at, seenAt = tonumber(held.at), tonumber(held.seenAt)
+    if not at or not seenAt or (seenAt - at) > DAMAGE_MEMORY_MS then return nil end
+    return Arena.ToInt(held.by)
+end
+
+--- Did the server watch THIS fighter land a hit on this victim in the last
+--- five seconds -- whoever landed one after them?
+---
+--- NOT THE SAME QUESTION AS damagerOf, and asking that one instead was a
+--- defect. The row keeps one attacker, overwritten on every hit, because
+--- crediting a kill wants the LAST hand on the victim. Asked "was it this
+--- killer", it answered no for an honest victim whose killer's shot landed
+--- and was followed by anybody else's round into the body. So the row also
+--- keeps, per attacker, the last time each of them landed one.
+---
+--- AND ONCE THE DEAD SWEEP HAS READ THE BODY DEAD, IT ASKS THE SWEEP'S COPY
+--- -- measured to that reading, as heldWitness is. Asked of the live memory
+--- instead, a report arriving seconds after the fall was judged on hits
+--- into the corpse and a clock still running: the victim of a capped
+--- killer the server HAD seen was charged when the report came late, and
+--- spared when it never came at all; and a capped opponent emptying a
+--- magazine into a body that fell on its own made the fall a spared kill.
+--- @param match table
+--- @param victimSrc integer
+--- @param attackerSrc integer
+--- @param held table|nil -- the dead sweep's copy, when there is one
+--- @return boolean
+local function sawLandedBy(match, victimSrc, attackerSrc, held)
+    if type(held) == 'table' then
+        -- AND NEVER A HIT AFTER THE READING, though a copy taken at it cannot
+        -- hold one today: the copy is its own table, not the live one, and
+        -- saying so here keeps a later edit that shares them harmless.
+        local at = type(held.hitters) == 'table' and tonumber(held.hitters[attackerSrc]) or nil
+        local seenAt = tonumber(held.seenAt)
+        return at ~= nil and seenAt ~= nil and at <= seenAt and (seenAt - at) <= DAMAGE_MEMORY_MS
+    end
+
+    local row = type(match.recentDamage) == 'table' and match.recentDamage[victimSrc] or nil
+    if type(row) ~= 'table' or type(row.hitters) ~= 'table' then return false end
+
+    local at, now = tonumber(row.hitters[attackerSrc]), tonumber(GetGameTimer())
+    return at ~= nil and now ~= nil and (now - at) <= DAMAGE_MEMORY_MS
+end
+
+--- The server watched one fighter damage another. Remember it.
+---
+--- CALLED ONCE PER LANDED HIT from server/dispatch.lua's weaponDamageEvent
+--- handler, which is the only place in this resource that sees a bullet at
+--- all. The note at the top of that handler has the round that measured why
+--- this is needed; the short version is that a death reported with "nothing
+--- I could name hit me" is the dying client failing to see the blow, and the
+--- server saw it.
+---
+--- IT STORES A FACT, NOT A VERDICT. Being remembered here credits nobody
+--- with anything: OnDeath runs whatever this names through resolveKiller,
+--- which asks the roster, the teams, the fence and the distance ceiling
+--- exactly as it does for a claim the client sent. The entry is keyed by
+--- VICTIM and names one attacker, so the last person to land a hit is the
+--- only one it can ever CREDIT. Beside it, `hitters` holds when each attacker
+--- last landed one, which is asked only whether a killer the victim named
+--- really hit them -- see sawLandedBy.
+---
+--- KEPT ON THE MATCH TABLE rather than in a module-level store, which is the
+--- rule the roster rows follow and for the same reason: the server recycles
+--- server ids, and a store that outlives the round would let a fresh player
+--- inherit a dead one's witness. This one cannot outlive the match table it
+--- hangs off.
+---
+--- WHAT REACHES IT DEPENDS ON WHAT IT KEEPS. For an attacker who is in no
+--- round, server/dispatch.lua resolves only the players who ARE in one --
+--- see flaggedOwnerOfNetId there -- so a hit by such an attacker on anybody
+--- else never arrives here. Nothing is lost by that today, because this
+--- keeps a hit only on a fighter standing in a live round, and every one of
+--- them is flagged. Teach it to keep a hit it refuses below and read that
+--- function first.
+--- @param victimSrc any
+--- @param attackerSrc any
+--- @return boolean remembered
+function ArenaMatch.RememberDamage(victimSrc, attackerSrc)
+    local victim = Arena.ToInt(victimSrc)
+    local attacker = Arena.ToInt(attackerSrc)
+    if not victim or not attacker then return false end
+    if victim <= 0 or attacker <= 0 or victim == attacker then return false end
+
+    local at = tonumber(GetGameTimer())
+    if at == nil then return false end
+
+    local match = ArenaLobby.GetByPlayer(victim)
+    if not match or match.state ~= 'live' then return false end
+
+    -- BOTH OF THEM IN THIS ROUND. dispatch.lua has already established it --
+    -- mayDamage refuses two people in different matches -- and it is asked
+    -- again here because this function is public and the answer must not
+    -- depend on who called it.
+    if type(match.players) ~= 'table' then return false end
+    if match.players[victim] == nil or match.players[attacker] == nil then return false end
+
+    -- A CORPSE IS NOT A VICTIM. The rest of a burst lands on the body, or
+    -- somebody keeps firing into it, and every one of those hits used to be
+    -- written down AFTER the death had already spent the entry. The last of
+    -- them then outlived the respawn, so a fighter who stepped off an edge
+    -- early in their next life could be paid out to whoever had been
+    -- shooting their corpse. Reproduced by the audit of this code. The
+    -- killing hit is always recorded before the death is booked, so refusing
+    -- hits on the dead costs no real kill.
+    --
+    -- NOT YET BOOKED IS NOT DEAD HERE: a body the dead sweep is still
+    -- counting reads alive, so hits on it ARE written. The copy the sweep
+    -- took at the first dead reading is what keeps them from being paid.
+    if match.players[victim].alive ~= true then return false end
+
+    match.recentDamage = match.recentDamage or {}
+    local row = match.recentDamage[victim]
+    if type(row) ~= 'table' or type(row.hitters) ~= 'table' then
+        row = { hitters = {} }
+        match.recentDamage[victim] = row
+    end
+    row.by, row.at = attacker, at
+    row.hitters[attacker] = at
+    return true
+end
+
+--- What the victim's client said killed them, for the KILL line: the
+--- catalogue label, fists, or the raw hash when it names nothing this arena
+--- lists. It is the CLIENT'S word and is printed as such -- it decides nothing
+--- here that it did not already decide below.
+--- @param causeHash integer|nil
+--- @return string
+local function reportedWeapon(causeHash)
+    if causeHash == nil then return 'nothing' end
+    local weapon = Arena.WeaponByHash(causeHash)
+    if weapon then return ('"%s"'):format(ArenaLogText(weapon.label or weapon.key)) end
+    if Arena.IsUnarmedHash(causeHash) then return 'fists' end
+    return ('cause hash %s, not a weapon this arena lists'):format(tostring(Arena.ToInt(causeHash)))
+end
+
+--- The tier a fighter's SCORE has earned, out of `height` -- the reading the
+--- board and decideOnLadder both use, so the log cannot disagree with either
+--- when an inventory swap was refused and the weapon in hand lags behind.
+local function earnedTier(player, height)
+    return (tierForScore(tierScore(player), height))
+end
+
+local KILL_LINE = 'KILL: "%s" (%s %s) killed "%s" (%s %s) in match %s [%s] -- %s. The victim reports %s. %s'
+
+--- ONE LINE PER CREDITED KILL, naming both people.
+---
+--- THE OWNER'S ASK: "so when someone kills ... it actually logs who killed
+--- them". Before this nothing did. A credited kill added one to a count and
+--- one to another, and every record downstream -- the board, the results,
+--- the leaderboard, the webhook -- kept counts and nothing else. The only
+--- lines that ever named two people were a debug line and TEAMKILL.
+---
+--- ALWAYS ON, like TEAMKILL and UNATTRIBUTED, because it is a record and not
+--- a diagnostic: turning Config.Debug off to quieten a busy console must not
+--- take the answer to "who killed me" with it. One line per kill, and the
+--- 'KILL:' prefix keeps it apart from TEAMKILL:, UNATTRIBUTED: and DEATH:.
+---
+--- EVERY NAME THROUGH ArenaLogText, and nothing a player chose ever reaches
+--- the format string itself.
+--- @param match table
+--- @param killer table -- the credited killer's roster row
+--- @param victim table -- the victim's roster row
+--- @param kill table -- { via, causeHash, killedFrom, killerTierWas, victimTierWas, tierCredited, spared, remaining }
+local function logKill(match, killer, victim, kill)
+    local ladder = ladderOf(match)
+    local outcome
+
+    if #ladder > 0 then
+        local height = #ladder
+        local gained
+        if kill.tierCredited == false then
+            gained = ('the killer stays on tier %d/%d -- this victim has already paid out their tiers')
+                :format(kill.killerTierWas or 0, height)
+        else
+            gained = ('the killer goes from tier %d to %d/%d%s'):format(kill.killerTierWas or 0,
+                earnedTier(killer, height), height, topped(killer, height) and ', LADDER TOPPED' or '')
+        end
+        local now = earnedTier(victim, height)
+        local lost
+        if kill.spared then
+            lost = ('the victim keeps tier %d/%d, spared by a gun kill'):format(kill.victimTierWas or 0, height)
+        elseif now == kill.victimTierWas and now <= 1 then
+            lost = ('the victim stays on tier %d/%d, the bottom of the ladder'):format(now, height)
+        elseif now == kill.victimTierWas and now == height then
+            -- A SCORE PAST THE TOP RUNG. tierForScore gives the top tier for
+            -- any score at or above the height, so a fighter who had topped
+            -- the ladder, and dies before the sweep ends the round, loses a
+            -- point and not the rung -- which this line used to call the
+            -- bottom of the ladder.
+            lost = ('the victim stays on tier %d/%d -- they had topped the ladder, and the point '
+                .. 'this death cost them does not move them off the top rung'):format(now, height)
+        elseif now == kill.victimTierWas then
+            lost = ('the victim stays on tier %d/%d'):format(now, height)
+        else
+            lost = ('the victim goes from tier %d to %d/%d'):format(kill.victimTierWas or 0, now, height)
+        end
+        local held = kill.killedFrom
+            and ('"%s"'):format(ArenaLogText(kill.killedFrom.label or kill.killedFrom.key)) or 'nothing known'
+        outcome = ('The killer was holding %s: %s; %s.'):format(held, gained, lost)
+    else
+        local fate
+        if not Arena.WinConditionSpendsLives(match.winCondition) then
+            fate = 'respawns'
+        elseif (kill.remaining or 0) > 0 then
+            fate = ('has %d li%s left'):format(kill.remaining, kill.remaining == 1 and 'fe' or 'ves')
+        else
+            fate = 'is eliminated'
+        end
+        outcome = ('The killer is on %d kill(s); the victim %s.'):format(Arena.ToInt(killer.kills) or 0, fate)
+    end
+
+    if Arena.ModeUsesTeams(match.modeKey) and Arena.IsKey(killer.team) and killer.team == victim.team then
+        outcome = outcome .. ' They are team-mates: friendly fire is on.'
+    end
+
+    ArenaLog(KILL_LINE,
+        ArenaLogText(killer.name or ArenaPlayerName(killer.src)), tostring(killer.src),
+        ArenaLogText(killer.citizenid, 16),
+        ArenaLogText(victim.name or ArenaPlayerName(victim.src)), tostring(victim.src),
+        ArenaLogText(victim.citizenid, 16),
+        tostring(match.id), ArenaLogText(match.modeKey, 24), kill.via, reportedWeapon(kill.causeHash), outcome)
+end
+
+--- One player died. Scores it, and spends a life -- eliminating them when
+--- they have none left -- in every mode EXCEPT a ladder, where a death costs
+--- a tier instead and nobody is ever eliminated.
+---
+--- Deliberately does NOT decide the match: the sweep does that a tick later,
+--- by which point everybody who died in this tick has been counted.
+--- @param src integer -- the reporter; the only identity trusted here
+--- @param killerSrc any -- claimed by the client, verified below
+--- @param serverSaw boolean? -- true ONLY from this file's own dead sweep
+--- @param why any -- why the reporter named nobody; A LOG LINE AND NOTHING ELSE
+--- @return boolean counted
+--- @param causeHash integer? -- the weapon hash the dying client reported
+--- @param witnessed table? -- the dead sweep's copy of the damage memory,
+--- taken when the body first read dead; nil from every other caller
+function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed)
+    local id = Arena.ToInt(src)
+    if not id then return false end
+
+    local match = ArenaLobby.GetByPlayer(id)
+    if not match or match.state ~= 'live' then return false end
+
+    local player = match.players[id]
+    if not player or player.alive ~= true then return false end
+
+    player.alive = false
+    player.deaths = (Arena.ToInt(player.deaths) or 0) + 1
+
+    -- THE RUNG THEY FELL ON, for the kills of theirs still in flight.
+    --
+    -- Their own demotion, at the bottom of this function, rewrites `tier`.
+    -- A victim of theirs whose report is read after this one is judged by
+    -- the gun rule further down -- `killedWithAGun`, the one reader of this
+    -- -- and without it that rule could only see the rung their death moved
+    -- them onto. Written by the server from its own row, so it gives a
+    -- client nothing new to name.
+    --
+    -- NEVER CLEARED, AND IT DOES NOT NEED TO BE. It is read only while this
+    -- row is dead, and every death writes it afresh -- so a value from an
+    -- earlier life, or from last round's ladder, can never be the one read.
+    player.rungAtDeath = player.tier
+
+    if type(ArenaCompat) == 'table' and type(ArenaCompat.WarnLateStartOnce) == 'function' then
+        ArenaCompat.WarnLateStartOnce()
+    end
+
+    local playingLadder = #ladderOf(match) > 0
+
+    local killer, namedAFighter, refused = resolveKiller(match, player, killerSrc)
+
+    -- AND IF THE CLIENT NAMED NOBODY, ASK WHAT THE SERVER SAW.
+    --
+    -- THE REPORT: "as its not giving points for a kill". THE MEASUREMENT: two
+    -- deaths inside the arena in one gun game round, both logged by this
+    -- file's own UNATTRIBUTED line, both with the client's reason code 1 --
+    -- nothing it could name hit them. Not a fall and not the boundary: the
+    -- bodies were inside the fence, and somebody was standing in front of
+    -- them shooting.
+    --
+    -- WHY THE CLIENT CAN MISS A BLOW IT DIED TO. client/match.lua asks four
+    -- readings in turn and every one of them is a question about ENTITIES
+    -- that client currently holds -- the damage event's attacker, the fatal
+    -- blow it remembers, GET_PED_SOURCE_OF_DEATH, the last thing that hurt
+    -- it. All four answer nothing when no CEventNetworkEntityDamage reached
+    -- that client for the killing shot and the engine had not finished
+    -- filling the death in. Reason code 1 is precisely "all four were
+    -- empty". Nothing the client can be taught fixes that, because the
+    -- client is the one that did not see it.
+    --
+    -- THE SERVER SAW IT. weaponDamageEvent arrives on this side for every
+    -- shot that lands, carrying the shooter as the event's own sender --
+    -- which is an identity no client chooses -- and server/dispatch.lua
+    -- resolves the victims to server ids already. RememberDamage above
+    -- writes that down; this reads it.
+    --
+    -- IT IS STRICTLY A SECOND OPINION AND NEVER AN OVERRIDE. It is asked
+    -- only when the client named NOBODY ON THE ROSTER -- no id, nought, its
+    -- own id, or somebody who is not in this round at all. A client that
+    -- named a fighter in this round gets the answer it always got, refusal
+    -- included, and what the memory names goes through resolveKiller, so the
+    -- fence, the distance ceiling, friendly fire, elimination and "are they
+    -- even in this round" all still apply.
+    --
+    -- "REFUSAL INCLUDED" IS WHAT THE claimedRoster TEST BELOW IS FOR, and
+    -- the first version of this block did not have it. It asked only whether
+    -- the claim had been ACCEPTED. A claim naming a TEAM-MATE is refused by
+    -- rosterKiller, so it read as "nobody named" and fell through to the
+    -- memory: an enemy who had landed any hit in the last five seconds was
+    -- paid for the team-kill, and the TEAMKILL line further down -- the one
+    -- thing that tells an operator their friendly-fire setting is being
+    -- tested -- was silently skipped. Reproduced by the audit of this code.
+    --
+    -- WHAT THIS CAN AND CANNOT BE TRUSTED FOR. The event's SENDER is an
+    -- identity no client chooses, but what the packet says it hit is the
+    -- shooter's own client talking. A modified client can therefore plant an
+    -- entry against an opponent without landing a real bullet, and take the
+    -- credit for a death it did not cause -- a drowning, a fall inside the
+    -- fence, the victim's own grenade -- if that death comes inside the five
+    -- seconds and names nobody. The same roster, team, fence, distance and
+    -- alive checks bound it, the newest entry is the one that counts, and it
+    -- earns nothing a real shot would not. It is the same trust this file
+    -- already extends to a dying client's own claim, and no stronger.
+    local claimed = Arena.ToInt(killerSrc)
+    local claimedRoster = claimed ~= nil and claimed ~= id and match.players[claimed] ~= nil
+
+    -- THE DEAD SWEEP'S COPY, WHEN THERE IS ONE: handed in by its own booking,
+    -- or left by a sweep that had already read this body dead by the time a
+    -- report arrived. Either way the body was seen down at `seenAt`, so a hit
+    -- after it is a shot into a corpse -- and a late report, read against the
+    -- live memory, handed the kill to whoever fired into the body while the
+    -- report was on its way, when the copy named the fighter who dropped
+    -- them. Measured: 1 hits, the body reads dead, 3 shoots it, the report
+    -- names nobody -- paid to 3.
+    local held = witnessed
+    if type(held) ~= 'table' and type(match.deadWitness) == 'table' then
+        held = match.deadWitness[id]
+    end
+
+    local byWitness = false
+    if not killer and namedAFighter ~= true and not claimedRoster then
+        -- A DEATH THE DEAD SWEEP HAS SEEN READS ITS COPY AND NOTHING ELSE:
+        -- the last hit before the body first read dead, not whatever the
+        -- memory holds by the time the booking came round. Falling back to
+        -- the memory here paid whoever shot the corpse during the count
+        -- whenever the copy was empty or too old -- a fall, a drowning, a
+        -- grenade of their own. runServerChecks says why the copy exists.
+        local witness
+        if type(held) == 'table' then
+            witness = heldWitness(held)
+        else
+            witness = damagerOf(match, id)
+        end
+        if witness then
+            local seen, sawAFighter = resolveKiller(match, player, witness)
+            if seen then
+                killer, namedAFighter = seen, sawAFighter
+                byWitness = true
+                -- A DEATH THE SWEEP BOOKED HAS NO CLIENT REASON AT ALL, and
+                -- must not be put down to an older client that sent one.
+                ArenaDebug('kill credited from the server\'s own record on match %s: %s reported '
+                    .. 'nobody, and the last hit this server watched land on them was %s. %s',
+                    tostring(match.id), tostring(id), tostring(witness),
+                    serverSaw == true
+                        and 'Their client never reported the death; the server\'s own dead sweep booked it.'
+                        or unattributedReason(why, claimed, refused))
+            end
+        end
+    end
+
+    -- WHETHER THE SERVER SAW THIS KILLER'S SHOT LAND, for the gun game's
+    -- sparing below -- asked before the spend, which would answer no, and of
+    -- the sweep's copy when there is one. A killer the memory itself
+    -- supplied was seen by definition.
+    local killerSeen = playingLadder and killer ~= nil
+        and (byWitness or sawLandedBy(match, id, killer.src, held))
+
+    -- SPENT, WHOEVER IT NAMED OR DID NOT. One landed hit is evidence about
+    -- ONE death, and leaving it behind would let the next death inside the
+    -- window be credited to the same shooter a second time -- a fighter who
+    -- traded a hit and then fell off the skydome would pay out twice.
+    if type(match.recentDamage) == 'table' then match.recentDamage[id] = nil end
+
+    -- AND SO IS THE DEAD SWEEP'S COPY, whichever path booked the death. A
+    -- respawn can beat the sweep's next pass, and a copy that outlived its
+    -- death would pay that shooter again for the next one.
+    if type(match.deadWitness) == 'table' then match.deadWitness[id] = nil end
+
+    -- WHAT THE KILLER WAS STANDING ON, READ BEFORE THEY MOVE OFF IT.
+    --
+    -- THE PROMOTION IS TWELVE LINES BELOW AND IT REWRITES killer.tier. Read
+    -- this in the demotion block at the bottom of the function instead and
+    -- you get the rung they moved ONTO, not the one they killed FROM -- and
+    -- on the shipped ladder, where melee is rung 1 and only rung 1, that
+    -- off-by-one is the whole difference between "a melee kill demotes" and
+    -- "nothing ever demotes". Every melee killer is promoted onto a sidearm
+    -- before the question is asked.
+    --
+    -- THE RAW RUNG, NOT THE ISSUED ENTRY, and the failure mode is the
+    -- opposite of the obvious one. An earlier version of this note said the
+    -- issued entry would make every kill read as a GUN kill. It is the other
+    -- way round, and it was measured: Arena.ResolveWeaponEntry drops
+    -- `category` AND rewrites `ammo` from a table to a number, so
+    -- Arena.IsMeleeWeapon's `type(ammo) == 'table'` guard fails, its maximum
+    -- falls to 0, and `maximum <= 1` answers TRUE. An issued PISTOL reads as
+    -- melee. Fed the issued entry this rule would spare NOTHING and look
+    -- permanently switched on. `ladderOf` holds the config.weapons.lua
+    -- tables themselves, which is what Arena.IsMeleeWeapon is written
+    -- against.
+    --
+    -- A DEATH WITH NO KILLER LEAVES THIS FALSE, and that is the whole shape
+    -- of the rule below: nothing was positively seen, so nothing is spared.
+    local ladder = ladderOf(match)
+    local killedWithAGun = false
+    -- WHERE BOTH STOOD BEFORE THIS DEATH MOVED ANYTHING, for the KILL line.
+    local killerTierWas = (playingLadder and killer ~= nil) and earnedTier(killer, #ladder) or nil
+    local victimTierWas = playingLadder and earnedTier(player, #ladder) or nil
+    local killedFrom, tierCredited = nil, nil
+    if playingLadder and killer ~= nil then
+        local rung = ladder[Arena.ClampInt(killer.tier, 1, #ladder) or 1]
+        killedFrom = rung
+        killedWithAGun = rung ~= nil and Arena.IsMeleeWeapon(rung) ~= true
+
+        -- AND A KILLER WHO IS ALREADY A CORPSE IS ALSO READ OFF THE RUNG THEY
+        -- DIED ON, because their own death can move them off it before this
+        -- report is read, and the note above only covers the promotion.
+        --
+        -- THE DEFECT, MEASURED: 1 on the pistol rung shoots 2 while 2 knifes
+        -- 1. If 1's report lands first, 1's knife death drops them to the
+        -- melee rung -- and 2's report, read a moment later, found a MELEE
+        -- killer and cost 2 a tier for being shot. Land the reports the other
+        -- way round and 2 kept it. The same happens when 1 is knifed by a
+        -- third fighter while their bullet is still on its way. Which packet
+        -- the server read first decided the ladder.
+        --
+        -- IT MAY ONLY SPARE, NEVER CHARGE. It is asked only when the rung
+        -- above said melee, so a victim the rung test already spares is
+        -- spared exactly as before; and the cause below still revokes it, so
+        -- a victim who reports a blade still pays. `rungAtDeath` is the
+        -- server's own record of a rung the killer really held, and the
+        -- killer still takes the kill and the tier for it.
+        if not killedWithAGun and killer.alive ~= true and killer.rungAtDeath ~= nil then
+            local fell = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1]
+            killedWithAGun = fell ~= nil and Arena.IsMeleeWeapon(fell) ~= true
+        end
+
+        -- AND THE KILL LINE NAMES THE RUNG A DEAD KILLER FIRED FROM, however
+        -- their own death moved them -- which is a record, not the rule
+        -- above, so it is not limited to the melee case the rule is. It
+        -- printed 'holding "Knife" ... spared by a gun kill' in the trade,
+        -- and 'holding "Pistol"' for a Combat Pistol kill whose shooter a
+        -- knife had dropped one gun rung.
+        if killer.alive ~= true and killer.rungAtDeath ~= nil then
+            killedFrom = ladder[Arena.ClampInt(killer.rungAtDeath, 1, #ladder) or 1] or killedFrom
+        end
+
+        -- AND THE BLADE IN THEIR OTHER HAND, WHICH THE RUNG CANNOT SEE.
+        --
+        -- THESE TWO FEATURES CANCELLED EACH OTHER OUT. `permanentBlade` hands
+        -- every climber a blade at EVERY rung, so a melee kill is available
+        -- all the way up the ladder -- and the test above asks only what the
+        -- killer's RUNG is. A fighter standing on rung 4 who knifes somebody
+        -- was read as "killed with a gun" and the victim was SPARED. MEASURED
+        -- exactly that way: killer on rung 4, blade in hand, victim's rung
+        -- unchanged. Melee demoted nobody above rung 1, which is the whole of
+        -- what the rule was for.
+        --
+        -- THE CLIENT'S REPORT MAY ONLY EVER MAKE THIS WORSE FOR THE CLIENT
+        -- THAT SENT IT, and that is what makes trusting it here safe when
+        -- trusting it anywhere else would not be. The dying player reports
+        -- what killed them; naming a blade REVOKES a sparing and costs them a
+        -- tier. A client that lies, or says nothing at all, falls straight
+        -- back to the rung test above -- the server-only rule, which is the
+        -- safe floor and cannot be dodged. So the worst a cheat achieves is
+        -- exactly what it had before this line existed, and an honest client
+        -- gets the rule the operator actually asked for.
+        --
+        -- A CAUSE THE CATALOGUE DOES NOT KNOW CHANGES NOTHING. A fall, a
+        -- drowning, a car and every switched-off weapon resolve to nil, and nil
+        -- must not read as melee -- see Arena.WeaponByHash, which says so.
+        -- Dying to the map is not dying to a blade.
+        --
+        -- FISTS ARE THE ONE NIL THAT IS STILL MELEE. WEAPON_UNARMED can never
+        -- be in the catalogue -- it is not a weapon anybody picks -- so it
+        -- resolved to nil beside the falls, and that let a fighter beaten to
+        -- death keep the tier the same kill with a knife would have cost. A
+        -- punch is melee by any reading of the rule, and unlike a fall it
+        -- reports a hash of its own, so it is asked for by name.
+        if killedWithAGun then
+            local used = Arena.WeaponByHash(causeHash)
+            if used ~= nil and Arena.IsMeleeWeapon(used) then killedWithAGun = false end
+            if Arena.IsUnarmedHash(causeHash) then killedWithAGun = false end
+        end
+    end
+
+    -- WHETHER THE TEAMKILL LINE BELOW HAS ALREADY SPOKEN FOR THIS DEATH, so
+    -- the refused-claim line further down does not say the same thing twice.
+    local announcedTeamKill = false
+
+    if killer then
+        killer.kills = (Arena.ToInt(killer.kills) or 0) + 1
+
+        if playingLadder then
+            tierCredited = creditsTier(match, killer, player)
+            if tierCredited then
+                killer.ladderKills = (Arena.ToInt(killer.ladderKills) or 0) + 1
+                settleTier(match, killer, 'notify.gungame_promoted')
+                payKillReward(match, killer)
+            else
+                ArenaNotifyKey(killer.src, 'notify.gungame_no_credit', 'warning', player.name)
+            end
+        else
+            payKillAmmo(match, killer)
+        end
+    elseif killerSrc ~= nil then
+        ArenaDebug('unverified kill claim on match %s: %s says %s killed them',
+            tostring(match.id), tostring(id), tostring(killerSrc))
+
+        -- AND THE ONE REFUSAL WORTH SAYING OUT LOUD: A TEAM-MATE.
+        --
+        -- resolveKiller refuses this claim through Arena.CanDamage, so the
+        -- killer is credited nothing and the line above was all that was ever
+        -- said about it. That is the right answer for the SCOREBOARD and the
+        -- wrong one for the operator: a team-mate landing a killing blow at
+        -- all is the thing they need to know about, and that line does not
+        -- even name what did it.
+        --
+        -- ArenaLog, NOT ArenaDebug, and the difference is the whole point.
+        -- Config.Debug ships ON -- so both would print on a stock server and
+        -- a test cannot tell them apart by watching the console -- but it is
+        -- a switch, and the operator most likely to have turned the noise off
+        -- is the one running a busy server where this is happening. A hole
+        -- the server cannot close must not be reported through a tap the
+        -- operator can. The spec pins this with Config.Debug = false.
+        --
+        -- THE SERVER REFUSES GUNFIRE BETWEEN TEAM-MATES AND CANNOT REFUSE
+        -- MELEE. server/dispatch.lua cancels weaponDamageEvent, which the
+        -- engine does not reliably raise for a blade or a fist -- see the
+        -- note in client/match.lua where the client-side hold was removed,
+        -- which says this in as many words. So a bottle to a team-mate's
+        -- head lands, and until the cause was reported there was nothing
+        -- anywhere that could even say so.
+        --
+        -- NAMES THE WEAPON WHEN IT CAN AND THE HASH WHEN IT CANNOT. A cause
+        -- this catalogue does not carry -- a fall, a car, fire, a weapon the
+        -- operator switched off -- is printed as the raw number rather than
+        -- guessed at.
+        -- EVERY OTHER REASON rosterKiller REFUSES IS EXCLUDED FIRST, or this
+        -- line blames friendly fire for refusals that had nothing to do with
+        -- it. rosterKiller turns a claim down for four reasons: the claim
+        -- names the victim themselves, it names nobody on the roster, it
+        -- names a team-mate with friendly fire off, or it names somebody who
+        -- is eliminated or has left the arena. Only the third is a team-kill.
+        --
+        -- THE SELF-NAMED CASE WAS REACHING IT AND PRINTING NONSENSE:
+        -- "Fighter 1 was killed by their own team-mate Fighter 1". Measured.
+        -- rosterKiller has a self-guard and this block re-derived the accused
+        -- without one, so a client naming itself produced an accusation
+        -- against the person it was about.
+        -- THIS NOTE USED TO SAY TWO OF THE GUARDS BELOW COULD NOT BE MADE TO
+        -- FAIL. IT WAS WRONG, AND WRONG IN THE DIRECTION THAT COSTS SOMETHING:
+        -- it told the next engineer that the same-side guard and the
+        -- friendly-fire guard were kept out of tidiness, when each is the
+        -- only thing standing between a refusal and a false accusation in the
+        -- console.
+        --
+        -- IT ENUMERATED THE WRONG FUNCTION. The four reasons listed above are
+        -- rosterKiller's, but `killer` up in OnDeath comes from resolveKiller,
+        -- which refuses on TWO MORE grounds of its own AFTER rosterKiller has
+        -- accepted: the kill-distance ceiling and the out-of-fence check.
+        -- Both refuse claims that name a live, present fighter -- an enemy, or
+        -- a team-mate on a server whose operator turned friendly fire ON --
+        -- and neither has anything to do with friendly fire.
+        --
+        -- SO BOTH GUARDS ARE REACHABLE, AND THERE ARE TESTS THAT FAIL WITHOUT
+        -- THEM. BOTH NOW LIVE INSIDE Arena.CanDamage, which the line below
+        -- asks instead of carrying its own copy. Measured: have the rule
+        -- ignore friendly fire and a distance-refused team-mate kill is
+        -- announced as a team-kill on a server whose friendly fire is ON;
+        -- have it ignore the sides and a distance-refused ENEMY is announced
+        -- as the victim's own team-mate. One failing test each in
+        -- tests/gungame_spec.lua, named for what they print.
+        --
+        -- ONE RULE, ASKED OF THE ONE PLACE THAT OWNS IT. The copy that stood
+        -- here -- ModeUsesTeams, IsKey on the accused's side, the same side,
+        -- `friendlyFire ~= true` -- was CanDamage's refusal less its IsKey on
+        -- the victim's side, which "the same side as a real key" already
+        -- implies. Both are pure reads of the roster and Config, asked in the
+        -- same order, so nothing but the number of copies changed:
+        -- tests/teamkillrule_spec.lua drives the old copy against this line
+        -- over every mode, team value and friendly-fire value and they agree.
+        -- What the copy cost was the second edit a per-mode friendly-fire
+        -- switch would have needed, and every copy of this rule in this file
+        -- has drifted. ACCUSED FIRST, VICTIM SECOND, which is the order
+        -- CanDamage reads -- symmetric today, but a question asked backwards
+        -- is a defect waiting for the rule to stop being so.
+        --
+        -- NOT rosterKiller's REFUSAL REASON, which looks like the same answer
+        -- and is not. rosterKiller asks CanDamage BEFORE it asks whether the
+        -- accused is still in the round, so a team-mate who is eliminated or
+        -- has been sent home is refused as 'team' -- and this line says
+        -- nothing about them on purpose. That is why leftArena and
+        -- elimination are still asked here, and the self-guard with them.
+        --
+        -- takeWeaponBack carries a note of the same shape about the same kind
+        -- of guard. Given this one was wrong, do not trust that one either
+        -- until somebody has tried to break it the way these two were broken.
+        local accused = killerSrc ~= id and match.players[killerSrc] or nil
+        if accused ~= nil and not Arena.CanDamage(match.modeKey, accused.team, player.team)
+            and accused.leftArena ~= true and not Arena.IsEliminated(accused)
+        then
+            announcedTeamKill = true
+
+            -- FISTS BY NAME RATHER THAN BY NUMBER. They are not in the
+            -- catalogue and never will be, so WeaponByHash answers nil and the
+            -- line below would otherwise report the most common melee teamkill
+            -- on the server as a bare 'cause hash 2725352035'. An operator
+            -- reading a teamkill log should not have to hash a string to find
+            -- out somebody was punched.
+            local weapon = Arena.WeaponByHash(causeHash)
+            local usedLabel = weapon and weapon.label
+                or (Arena.IsUnarmedHash(causeHash) and 'fists')
+                or ('cause hash ' .. tostring(causeHash))
+            -- NAMES THROUGH THE SCRUBBER, in quotes, like the KILL line: a name
+            -- is written by the player wearing it, and printed raw it could
+            -- start a forged console line of its own.
+            ArenaLog('TEAMKILL: "%s" was killed by their own team-mate "%s" with %s in match %s. '
+                .. 'Friendly fire is off, so the kill was credited to nobody -- but the damage '
+                .. 'landed, which for melee is a hole this server cannot close: the engine does '
+                .. 'not raise weaponDamageEvent for it, so there is nothing to cancel.',
+                ArenaLogText(player.name or id), ArenaLogText(accused.name or killerSrc),
+                ArenaLogText(usedLabel),
+                tostring(match.id))
+        end
+    end
+
+    -- A DEATH THE ROUND HAS NO WITNESS FOR, and it is priced rather than
+    -- refused. See scheduleRespawn's own note for what it costs and why that
+    -- is not a life.
+    --
+    -- NAMING YOURSELF IS NAMING NOBODY. An honest client cannot do it --
+    -- client/match.lua requires `source ~= ped` before it puts an id on the
+    -- wire -- so the only thing that reaches here having named the victim is
+    -- a client picking the one claim resolveKiller was always going to
+    -- refuse. Read as the same press, or the press simply moves.
+    --
+    -- A CLAIM THAT FAILED A POSITIONAL CHECK IS DELIBERATELY NOT THIS. A
+    -- death naming a fighter who was too far away, or who shot from outside
+    -- the boundary, is a claim that failed a check rather than an absence of
+    -- one -- crossfire from outside the arena is exactly that, and it is
+    -- honest, so it is not priced. Being off the ROSTER is the other way
+    -- about and always was: see rosterKiller, which is the one place either
+    -- question is now asked.
+    --
+    -- AND THE SERVER'S OWN SWEEP IS NOT A REPORT AT ALL. It books a death it
+    -- watched for `deadTicks` running against a body it could see, for a
+    -- player whose client sent nothing -- which is the honest failure this
+    -- price must not land on.
+    -- AND NEVER IN A LADDER. There is no free press to price there: the same
+    -- death has already taken a tier off them, which is what a death costs in
+    -- that mode, and withholding the re-arm on top would leave them standing
+    -- in the arena with nothing -- the exact thing the respawn re-arm above
+    -- exists to stop.
+    -- AND ONE OF THEM ON ITS OWN IS NOT THE PRESS. THE REGRESSION: this was
+    -- the whole test, so a skydome fall -- which names nobody, because a fall
+    -- has nobody to name -- was priced exactly like the press, three times in
+    -- one round on the owner's own server. What separates them is the RATE and
+    -- nothing else; see unwitnessedRun and scheduleRespawn's note above.
+    -- "NAMED NOBODY" MEANS THE SAME THING HERE AS IT DOES TO resolveKiller,
+    -- AND NOW IT IS THE SAME CALL. It has been wrong twice, the same way
+    -- both times, because it was written out by hand instead:
+    --
+    -- FIRST it asked only nil-or-self, so a claim of 0, of -1, or of a server
+    -- id that is nobody in the round fell between the two -- refused as a
+    -- kill AND excused the price, with the UNATTRIBUTED line never printed.
+    --
+    -- THEN it grew `match.players[claimed] == nil` and a comment saying "the
+    -- two predicates are one expression now". They were still two, and it was
+    -- still four of rosterKiller's five refusals. A modded client naming a
+    -- live TEAM-MATE -- or a fighter who had left, or one already eliminated
+    -- -- was refused the kill by CanDamage and excused the price by this,
+    -- because a team-mate IS on `match.players`. Measured on the shipped
+    -- config (friendlyFire false, tdm on): fourteen reported deaths in one
+    -- round, every one of them keeping the short wait and a full resupply,
+    -- none of them priced, none of them logged. A free, silent death on
+    -- demand, at whatever rate the client liked.
+    --
+    -- The honest client never sends any of these AT THAT RATE: it sends no
+    -- id at all when it has nobody to name, and client/match.lua will not put
+    -- the victim's own id on the wire. It DOES name a fighter eliminated a
+    -- moment earlier, one who walked out, or a team-mate whose blade landed
+    -- -- once in a while, nowhere near the rate the price is set at, and the
+    -- refused-claim line below (or TEAMKILL above) says which it was. So
+    -- there is one expression, it lives in
+    -- rosterKiller, and this reads the answer resolveKiller already got from
+    -- it rather than asking again. DO NOT write this test out by hand again
+    -- -- that is the whole history of this bug.
+    local nobodyNamed = namedAFighter ~= true
+    local unnamed = serverSaw ~= true
+        and not playingLadder
+        and nobodyNamed
+
+    local unwitnessed = false
+    if unnamed then
+        local inWindow, priced = unwitnessedRun(player)
+        unwitnessed = priced
+
+        if priced then
+            ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait. %s',
+                tostring(id), tostring(match.id), inWindow,
+                UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
+                    * math.max(1, respawnDelaySeconds()),
+                unattributedReason(why, claimed, refused))
+        else
+            ArenaDebug('death named nobody on match %s: %s, %d in the window -- a fall or the boundary, by the rate of it, so full resupply and the normal wait. %s',
+                tostring(match.id), tostring(id), inWindow, unattributedReason(why, claimed, refused))
+        end
+    end
+
+    -- A CLAIM THAT NAMED A REAL FIGHTER AND WAS REFUSED IS REPORTED AS WHAT
+    -- IT IS, and not as the failure the UNATTRIBUTED line below exists for.
+    --
+    -- THE REPORTS: a mutual last-life trade -- the second report names a
+    -- fighter who was eliminated a moment earlier -- a killer who walked out
+    -- before the victim's report landed, and a team-mate's blade. In all
+    -- three the client named its killer, and the operator's only always-on
+    -- line said "nobody named", blamed "an older client" and then "this
+    -- resource", and the victim was told nothing could be pinned on anybody
+    -- and to go and tell the server owner. None of it was true: the client
+    -- did its job, the roster refused the claim on purpose, and the operator
+    -- hunting real missing kills was sent after a fault that was not there.
+    --
+    -- ALWAYS ON, wherever the body fell -- a named claim is worth an
+    -- operator seeing, and a modded client naming a stranger's id lands here
+    -- too. (A refusal for distance or the fence is not one of these: the
+    -- roster accepted that killer, and it stays where it always was.) STILL
+    -- THE SAME PRICE: the gate above reads `nobodyNamed`, which this does not
+    -- touch.
+    -- NO NOTICE TO THE VICTIM, which leaves the once-a-round latch unspent
+    -- for a death that really does go unattributed later in the round. AND
+    -- NOT AFTER A TEAMKILL LINE, which has already said all of this and more.
+    local claimRefused = nobodyNamed and REFUSED_CLAIM[refused] ~= nil
+    if claimRefused and not announcedTeamKill then
+        -- AND BY NAME, cleaned, as the KILL line names people -- looked up
+        -- inside a pcall, because this runs before the respawn below and a
+        -- name is not worth a player.
+        --
+        -- THE ACCUSED ONLY OFF THIS ROUND'S ROSTER. An id that is not on it
+        -- was asked of the framework, which answers for whoever holds that
+        -- id NOW: a client naming the id of somebody who was never in the
+        -- round wrote an innocent player's name into the always-on record as
+        -- the accused. Measured, with player 3 online and nowhere near the
+        -- arena. The server cannot tell a leaver from a stranger by the id
+        -- alone, so an id off the roster is printed as a number and nothing
+        -- more.
+        local okNames, names = pcall(function()
+            local accusedRow = match.players[claimed]
+            local accused = accusedRow
+                and ('"%s"'):format(ArenaLogText(accusedRow.name or ArenaPlayerName(claimed)))
+                or ('nobody on the roster (id %s is not looked up: it may be somebody else\'s by now)')
+                    :format(tostring(claimed))
+            return ('"%s" and %s'):format(ArenaLogText(player.name or ArenaPlayerName(id)), accused)
+        end)
+        ArenaLog('KILL NOT CREDITED: %s died in match %s naming %s as their killer, who %s. The roster '
+            .. 'refused the claim, so nobody was credited, no kill ammo was paid and the score did not '
+            .. 'move. The client did name somebody -- this is the rule working, not a kill the '
+            .. 'server failed to see. By name: %s.',
+            tostring(id), tostring(match.id), tostring(claimed), REFUSED_CLAIM[refused],
+            okNames and names or 'not available')
+    end
+
+    -- AND SAY SO WHERE THE OPERATOR WILL SEE IT. Everything above prices the
+    -- press; this reports the FAILURE, which is a different event and until
+    -- now had no line of its own anywhere on this side. THE REPORT that
+    -- started it: "i was shot and it said nobody was seen as the killer in my
+    -- f8" -- one debug line, on the victim's screen, naming two raw entity
+    -- handles. The player who actually did the shooting was paid no kill
+    -- ammo, took no tier, and moved the score not at all, and no line in the
+    -- server's own log recorded that any of it had happened.
+    --
+    -- WHERE THEY DIED IS THE CLASSIFIER, AND IT IS NOT AN ACCUSATION.
+    -- metresOutside is refused as EVIDENCE of a press four hundred lines
+    -- above, and this does not reopen that: nothing here books, prices,
+    -- credits or refuses anything. It picks which of two log levels the line
+    -- goes out at, because the two causes want opposite volumes. On the
+    -- skydome the lethal edge IS the boundary, so a fall reads hundreds of
+    -- metres out and is the ORDINARY way to die there -- one line per fall in
+    -- the operator's log is noise that teaches him to stop reading it. A body
+    -- lying well INSIDE the fence with nobody to name is the anomaly he is
+    -- actually hunting, and that one is worth waking him up for.
+    --
+    -- LADDERS TOO, which the pricing above deliberately skips. A gun game
+    -- kill that cannot be attributed costs the killer their promotion, so it
+    -- is at least as worth reporting there as anywhere else.
+    if serverSaw ~= true and nobodyNamed and not claimRefused then
+        local past = metresOutside(match, id)
+        local where = past and past > 0
+            and ('%.0fm outside the fence, which is what a fall or the boundary looks like'):format(past)
+            or 'inside the arena, where something should have been able to kill them'
+
+        if past ~= nil and past > 0 then
+            ArenaDebug('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s',
+                tostring(id), tostring(match.id), where, unattributedReason(why))
+        else
+            ArenaLog('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s Nobody was '
+                .. 'credited, no kill ammo was paid and the score did not move. If this keeps '
+                .. 'happening on ordinary shooting, it is this resource to blame and not the player.',
+                tostring(id), tostring(match.id), where, unattributedReason(why))
+
+            -- ONCE A ROUND AND NOT ONCE A DEATH. A fighter who is being told
+            -- this every five seconds stops reading it, which is the same as
+            -- not having been told. The latch sits on the roster row, which
+            -- ArenaLobby.Join rebuilds per player per match, so it CANNOT be
+            -- inherited through a recycled server id.
+            if player.toldUnattributed ~= true then
+                player.toldUnattributed = true
+                ArenaNotifyKey(id, 'notify.death_unattributed', 'inform')
+            end
+        end
+    end
+
+    -- WHETHER A GUN KILL SPARED THEM, which is the only thing that does.
+    --
+    -- THE BURDEN IS ON THE SPARING, NOT ON THE CHARGE, and that inversion is
+    -- the entire safety of this rule. Written the obvious way round -- "a
+    -- death costs a tier only if the server saw a MELEE killer" -- a client
+    -- that simply stops sending reportDeath is booked by the dead sweep as
+    -- OnDeath(src, nil, true): no killer, so no melee, so no tier. Ladders
+    -- spend no lives, and `serverSaw` is true so the unwitnessed price never
+    -- lands either. Total, permanent, unrate-limited tier immunity, for
+    -- free, on every death, by sending nothing at all.
+    --
+    -- This way round silence is not a dodge: no killer means no sparing
+    -- means the tier is charged, exactly as it always was. The ONLY way out
+    -- is to name a live opponent the roster accepts who is standing on a
+    -- firearm rung -- and that hands them a kill, a rung and a killReward.
+    -- The tier still moves, it just moves to somebody else.
+    --
+    -- A SILENT DEATH THE SERVER SAW A HIT BEHIND IS THE ONE EXCEPTION, AND IT
+    -- IS NOT A DODGE EITHER. The dead sweep books it with the server's own
+    -- record of the last hit (runServerChecks), so it can carry a killer --
+    -- and that killer is judged on their rung ALONE, because a booking has
+    -- no cause of death to read. That is exactly what a report naming no
+    -- weapon has always been given: the blade check above may only make
+    -- things worse for the client that sends it, so a cheat was always free
+    -- to leave it out. Lying on the floor for deadTicks seconds instead buys
+    -- nothing that a report with no cause could not. Charging every silent
+    -- death anyway would only cost the honest fighter whose report was lost,
+    -- and hand their killer the rung all the same.
+    --
+    -- THAT IS ONLY TRUE OF A BODY THAT STAYS DOWN. The stock client stands
+    -- the body up the moment it has sent its report (clearDeadStateImmediately),
+    -- so a client that drops only the report is never read as a corpse and
+    -- never booked at all. That is a hole in the sweep, not in this rule, and
+    -- closing it is the owner's call: EXPLOITS-YOUR-CALL.md, decision 9.
+    --
+    -- UNLESS THAT OPPONENT HAS HIT THE CAP ON THIS VICTIM, and then it moves
+    -- to nobody: creditsTier refuses them the rung. Naming a capped opponent
+    -- on a gun used to spare you anyway, so every fall and suicide could be
+    -- reported as their kill for free. A kill that moved no tier now spares
+    -- only when the server itself watched THAT killer land a hit in the last
+    -- five seconds -- the honest victim, shot by a capped fighter, is spared
+    -- as before; a claim the server saw nothing behind is charged.
+    --
+    -- WHAT THAT LEANS ON, and it is only with a cap switched on (it ships
+    -- off): that the server is handed the killing shot at all. A packet the
+    -- damage handler drops before recording -- one with no hit list, or with
+    -- crossfireGuard off, one padded past MAX_HITS, which the SHOOTER's own
+    -- client can arrange -- leaves an honest victim of a capped killer
+    -- charged. And a pair who agree it can still land one real hit and have
+    -- the victim die inside the five seconds. Both are the cap's own terms,
+    -- not something this line adds; EXPLOITS-YOUR-CALL.md has them.
+    --
+    -- SO A FALL, A DROWNING, A SUICIDE AND A REFUSED KILL CLAIM ALL STILL
+    -- COST A TIER. That is not the literal sentence "you only drop a level
+    -- if you die to melee", and the difference is deliberate: the literal
+    -- sentence cannot be defended against a client that says nothing.
+    --
+    -- AND THE UNWITNESSED PRICE IS LEFT ALONE ON PURPOSE. Its exemption at
+    -- `not playingLadder` rests on "the same death has already taken a tier
+    -- off them", and under this rule every unnamed ladder death still does.
+    -- Narrowing that gate to match a conditional demotion re-creates the
+    -- bare-handed-respawn regression this file already documents. DO NOT.
+    local spared = playingLadder
+        and killedWithAGun
+        and (tierCredited ~= false or killerSeen)
+        and (Arena.GetModeByKey(match.modeKey) or {}).demoteOnMeleeOnly ~= false
+
+    if playingLadder and not spared then
+        if tierScore(player) > 0 then
+            player.tiersLost = (Arena.ToInt(player.tiersLost) or 0) + 1
+            refundTierCredit(player)
+        end
+
+        -- AND IT IS NEVER HANDED BACK. A refused swap means the weapon
+        -- would not move, not that the death did not happen -- and refunding
+        -- the tier for it made PARKING YOUR WEAPON A WAY OF NOT DYING.
+        -- ox_inventory refuses the removal for a tier weapon sitting in a
+        -- trunk, and refuses the add for a full inventory; both are things
+        -- the player chooses. A climber who arranged either was immune to
+        -- the only cost this mode has, while their kills went on counting.
+        --
+        -- The promotion was never refunded on the same failure, which is
+        -- what made the pair asymmetric in the attacker's favour. Neither is
+        -- now: the score is what a player EARNED, and what their pockets
+        -- will hold is an inventory problem that settleTier retries on the
+        -- next kill or death.
+        settleTier(match, player, 'notify.gungame_demoted')
+    end
+
+    ArenaDispatch.ClearDownState(id)
+
+    -- A GUN GAME SPENDS NO LIVES. Nobody is eliminated in one: the death
+    -- above has already taken the tier, which is what a death costs in this
+    -- mode, and the round ends on the clock or on the ladder rather than on
+    -- a count of survivors. Leaving `lives` alone is what makes that true
+    -- everywhere at once -- Arena.IsEliminated reads it, `stillIn` reads
+    -- that, and the panel, the respawn picker, the spectator gate and every
+    -- winner-selection path in this file read `stillIn`. A second rule
+    -- saying "except in a ladder" in each of those places is five rules that
+    -- can disagree.
+    -- AND NEITHER DOES A SCORE LIMIT, for a reason that is arithmetic rather
+    -- than taste. That round is meant to end when somebody reaches the limit,
+    -- and a roster that can be eliminated runs out of players first on any
+    -- limit worth setting: three lives and a limit of 25 means the round is
+    -- decided by last-man-standing every single time and the number nobody
+    -- reached was decorative. So it respawns for ever, exactly as a ladder
+    -- does, and by the same mechanism -- leaving `lives` alone, which
+    -- Arena.IsEliminated reads, which `stillIn` reads, which the panel, the
+    -- respawn picker, the spectator gate and every winner-selection path in
+    -- this file read.
+    --
+    -- Asked of Arena rather than spelled out here, so the panel's own answer
+    -- and this one cannot drift apart.
+    local remaining
+    if playingLadder or not Arena.WinConditionSpendsLives(match.winCondition) then
+        remaining = math.max(1, Arena.ToInt(player.lives) or 1)
+    else
+        remaining = (Arena.ToInt(player.lives) or 1) - 1
+        player.lives = remaining
+    end
+
+    -- THE KILL LINE, once everything it reports has been decided.
+    --
+    -- INSIDE A pcall, AND THAT IS NOT OPTIONAL. This runs before the respawn
+    -- is scheduled below, and nothing above this function catches a throw: a
+    -- fault in building one log line would leave the victim dead for the rest
+    -- of the round. Measured, when an earlier draft called a helper that did
+    -- not exist. A record is worth having; it is not worth a player.
+    if killer then
+        -- A CLAIM THE ROSTER REFUSED STILL NAMED SOMEBODY, and the memory is
+        -- asked for one it refused as not on the roster. Saying "the client
+        -- named nobody" there is the misstatement the UNATTRIBUTED line was
+        -- already cured of; this says who, and why it did not count.
+        local via
+        if not byWitness then
+            via = "named by the victim's own client"
+        elseif serverSaw == true then
+            via = "credited from the server's own record of the last hit (dead sweep, no report)"
+        elseif REFUSED_CLAIM[refused] ~= nil then
+            via = ("credited from the server's own record of the last hit (the client named %s, who %s)")
+                :format(tostring(claimed), REFUSED_CLAIM[refused])
+        else
+            via = "credited from the server's own record of the last hit (the client named nobody)"
+        end
+        local ok, err = pcall(logKill, match, killer, player, {
+            via = via, causeHash = causeHash, killedFrom = killedFrom,
+            killerTierWas = killerTierWas, victimTierWas = victimTierWas,
+            tierCredited = tierCredited, spared = spared, remaining = remaining,
+        })
+        if not ok then
+            ArenaLog('KILL line for match %s could not be written: %s', tostring(match.id), tostring(err))
+        end
+    end
+
+    if remaining > 0 then
+        scheduleRespawn(match, player, unwitnessed)
+    else
+        player.placement = placementFor(match)
+
+        local watching = Config.Match.spectateOnElimination == true
+        local spectate = watching and ArenaLobby.AddSpectator(id, match.id) == true
+
+        -- ELIMINATION IS A DEATH THE PLAYER DOES NOT COME BACK FROM, so it
+        -- is the one that most needs saying out loud. A respawn revives them
+        -- and so does the exit, but an eliminated player sits between those
+        -- two for the rest of the round -- watching, flagged dead by the
+        -- medical script, with whatever that script does to a corpse still
+        -- being done to them.
+        -- THE HOLD STAYS, and nothing anywhere on this path releases it.
+        -- The point here is the medical script's list, not the player's
+        -- freedom: the round is still running and they are out of it.
+        -- Released, they would be visible, solid and MORTAL in a live arena
+        -- -- spectate restores the first two and never touches
+        -- invincibility. What keeps them held is client/match.lua's
+        -- `eliminated` handler, which deliberately releases nothing;
+        -- leaveArena is the only thing that ever does.
+        ArenaDispatch.Revive(id)
+
+        TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
+        ArenaNotifyKey(id, 'notify.eliminated', 'error')
+
+        -- AND IF THEY ARE NOT WATCHING, THEY GO HOME. config.lua says what
+        -- this setting means -- "Eliminated players watch the rest of the
+        -- match instead of being sent straight back to the lobby" -- and
+        -- switching it off did not send anybody anywhere. It only withheld
+        -- the camera, and the hold above stayed: invisible, frozen,
+        -- collisionless and looking at their own invisible body, with no
+        -- panel, no camera and no way out, until the round happened to end.
+        -- On a ten-minute round that is ten minutes of a black screen for
+        -- dying first.
+        --
+        -- The hold is right to stay while they are WATCHING -- released,
+        -- they would be visible and mortal in a live arena, which is what
+        -- the comment above is about. Going home releases it properly:
+        -- leaveArena stands them up, restores what they walked in with and
+        -- puts them at the return point, which is what the setting says.
+        --
+        -- THE ROW STAYS EITHER WAY. They are still a contestant: the results
+        -- board ranks off this row and the payout reads it, so this is an
+        -- exit from the ARENA, not from the match. ArenaLobby.Leave is what
+        -- would take them off the roster, and it is deliberately not called.
+        --
+        -- Refused registration counts as not watching, for the same reason:
+        -- the camera it was going to open is exactly what will not be there.
+        if not spectate then
+            sendPlayerHome(player, { returnCoords = toPoint(Config.Lobby.returnCoords) })
+        end
+    end
+
+    -- THE ROOM IS TOLD ABOUT A DEATH THAT CHANGES SOMETHING IT CAN SEE, AND
+    -- ONLY THEN.
+    --
+    -- This was unconditional, so every death rebuilt the whole snapshot --
+    -- config block, every lobby, a row per head -- for every fighter,
+    -- watcher, open panel and fenced player on the server: tens of
+    -- kilobytes a death at twenty fighters, and a most_kills or score_limit
+    -- round is nothing BUT respawning deaths.
+    --
+    -- WHAT A RESPAWNING DEATH MOVES, MEASURED FOR EVERY KIND OF RECIPIENT IN
+    -- EVERY MODE AND WIN CONDITION: the killer row's `kills` and the victim
+    -- row's `deaths` in snapshotMatches, and nothing else. `alive` there is
+    -- "not eliminated", which a death with a life left does not change, and
+    -- no money moves on a death outside a ladder. Nothing reads those two
+    -- counts off a match row -- the panel draws kills and deaths from the
+    -- HUD, the results, the leaderboard and the admin screens;
+    -- client/spectate.lua reads a row's id and alive. They go out with the
+    -- next broadcast of any kind, and the HUD carries them every second.
+    -- Whatever else a broadcast happens to refresh -- a wallet changed
+    -- somewhere else, the leaderboard's thirty-second cache -- was never
+    -- tied to a death and still rides the next one.
+    --
+    -- THE THREE THAT STAY, and none of them may go:
+    --
+    --   NO LIVES LEFT. The note in ArenaLobby.AddSpectator names this as the
+    --   broadcast that tells the room a fighter is out: spectator target
+    --   lists, the "Out of the round" bet row, the chips betPickOptions
+    --   offers, the sent-home fighter's fence. Removing it passed every spec
+    --   there was when this was written; tests/deathbroadcast_spec.lua now
+    --   holds it.
+    --
+    --   A LADDER. A gun game death can move a tier either way, and
+    --   settleTier writes the fighter's loadout, which their own snapshot
+    --   carries. Kept for every ladder death and not only the ones that
+    --   moved a rung: sorting those out here would be a second copy of the
+    --   sparing rules above.
+    --
+    --   A DEATH THAT DECIDES THE ROUND. The snapshot's betsOpen reads
+    --   ArenaMatch.IsDecided, so a kill that reaches the score limit shuts
+    --   the watchers' book -- and every open panel must hear it NOW, not
+    --   when the sweep ends the round up to a second later, or the chip
+    --   stays live over a result that is already known. Asked last because
+    --   it is the only one of the three that costs anything: IsDecided runs
+    --   `evaluate`, which only reads.
+    if remaining <= 0 or playingLadder or ArenaMatch.IsDecided(match) then
+        ArenaLobby.Broadcast()
+    end
+    return true
+end
+
+function ArenaMatch.End(matchId, reasonKey, winners)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false end
+    if match.state == 'ended' then return false end
+
+    local players = ArenaLobby.PlayerArray(match)
+    if #players == 0 then
+        return ArenaMatch.Abort(matchId, reasonKey or 'match.ended_abandoned')
+    end
+
+    local teamMode = Arena.ModeUsesTeams(match.modeKey)
+    if type(winners) ~= 'table' then
+        winners = evaluate(match) or decideOnKills(match, teamMode)
+    end
+
+    match.state = 'ended'
+    assignFinalPlacements(match, winners)
+    match.winners = winners
+
+    local endReason = Arena.IsKey(reasonKey) and reasonKey or 'match.ended'
+
+    -- TWO DIFFERENT HEAD COUNTS, and conflating them is what let a mid-round
+    -- quitter take their stake home.
+    --
+    -- `players` is who is still here to be PAID, and it stays the surviving
+    -- roster: Arena.ComputePayouts hands `stake` back off this list and
+    -- splits per_kill across it, so a player who walked out must not be on
+    -- it -- their stake was forfeited to the pot the moment they left, and
+    -- listing them would hand it straight back. An ELIMINATED player is a
+    -- different thing and stays: they fought the round to the end, and a
+    -- round that refunds owes them their stake like anybody else.
+    --
+    -- `contestants` is how many the round was FOUGHT with, recorded at
+    -- goLive. THE CONTRACT THIS RELIES ON: whatever judges Config.Betting
+    -- .minPlayersToPayOut counts THIS, not #players. Counted off the
+    -- survivors instead, a 1v1 that one side quits reads as "too few
+    -- players" and refunds the whole pot -- which pays the winner nothing
+    -- and hands the quitter back the stake that leaving was supposed to
+    -- forfeit. It has to survive ArenaBetting.Settle, which rebuilds this
+    -- table field by field on its way to Arena.ComputePayouts.
+    --
+    -- The fallback is for a round that never reached goLive and so has no
+    -- fought-with count to have; the roster it still holds is the closest
+    -- true answer available.
+    local context = {
+        teams = teamMode,
+        winners = winners,
+        contestants = match.contestants or #players,
+        players = {},
+    }
+    for _, player in ipairs(players) do
+        context.players[#context.players + 1] = {
+            id = player.src,
+            team = player.team,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            stake = ArenaBetting.GetStake(match.id, player.src),
+            placement = player.placement,
+        }
+    end
+
+    -- THE ORDER OF THESE FIVE IS FIXED, and each one depends on the one
+    -- above it:
+    --   Settle first -- it is what turns held stakes into payouts, and
+    --     nothing below it can run against an undecided pot;
+    --   SettleSpectatorBets second -- it needs a decided result to judge bets
+    --     against, and Clear hands unsettled side-bets BACK, so a Clear that
+    --     ran first would quietly refund every winning side-bet;
+    --   RecordMatch third, AND THIS IS WHY IT MOVED. A player's earnings are
+    --     what they were paid, and the rule used to be "so record after
+    --     Settle". That was right about the reason and wrong about the line:
+    --     with betPayout.includeEntryPot on -- the shipped default -- Settle
+    --     folds the entry stakes into the bet pool and returns an EMPTY
+    --     payout list, and the money is paid one line further down by
+    --     SettleSpectatorBets. So the leaderboard recorded every player at
+    --     zero earnings on a default server, for ever, and the winner's own
+    --     results board told them they had earned nothing while the pot
+    --     arrived in their pocket. Recorded after BOTH now, from both.
+    --   Clear fourth -- the only step that drops escrow, and it refuses
+    --     while anything is still held, so running it before either settle
+    --     would strand the pot with the match record already gone. The ammo
+    --     Clear sits with it: same step, same rule, different ledger;
+    --   Destroy last -- it removes the record all four of the others read.
+    local payouts = ArenaBetting.Settle(match.id, context)
+    match.payouts = payouts
+
+    local pick = winningPick(match, winners, teamMode)
+
+    local _, _, sideEarnings = ArenaBetting.SettleSpectatorBets(match.id, pick)
+
+    local won, earned = {}, {}
+    for _, id in ipairs(winners) do won[id] = true end
+
+    local wonSide = pick
+    if wonSide ~= nil then
+        for _, src in ipairs(membersOfTeam(match, wonSide)) do
+            if not won[src] then
+                wonSide = nil
+                break
+            end
+        end
+    end
+
+    for src, amount in pairs(sideEarnings or {}) do
+        earned[src] = (earned[src] or 0) + (Arena.ToInt(amount) or 0)
+    end
+
+    for _, payout in ipairs(payouts) do
+        -- REFUNDS ARE NOT EARNINGS. Settle hands its computed list back even
+        -- when every line of it is a refund -- deliberately, as the report of
+        -- what was decided -- and this summed the lot into `earnings`, which
+        -- goes out in the results as money the player made. So a match that
+        -- did not qualify to pay out (too few fought, no winner) told
+        -- everybody they had WON their own entry fee back, while the pot was
+        -- being handed straight back to them.
+        local refund = ArenaBetting.IsRefundReason(payout.reason)
+        if payout.id ~= nil and not refund then
+            earned[payout.id] = (earned[payout.id] or 0) + (Arena.ToInt(payout.amount) or 0)
+        end
+    end
+
+    -- THE SAME NUMBER IN BOTH PLACES, by construction rather than by two
+    -- readers agreeing. ArenaStats.RecordMatch prefers `player.earnings` when
+    -- it is set and falls back to reading match.payouts when it is not, so
+    -- writing it here is what stops the all-time leaderboard and the board on
+    -- the player's screen ever being able to disagree about one match.
+    for _, player in ipairs(players) do
+        local row = match.players[player.src]
+        if row then row.earnings = earned[player.src] or 0 end
+    end
+
+    ArenaStats.RecordMatch(match)
+    ArenaBetting.Clear(match.id)
+
+    local board = scoreboardOf(players, #ladderOf(match))
+
+    local placeOf = {}
+    for _, player in ipairs(players) do placeOf[player.src] = player.placement end
+    table.sort(board, function(a, b)
+        local first = placeOf[a.id] or math.huge
+        local second = placeOf[b.id] or math.huge
+        if first ~= second then return first < second end
+        return a.id < b.id
+    end)
+
+    -- THE SIDE TOTALS THE ROUND WAS DECIDED ON, which the card never carried.
+    --
+    -- A team round on the clock is decided on each side's kills INCLUDING
+    -- those banked from fighters who walked out, and the board under the
+    -- card lists only who is still here. MEASURED: a crimson fighter took
+    -- three kills and disconnected, the clock gave crimson the round 3-2,
+    -- and every card read "Crimson takes it" over rows where ash had two
+    -- kills and crimson none. The overlay had shown 3-2 all round; the card
+    -- and the Discord log showed nothing that explained it.
+    --
+    -- BUILT HERE, ONCE, before anybody is sent home, off the same function
+    -- the overlay reads -- so it keeps the overlay's rule that a side with
+    -- nobody left in the round is off the tally.
+    --
+    -- ONLY WHEN TWO OR MORE SIDES ARE STILL IN IT. A round ended with one
+    -- side standing was won by staying alive, not on a count, and a tally of
+    -- one side compares nothing -- "Ash 0" under "Ash takes it" would read as
+    -- the card being broken. A ladder has no tally at all.
+    local tally, banked = nil, nil
+    if teamMode and #ladderOf(match) == 0 then
+        local scores, departed = standingTally(match)
+        if Arena.Count(scores) >= 2 then tally, banked = scores, departed end
+    end
+
+    local returnCoords = toPoint(Config.Lobby.returnCoords)
+    local names = {}
+
+    for _, player in ipairs(players) do
+        if won[player.src] then
+            names[#names + 1] = player.name or ArenaPlayerName(player.src)
+            ArenaNotifyKey(player.src, 'notify.match_won', 'success')
+        else
+            ArenaNotifyKey(player.src, endReason, 'info')
+        end
+
+        local results = {
+            reason = locale(endReason),
+            won = won[player.src] == true,
+            winningTeam = teamMode and wonSide or nil,
+            -- NO PLACING ON A ROUND NOBODY WON. The deciders refuse to break
+            -- a tie at the top -- two players level on kills, or on tier and
+            -- ladder kills, is a draw and the pot goes back -- but the
+            -- placement still numbered them 1 and 2 on deaths and then on
+            -- server id. MEASURED: two fighters on exactly two kills and one
+            -- death each were told "Placed #1" and "Placed #2" under "Nobody
+            -- earned it", so the one with the lower id read as having had the
+            -- win taken off them. The order still ranks the board beneath.
+            placement = #winners > 0 and player.placement or nil,
+            kills = math.max(0, Arena.ToInt(player.kills) or 0),
+            deaths = math.max(0, Arena.ToInt(player.deaths) or 0),
+            earnings = earned[player.src] or 0,
+            scoreboard = board,
+            -- The side totals and the kills banked in them, built above.
+            -- Absent outside a team round, and where one side was left.
+            teamScores = tally,
+            departedScores = banked,
+
+            -- AND WHETHER IT COUNTED TOWARDS THE LADDER.
+            --
+            -- Written by ArenaStats.RecordMatch a few lines up -- read the
+            -- note above Config.Leaderboard for the rule. Always a boolean,
+            -- never left out: the panel draws the warning off `ranked ===
+            -- false`, so a field that went missing on the way would read as
+            -- "this counted" rather than as "nobody said", and a player
+            -- whose result was quietly dropped would have nothing to go on
+            -- but a board that did not move.
+            ranked = match.ranked ~= false,
+            rankedNote = type(match.rankedWhy) == 'string' and match.rankedWhy or nil,
+        }
+
+        -- THE BOARD GOES OUT TWICE, and the second one is the one a player
+        -- sees. It has ridden the exitArena payload since before anything on
+        -- the client drew it, and that payload is this round's teardown
+        -- message -- the numbers are there for a client that wants them at
+        -- the moment it goes home. The board itself is a PANEL message:
+        -- client/ui.lua registers `crimson_arena:client:results` for it, and
+        -- with nothing firing that event the payout board this file spends
+        -- the whole of End() working out was never drawn for anybody.
+        --
+        -- Sent after the exit rather than before it because the exit is what
+        -- closes the round down on the client -- the HUD, the countdown, the
+        -- teleport home. A board drawn ahead of that is cleared by the tidy
+        -- up behind it.
+        -- The board still goes to a fighter who left the arena early: they
+        -- are on the roster, they may have been paid, and the results event
+        -- below is the one the panel actually draws.
+        sendPlayerHome(player, { returnCoords = returnCoords, results = results })
+        TriggerClientEvent('crimson_arena:client:results', player.src, results)
+    end
+
+    for src in pairs(match.spectators or {}) do
+        if not match.players[src] then
+            -- OFF THE SAME TABLE THE FIGHTERS' BOARDS ARE, and it is the same
+            -- number: `earned` was built from ArenaBetting.SettleSpectatorBets'
+            -- own earnings a hundred lines up, and a watcher whose pick came in
+            -- is IN it.
+            --
+            -- THE DEFECT: this said 0. A spectator paid 6,364 out of the side
+            -- pool was shown a results board reading "earnings 0" while the
+            -- money arrived in their pocket -- the same disagreement between
+            -- what a player was paid and what they were told that the fighter
+            -- half of this board was fixed for. DO NOT put the constant back.
+            local results = {
+                reason = locale(endReason),
+                won = false,
+                winningTeam = teamMode and wonSide or nil,
+                earnings = earned[src] or 0,
+                scoreboard = board,
+                -- The same tally the fighters' cards carry: a watcher is sent
+                -- this card and nothing else at the end of a round.
+                teamScores = tally,
+                departedScores = banked,
+            }
+            sendExitArena(src, { returnCoords = returnCoords, results = results })
+            TriggerClientEvent('crimson_arena:client:results', src, results)
+        end
+    end
+
+    -- AND THE INVENTORY RECORDS -- AFTER THE EXITS, WHICH IS THE WHOLE POINT
+    -- OF WHERE THIS LINE SITS.
+    --
+    -- ArenaAmmo.Clear drops the match's row from `issuedWeapons` and
+    -- `issuedAmmo`, and those rows ARE the record of what the arena handed
+    -- out. With the door off -- Config.Loadouts.inventory.stripOnEntry =
+    -- false, where a player keeps their own inventory and is simply handed
+    -- the arena's kit on top of it -- the exit's only way to take that kit
+    -- back is to remove it BY NAME, from those rows. Clearing them first
+    -- leaves nothing to remove, and every fighter walks out of a finished
+    -- match still holding the arena's weapon and its ammunition. A free gun
+    -- per round, per player, from a resource whose stated promise is that a
+    -- match cannot cost or pay anyone anything.
+    --
+    -- Clear's own comment calls this "the point where a finished match stops
+    -- being owed anything", which is exactly right and is why it belongs
+    -- here rather than beside the betting Clear: the match is still owed
+    -- every reclaim until the exits above have run. ArenaMatch.Abort has
+    -- always had it in this order; End did not.
+    ArenaAmmo.Clear(match.id)
+
+    -- THE REVIVE SWEEP, and it is deliberately not the same call as the one
+    -- inside sendExitArena above.
+    --
+    -- That one runs BEFORE the client is told to leave: before the ped is
+    -- stood up, before the teleport home, before the arena instance is left.
+    -- A medical script revived at that moment is being told somebody is
+    -- alive while they are still a corpse in another routing bucket, and
+    -- whatever it does next can be undone by the teardown that follows.
+    --
+    -- So the whole roster is swept again once all of that has finished. It is
+    -- idempotent -- reviving somebody who is already alive costs nothing --
+    -- and it is the belt to the earlier call's braces: whatever went wrong on
+    -- the way out, nobody is left standing in the lobby dead.
+    -- SERVER IDS ARE RECYCLED, AND THIS SLEEPS FOR FIVE SECONDS BEFORE IT
+    -- USES ONE.
+    --
+    -- THE DEFECT: the sweep captured bare server ids and, five seconds later,
+    -- stood up whoever was answering to them. ArenaLobby.Destroy has already
+    -- dropped the match record by then, so nothing downstream can re-check
+    -- anything. A fighter who quits the moment the results board goes up
+    -- frees their id; a player somewhere else on the map who is handed it and
+    -- is bleeding out gets ArenaDispatch.Revive -- their medical script told
+    -- they are fine and their isdead / inlaststand metadata cleared -- for a
+    -- round they were never in. Reproduced.
+    --
+    -- The citizenid is carried alongside and re-read at the moment of use,
+    -- which is the same rule the betting ledger keeps for the same reason:
+    -- an id is an address, NEVER an identity. A player who has gone answers
+    -- nothing and is skipped, which is right -- there is nobody to stand up.
+    local roster = {}
+    for _, player in ipairs(players) do
+        if type(player.src) == 'number' then
+            roster[#roster + 1] = { src = player.src, citizenid = player.citizenid }
+        end
+    end
+
+    local sweepMs = Arena.ToInt(((Config.Dispatch or {}).revive or {}).sweepAfterMatchMs)
+    if sweepMs and sweepMs > 0 and #roster > 0 then
+        CreateThread(function()
+            Wait(sweepMs)
+
+            local swept = 0
+            for _, row in ipairs(roster) do
+                local holder = ArenaGetPlayer(row.src)
+                local data = holder and holder.PlayerData
+                local now = data and data.citizenid or nil
+
+                -- A MISSING PLAYER IS NOT A MISMATCH, and only a mismatch is
+                -- refused. Nobody on the id, or a framework that will not
+                -- answer, leaves this exactly as trusting as it was before --
+                -- reviving an id nobody holds costs nothing, and failing shut
+                -- here would let a fighter walk out of a finished round still
+                -- dead, which is the whole reason this sweep exists. What is
+                -- refused is the one case that is POSITIVELY somebody else.
+                local stranger = Arena.IsKey(row.citizenid)
+                    and Arena.IsKey(now)
+                    and now ~= row.citizenid
+
+                if stranger then
+                    ArenaDebug('revive: %s is not the fighter who left this match -- skipped the sweep.',
+                        tostring(row.src))
+                else
+                    ArenaDispatch.Revive(row.src)
+                    swept = swept + 1
+                end
+            end
+            ArenaDebug('revive: swept %d of %d player(s) %dms after the match ended.', swept, #roster, sweepMs)
+        end)
+    end
+
+    if Config.Webhook.logResults == true then
+        local lines = {}
+        for _, row in ipairs(board) do
+            lines[#lines + 1] = ('%s -- %d kill(s), %d death(s)'):format(row.name, row.kills, row.deaths)
+        end
+        local fields = {
+            { name = 'Arena', value = tostring(match.arenaKey) },
+            { name = 'Mode', value = tostring(match.modeKey) },
+            { name = 'Winners', value = #names > 0 and table.concat(names, ', ') or 'none (draw)' },
+        }
+
+        -- AND THE SIDE TOTALS, for the same reason the card carries them: the
+        -- log read "Winners: Fighter 4" over a scoreboard where Fighter 4 had
+        -- no kills, and never named a side or the count that decided it.
+        --
+        -- ONLY WHEN THERE IS A TALLY, and so never with an empty value.
+        -- Discord refuses an embed with an empty field and the refusal is
+        -- only logged under debug, so a blank line here would silently stop
+        -- every results post, not just this one's.
+        if tally then
+            local sides, left = {}, 0
+            for team in pairs(tally) do sides[#sides + 1] = team end
+            table.sort(sides, function(a, b)
+                if tally[a] ~= tally[b] then return tally[a] > tally[b] end
+                return a < b
+            end)
+            for index, team in ipairs(sides) do
+                local side = Arena.GetTeamByKey(team)
+                sides[index] = ('%s %d'):format((side and side.label) or team, tally[team])
+            end
+            for _, kills in pairs(banked or {}) do left = left + kills end
+            fields[#fields + 1] = {
+                name = 'Teams',
+                value = table.concat(sides, ', ')
+                    .. (left > 0 and (' (incl. %d from fighters who left)'):format(left) or ''),
+            }
+        end
+
+        fields[#fields + 1] = { name = 'Scoreboard', value = table.concat(lines, '\n') }
+        ArenaWebhook(('Match %s finished'):format(tostring(match.id)), locale(endReason), fields)
+    end
+
+    ArenaDispatch.ReleaseBucket(match.id)
+
+    ArenaLog('match %s ended: %s', tostring(match.id), endReason)
+    ArenaLobby.Destroy(match.id, endReason)
+    return true
+end
+
+function ArenaMatch.Abort(matchId, reasonKey)
+    local match = ArenaLobby.Get(matchId)
+    if not match then return false end
+
+    local reason = Arena.IsKey(reasonKey) and reasonKey or 'match.aborted'
+    match.state = 'ended'
+    match.winners = nil
+    match.payouts = nil
+
+    local returnCoords = toPoint(Config.Lobby.returnCoords)
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        ArenaNotifyKey(player.src, reason, 'warning')
+    end
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        sendPlayerHome(player, { returnCoords = returnCoords })
+    end
+    for src in pairs(match.spectators or {}) do
+        if not match.players[src] then
+            sendExitArena(src, { returnCoords = returnCoords })
+        end
+    end
+
+    ArenaBetting.RefundAll(match.id, reason)
+    ArenaBetting.SettleSpectatorBets(match.id, nil)
+    ArenaBetting.Clear(match.id)
+    ArenaAmmo.Clear(match.id)
+
+    ArenaDispatch.ReleaseBucket(match.id)
+
+    ArenaLog('match %s aborted: %s', tostring(match.id), reason)
+    ArenaLobby.Destroy(match.id, reason)
+    return true
+end
+
+function ArenaMatch.RemovePlayer(src, reasonKey, dropped, ejected)
+    local id = Arena.ToInt(src)
+    if not id then return false end
+
+    local match = ArenaLobby.GetByPlayer(id)
+    if not match then
+        ArenaLobby.RemoveSpectator(id)
+        return false
+    end
+
+    local matchId = match.id
+    local inProgress = match.state == 'live' or match.state == 'countdown'
+    local player = match.players[id]
+
+    local may, refusal = ArenaLobby.MayLeave(id, dropped, ejected)
+    if not may then return true, refusal end
+
+    if player and inProgress then
+        player.alive = false
+        if not player.placement then player.placement = placementFor(match) end
+        sendPlayerHome(player, {
+            returnCoords = toPoint(Config.Lobby.returnCoords),
+        })
+    end
+
+    local left, refused = ArenaLobby.Leave(id, reasonKey or 'match.left', dropped, ejected)
+    if not left and refused then return true, refused end
+
+    local current = ArenaLobby.Get(matchId)
+    if current and inProgress and ArenaLobby.PlayerCount(current) == 0 then
+        ArenaMatch.Abort(matchId, 'match.ended_abandoned')
+    end
+
+    return true
+end
+
+--- Shuts every lobby that is still waiting to start, refunding as it goes.
+---
+--- ONLY LOBBIES, AND ONLY LOBBIES. A round already being fought is fought to
+--- the end -- the doors being shut is about who may come in, not about who is
+--- already inside. Widening this to `~= 'ended'` is the mutation that would
+--- abort live rounds at the stroke of the hour.
+---
+--- DESTROY, NEVER CANCEL. Cancel is the one way of closing a lobby an
+--- operator can make cost something, and an operator who chose to punish a
+--- host for calling their own match off has not asked to punish a lobby the
+--- SERVER closed. Destroy refunds every stake unconditionally.
+---
+--- CALLED FROM TWO PLACES, WHICH IS WHY IT IS A FUNCTION. The sweep runs it
+--- when a schedule window closes; server/main.lua runs it the instant an admin
+--- closes the arena from the tablet. Leaving the second to the first was the
+--- shape of a real defect: the sweep only acts on the EDGE it notices for
+--- itself, so an admin pressing Close watched a lobby go on queueing for a
+--- round that could never start, with its host still out of pocket for the
+--- entry fee.
+--- @param reasonKey string
+--- @return integer closed
+function ArenaMatch.CloseWaitingLobbies(reasonKey)
+    local function nobodyPlaced(match)
+        if type(ArenaDispatch) ~= 'table'
+            or type(ArenaDispatch.IsPlayerInArena) ~= 'function'
+        then
+            return false
+        end
+        for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+            if ArenaDispatch.IsPlayerInArena(player.src) then return false end
+        end
+        return true
+    end
+
+    local waiting = {}
+    for _, match in ipairs(ArenaLobby.All()) do
+        if match.state == 'lobby'
+            or (match.state == 'countdown' and nobodyPlaced(match))
+        then
+            waiting[#waiting + 1] = match.id
+        end
+    end
+
+    for _, id in ipairs(waiting) do
+        ArenaLobby.Destroy(id, reasonKey)
+    end
+    return #waiting
+end
+
+function ArenaMatch.IsLive(matchId)
+    local match = ArenaLobby.Get(matchId)
+    return match ~= nil and match.state == 'live'
+end
+
+--- Whether a live round's result is already fixed -- the next sweep would
+--- end it -- although it has not been ended yet.
+---
+--- THE GAP THIS NAMES. Only the once-a-second sweep ends a round. A death
+--- or a walk-out that settles it lands between two sweeps, and for up to a
+--- second the round reads as live with its winner already known. The
+--- watchers' betting grace was open through that second, so a bet on the
+--- certain winner was taken and paid out of the stakes that belonged to
+--- them.
+---
+--- ASKS `evaluate` ITSELF, the function the sweep ends the round on, so the
+--- two cannot disagree about what "decided" means. It only reads. Guarded,
+--- because a round in a state the sweep would choke on must not also take
+--- the betting book down with it: that answers "not decided", which is what
+--- this said before it existed.
+--- @param match table
+--- @return boolean
+function ArenaMatch.IsDecided(match)
+    if type(match) ~= 'table' or match.state ~= 'live' or type(match.players) ~= 'table' then
+        return false
+    end
+    local ok, winners = pcall(evaluate, match)
+    return ok and winners ~= nil
+end
+
+local function anyoneIsPlaced(match)
+    for src in pairs(match.players or {}) do
+        if ArenaDispatch.IsPlayerInArena(src) then return true end
+    end
+    return false
+end
+
+local function syncMatchBuckets()
+    local wanted = {}
+
+    local fighting = {}
+
+    for _, match in ipairs(ArenaLobby.All()) do
+        -- 'countdown' AS WELL AS 'live', BUT THE STATE IS NOT THE QUESTION.
+        --
+        -- This used to say "Start() has already put the fighters in the arena
+        -- by then", and the comment twenty-five lines below flatly
+        -- contradicts it -- correctly. ArenaMatch.Begin sets 'countdown' for
+        -- the LOBBY countdown before anybody has been teleported anywhere,
+        -- and ArenaMatch.Start reuses the same name for the frozen one after
+        -- placement. Two different events, one word.
+        --
+        -- The flag half already knew: it withholds ArenaDispatch.Set from
+        -- fighters precisely because this loop reaches people standing in the
+        -- middle of town. EnterBucket sat outside every guard and moved them
+        -- anyway -- so for the whole lobby countdown, every player in a
+        -- starting lobby was pushed into a private, population-disabled
+        -- instance while their body was still at the ped, in traffic, in a
+        -- vehicle the move does not take with them, or inside somebody else's
+        -- job instance. They stopped replicating to bystanders and bystanders
+        -- to them, and they were simultaneously NOT flagged as being in an
+        -- arena, so nothing else on the server could say why.
+        --
+        -- It bought nothing. The flag is deliberately false for that exact
+        -- window, so no alert was being suppressed in exchange.
+        --
+        -- PLACEMENT IS THE QUESTION, and the flag is how placement is known:
+        -- sendEnterArena raises it BEFORE it buckets, so a genuinely placed
+        -- fighter is already flagged by the time the next pass sees them.
+        -- server/lobby.lua's playersArePlaced leans on the same predicate for
+        -- the same reason -- the two countdowns cannot be told apart by name.
+        if (match.state == 'countdown' or match.state == 'live')
+            and anyoneIsPlaced(match)
+        then
+            for src in pairs(match.players) do
+                if ArenaDispatch.IsPlayerInArena(src) then wanted[src] = match.id end
+                fighting[src] = true
+            end
+            for src in pairs(match.spectators or {}) do
+                if wanted[src] == nil then wanted[src] = match.id end
+            end
+        end
+    end
+
+    for src, matchId in pairs(wanted) do
+        if instanced[src] ~= matchId then
+            -- THE FLAG FOLLOWS THE BUCKET, for the one group no choke point
+            -- covers. sendEnterArena raises it for every fighter in the same
+            -- breath as it instances them; a spectator is put in that same
+            -- instance by this sweep and was left unflagged, so the state-bag
+            -- guard an operator pastes into their dispatch script suppressed
+            -- nothing their client raised -- and their client is inside the
+            -- fight, seeing every shot of it.
+            --
+            -- FIGHTERS ARE DELIBERATELY NOT FLAGGED HERE. 'countdown' names
+            -- the LOBBY countdown as well as the frozen one, so this loop
+            -- reaches players who have not been teleported anywhere yet.
+            -- Flagging those would suppress the alerts of someone standing in
+            -- the middle of town -- the hole ArenaDispatch.Set's own comment
+            -- refuses to open -- and would make server/lobby.lua's
+            -- playersArePlaced read a filling lobby as a round in progress and
+            -- refuse its host the cancel button. sendEnterArena is what raises
+            -- a fighter's flag, and it runs when they are actually placed.
+            if not fighting[src] then ArenaDispatch.Set(src, matchId) end
+            instanced[src] = matchId
+        end
+
+        ArenaDispatch.EnterBucket(src, matchId)
+    end
+
+    for src in pairs(instanced) do
+        if wanted[src] == nil then
+            ArenaDispatch.ExitBucket(src)
+            -- Paired with the bucket for the reason sendExitArena gives: put
+            -- the two on separate call sites and they can disagree about who
+            -- is in a match. Unconditional and safe on somebody who was never
+            -- flagged -- ArenaDispatch.Clear documents that no-op -- and an
+            -- eliminated fighter cannot reach it, because match.players kept
+            -- them in `wanted` above.
+            ArenaDispatch.Clear(src)
+            instanced[src] = nil
+        end
+    end
+end
+
+--- HOW LATE A COUNTDOWN HAS TO BE BEFORE THE SWEEP CALLS IT OFF.
+---
+--- Generous on purpose. `startsAt` is the second the round was due to be
+--- promoted, and both waits that lead to it -- the lobby countdown's
+--- one-second steps and goLive's freeze -- can only ever run LONG. A server
+--- stalled for half a minute is already broken; a round called off a few
+--- ticks early because it hitched is a refund nobody asked for.
+local COUNTDOWN_OVERRUN_SECONDS = 30
+
+--- A countdown that never became a round, which NOTHING ELSE IN THIS
+--- RESOURCE CAN SETTLE.
+---
+--- THE DEFECT: ArenaMatch.Start's placement loop is unguarded, and it sets
+--- `match.placed` and creates the goLive thread only AFTER it. A raise
+--- anywhere inside sendEnterArena -- the revive, the ammo issue, the bucket,
+--- any client event -- therefore leaves the match in 'countdown' with part of
+--- the roster teleported and instanced, the stakes escrowed, and no thread
+--- alive that will ever promote or end it.
+---
+--- Nothing else looks at that state. The sweep below wants 'live'; the idle
+--- lobby sweep wants 'lobby'; CloseWaitingLobbies takes a 'countdown' match
+--- only while nobody is placed; and ArenaLobby.HoldCountdown and
+--- ArenaLobby.Cancel are both refused the moment the roster is on the ground.
+--- So the round is held for ever, with the pot in it and every client told
+--- nothing. DO NOT delete this branch: it is the only way out of that state.
+---
+--- Judged on `startsAt` rather than on a flag of its own because Begin has
+--- already written it -- the second the round is due -- and it survives
+--- everything Start does. A match with no `startsAt` is not judged at all.
+--- @param match table
+--- @return boolean overran
+local function countdownOverran(match)
+    if match.state ~= 'countdown' then return false end
+
+    -- Zero is what ArenaLobby.Create writes and what HoldCountdown puts back,
+    -- so it is "not due yet", NEVER "due at the epoch". A match with no due
+    -- time is not judged here at all.
+    local due = tonumber(match.startsAt)
+    if not due or due <= 0 then return false end
+
+    return os.time() > due + COUNTDOWN_OVERRUN_SECONDS
+end
+
+local hoursWereOpen = nil
+
+CreateThread(function()
+    while true do
+        Wait(SWEEP_INTERVAL_MS)
+
+        local hoursOpen = ArenaHoursOpen()
+        if hoursWereOpen ~= nil and hoursWereOpen ~= hoursOpen then
+            if not hoursOpen then
+                ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
+            end
+
+            ArenaLobby.Broadcast()
+        end
+        hoursWereOpen = hoursOpen
+
+        syncMatchBuckets()
+
+        for _, match in ipairs(ArenaLobby.All()) do
+            if match.state == 'live' then
+                runServerChecks(match)
+
+                local winners, reason = evaluate(match)
+                if winners then
+                    ArenaMatch.End(match.id, reason, winners)
+                else
+                    pushHud(match)
+                end
+            elseif countdownOverran(match) then
+                ArenaLog('match %s was due to go live %d second(s) ago and never did -- something threw between the countdown and the first tick of the round. Calling it off and putting every stake back.',
+                    tostring(match.id), os.time() - (tonumber(match.startsAt) or 0))
+                ArenaMatch.Abort(match.id, 'match.aborted')
+            end
+        end
+    end
+end)

@@ -1,0 +1,2276 @@
+--[[
+    crimson_arena/tests/admintablet_spec.lua
+
+    /arenaadmin -- THE TABLET.
+
+    A small screen for whoever is watching the server: the live matches, who
+    is in one, what the arena is holding for them, a button to stop the round
+    and a button to put a fighter back on their feet.
+
+    THE GATE IS ON THE ACTION, NOT ON THE COMMAND, and that is the whole of
+    what this file is about. The command OPENS the screen; it is not
+    authorisation for anything the screen does. A client can fire these events
+    without ever having run it -- that is what a client is -- so every handler
+    re-checks ArenaIsAdmin on arrival, and these walk each one with a player
+    who is not an admin to prove it.
+
+    AND STOPPING A MATCH UNWINDS IT. Every stake goes back, every kit goes
+    back, as though the round had not happened -- it is ArenaMatch.Abort, the
+    same call the text command and the idle sweep make. That guarantee is
+    asserted here against the TABLET's own path rather than borrowed from the
+    text command's tests, because the two are different doors into it.
+]]
+
+local t = dofile('testkit.lua')
+local Sandbox = dofile('fixtures/sandbox.lua')
+
+print('admintablet_spec')
+
+local function roster(wallets)
+    local players = {}
+    for id, cash in pairs(wallets) do
+        players[id] = {
+            citizenid = ('CID%03d'):format(id),
+            name = ('Fighter %d'):format(id),
+            money = { cash = cash, bank = 0 },
+            job = { name = 'unemployed', grade = { level = 0 } },
+        }
+    end
+    return players
+end
+
+--- @param admins table<integer, boolean> -- who IsPlayerAceAllowed says yes for
+local function newArena(admins, mutate)
+    local qbx = Sandbox.newQbxCore(roster({ [1] = 100000, [2] = 100000, [3] = 100000 }))
+    local threads = Sandbox.newThreadRunner()
+    local console, sent, netEvents = {}, {}, {}
+    local clock = 0
+
+    --- What the arena believes it is holding for each player, and what the
+    --- stash really contains. Two numbers rather than one, because the whole
+    --- point of the escrow view is that they can disagree.
+    local held = {}
+    --- Stashes nobody has had back, as ArenaAmmo.OwedRows would answer, and
+    --- who ArenaAmmo.ReturnLeftovers was asked to hand one to.
+    ---
+    --- HELD IN A BOX RATHER THAN AS A BARE LOCAL, so `server.owe` can replace
+    --- the list. Assigning a field on the returned table looks like it works
+    --- and changes nothing: the double closes over the local, not the field.
+    local owedBox, returned, queued = { rows = {}, pending = {} }, {}, {}
+    local unjammed, forcedClears, revived = {}, {}, {}
+
+    local env = Sandbox.newArenaEnv({
+        exports = qbx.exports,
+        lib = Sandbox.newOxLib(),
+        CreateThread = threads.CreateThread,
+        Wait = threads.Wait,
+        SetTimeout = threads.SetTimeout,
+        print = function(line) console[#console + 1] = line end,
+        TriggerClientEvent = function(event, target, payload)
+            sent[#sent + 1] = { event = event, target = target, payload = payload }
+        end,
+        RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+        AddEventHandler = function(name, fn) netEvents['on:' .. name] = fn end,
+        RegisterCommand = function(name, fn) netEvents['cmd:' .. name] = fn end,
+        GetCurrentResourceName = function() return 'crimson_arena' end,
+        -- Well past every rate bucket on every call: a throttled event looks
+        -- exactly like a refused one, and this file is about refusals.
+        GetGameTimer = function() clock = clock + 60000; return clock end,
+        GetPlayerName = function(src)
+            local record = qbx.players[src]
+            return record and record.name or ''
+        end,
+        GetPlayers = function() return { '1', '2', '3' } end,
+        GetPlayerPed = function(src) return src end,
+        GetEntityCoords = function(ped)
+            -- INSIDE THE ARENA THESE FIGHTERS ARE SUPPOSED TO BE IN, which
+            -- this used to be nowhere near: it answered a point 1,450m from
+            -- the Trailer Park, so every fighter in every one of these specs
+            -- was standing well outside the fence they were fighting inside.
+            -- Nothing read it until Config.Match.serverChecks did, and then
+            -- it read as the whole roster having walked out of the round.
+            --
+            -- Spread three metres apart, so they are also close enough for
+            -- the kill-distance ceiling -- the other thing that reads this.
+            return {
+                x = 2344.4 + ((tonumber(ped) or 0) % 16) * 3.0,
+                y = 2565.1,
+                z = 46.7,
+            }
+        end,
+        GetVehiclePedIsIn = function() return 0 end,
+        IsPlayerAceAllowed = function(src) return admins[src] == true end,
+        ArenaStats = {
+            GetLeaderboard = function(callback) callback({}) end,
+            EnsureSchema = function() end, RecordMatch = function() end,
+            Flush = function() end, Record = function() return true end,
+        },
+        ArenaAmmo = {
+            IsEnabled = function() return false end,
+            Refresh = function() return true end,
+            Issue = function() return {} end,
+            Reclaim = function() return 0 end,
+            ReclaimAll = function() return 0 end,
+            Clear = function() return true end,
+            OnLoan = function() return 0 end,
+            OwedKit = function() return owedBox.kit or {} end,
+            OwedKitIsSaved = function() return owedBox.kitSaved == true end,
+
+            -- THE TWO START-UP READS, so server.boot() reaches the lines
+            -- after them. They answer nothing on purpose: what the ledgers
+            -- hold is doorguarantee_spec's subject, and a stub here that
+            -- invented rows would make this file assert them badly.
+            LoadOwedKit = function() end,
+            LoadJams = function() end,
+            HeldFor = function(src) return held[src] end,
+            AllStashes = function(cb, scanned)
+                -- NEVER ANSWERING IS A REAL OUTCOME, and it is the one this
+                -- API's shape makes invisible: the production version issues
+                -- an oxmysql query, and a database that is down, has no
+                -- ox_inventory table, or is simply wedged leaves that
+                -- callback never running -- with no error to catch, because
+                -- the query was ACCEPTED. `stall` is that state.
+                if owedBox.stall then return end
+
+                -- HELD, NOT ANSWERED, when the test wants two scans in
+                -- flight at once. The real one goes to a database: a second
+                -- ask can overtake the first, and which of them draws the
+                -- screen is the whole question.
+                if owedBox.defer then
+                    owedBox.pending[#owedBox.pending + 1] = function()
+                        if scanned then scanned(owedBox.found or #owedBox.rows, #owedBox.rows) end
+                        cb(owedBox.rows)
+                    end
+                    return
+                end
+
+                -- SYNCHRONOUS OTHERWISE, ASYNCHRONOUS IN PRODUCTION. The real
+                -- one goes to the database; this answers straight away, which
+                -- is the shape a callback API is allowed to take and the one
+                -- that keeps these tests readable.
+                if scanned then scanned(owedBox.found or #owedBox.rows, #owedBox.rows) end
+                cb(owedBox.rows)
+            end,
+            ReturnLeftovers = function(src)
+                returned[#returned + 1] = src
+                return true, 1, false
+            end,
+            QueueReturn = function(citizenid, stash)
+                queued[#queued + 1] = { citizenid = citizenid, stash = stash }
+                return true
+            end,
+
+            -- THE DOOR'S HOLD LIST, in the two parts the real one answers in:
+            -- WHICH stashes are held, and WHETHER that answer has been read
+            -- back from the database yet. Both matter to this screen and they
+            -- fail differently -- an unread list answers "none held" for
+            -- every stash, so a screen that believes it draws a hand-back
+            -- button on the one stash the door is certain to refuse.
+            JammedStashes = function()
+                local out = {}
+                for stash in pairs(owedBox.jammed or {}) do out[#out + 1] = stash end
+                table.sort(out)
+                return out, owedBox.jamsKnown ~= false
+            end,
+            IsJammed = function(stash)
+                return (owedBox.jammed or {})[stash] == true,
+                    owedBox.jamsKnown ~= false
+            end,
+            -- THE GATE, NOT THE MECHANISM. The tablet must go through
+            -- ClearHold, which is where the judgement lives -- a stash that
+            -- still holds rows is not cleared by somebody who has not said
+            -- they looked. Wired to Unjam instead, the button cleared a hold
+            -- over forty rows on one press. Mocking Unjam here would let that
+            -- come back with the suite green, so this mock does not offer it.
+            ClearHold = function(stash, forced)
+                if not (owedBox.jammed or {})[stash] then return false, 'not_held' end
+                local rows = (owedBox.jamContents or {})[stash] or 0
+                if rows ~= 0 and forced ~= true then return false, 'not_empty', rows end
+                owedBox.jammed[stash] = nil
+                unjammed[#unjammed + 1] = stash
+                forcedClears[#forcedClears + 1] = forced == true
+                return true, nil, rows
+            end,
+        },
+        ArenaDispatch = {
+            -- THE ONE TOOL THAT IS HANDED SOMETHING. Records who it was
+            -- asked about, because "which player did the tablet actually
+            -- revive" is the whole of what can go wrong here.
+            ReviveReport = function(target)
+                revived[#revived + 1] = target
+                return { 'ran against ' .. tostring(target) }
+            end,
+            Set = function() end, Clear = function() end,
+            Revive = function(src)
+                netEvents.revived = netEvents.revived or {}
+                netEvents.revived[#netEvents.revived + 1] = src
+            end,
+            IsPlayerInArena = function() return false end,
+            ClearDownState = function() return 0 end,
+            EnterBucket = function() end, ExitBucket = function() end,
+            GetBucket = function() end, ReleaseBucket = function() end,
+        },
+    })
+
+    env.Config.Permissions = env.Config.Permissions or {}
+    env.Config.Permissions.adminGroups = { 'admin' }
+    env.Config.Match.minPlayers = 2
+    env.Config.Match.lobbyCountdownSeconds = 0
+    env.Config.Match.startCountdownSeconds = 0
+    if mutate then mutate(env.Config) end
+
+    Sandbox.loadInto('../Crimson-Arena/server/util.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/betting.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/lobby.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/match.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/server/main.lua', env)
+
+    local server = {
+        env = env, qbx = qbx, config = env.Config, held = held,
+        lobby = env.ArenaLobby, match = env.ArenaMatch, betting = env.ArenaBetting,
+    }
+
+    function server.fire(event, src, data)
+        local handler = netEvents['crimson_arena:server:' .. event]
+        if not handler then error('no handler for ' .. event, 2) end
+        env.source = src
+        handler(data)
+    end
+
+    function server.command(name, src, args)
+        local handler = netEvents['cmd:' .. name]
+        if not handler then error('no command ' .. name, 2) end
+        env.source = src
+        handler(src, args or {})
+    end
+
+    function server.step() threads.step(); threads.step() end
+
+    --- The resource STARTING, which is where the boot log is written.
+    ---
+    --- The hours line printed there is the SAME claim the /arenahours report
+    --- makes, on a screen an operator reads first and often instead, so it
+    --- gets asserted too. It went unasserted for its whole life and was
+    --- printing the raw config offset beside an unshifted clock.
+    function server.boot()
+        local handler = netEvents['on:onResourceStart']
+        if not handler then error('nothing handles onResourceStart', 2) end
+        handler('crimson_arena')
+    end
+
+    --- Drops one player the way FiveM does, through the real handler.
+    function server.dropPlayer(src)
+        local handler = netEvents['on:playerDropped']
+        if not handler then error('nothing handles playerDropped', 2) end
+        env.source = src
+        handler()
+    end
+    function server.revived() return netEvents.revived or {} end
+    function server.returned() return returned end
+    function server.queued() return queued end
+    --- What ArenaAmmo.AllStashes will answer from here on.
+    --- @param list table[]
+    --- @param found integer? -- how many rows exist, when more than were read
+    function server.owe(list, found)
+        owedBox.rows = list
+        owedBox.found = found
+    end
+
+    --- Makes ArenaAmmo.AllStashes accept every ask and answer none of them,
+    --- which is what a wedged database looks like from in here.
+    function server.stallStashes()
+        owedBox.stall = true
+    end
+
+    --- Holds every stash scan open instead of answering it, so a test can
+    --- decide the order they come back in.
+    function server.deferStashes()
+        owedBox.defer = true
+    end
+
+    --- Answers one held scan, oldest first.
+    --- @return boolean whether there was one to answer
+    function server.answerStash(index)
+        local waiting = table.remove(owedBox.pending, index or 1)
+        if not waiting then return false end
+        waiting()
+        return true
+    end
+
+    function server.pendingStashes() return #owedBox.pending end
+
+    --- Puts one stash on the door's hold list.
+    --- @param rows integer? -- how many item kinds are still in it, default none
+    function server.jam(stash, rows)
+        owedBox.jammed = owedBox.jammed or {}
+        owedBox.jammed[stash] = true
+        owedBox.jamContents = owedBox.jamContents or {}
+        owedBox.jamContents[stash] = rows or 0
+    end
+
+    --- Makes the hold list answer "not read back yet", which is the state a
+    --- database with no SELECT on the jam table leaves it in for ever.
+    function server.jamsUnread()
+        owedBox.jamsKnown = false
+    end
+
+    --- Every stash the tablet has actually cleared the hold on.
+    function server.unjammed() return unjammed end
+
+    --- Whether each of those clears carried the operator's confirmation.
+    function server.forcedClears() return forcedClears end
+
+    --- Every server id the medical test was run against.
+    function server.medicalTargets() return revived end
+    function server.log() return table.concat(console, '\n') end
+
+    --- Every client event of one name, newest last.
+    function server.sentNamed(name)
+        local out = {}
+        for _, row in ipairs(sent) do
+            if row.event == 'crimson_arena:client:' .. name then out[#out + 1] = row end
+        end
+        return out
+    end
+
+    --- The newest one, which is what the tablet would be drawing.
+    function server.lastNamed(name)
+        local rows = server.sentNamed(name)
+        return rows[#rows]
+    end
+
+    function server.open(count)
+        server.fire('createMatch', 1, {
+            arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0, account = 'cash',
+        })
+        local id = server.lobby.All()[1].id
+        for src = 2, count do
+            server.fire('joinMatch', src, { matchId = id, account = 'cash' })
+        end
+        return id
+    end
+
+    return server
+end
+
+-- ======================================================================
+-- WHO MAY USE IT
+-- ======================================================================
+
+t.test('THE GATE IS ON THE ACTION, not on the command that opens the screen', function()
+    -- A client can fire these without ever running /arenaadmin. If the
+    -- command were the only check, the tablet would be a list of admin
+    -- powers any player could reach by name.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+
+    s.fire('adminStop', 2, { matchId = id })
+    t.isNotNil(s.lobby.Get(id), 'a player who is not an admin stopped a match')
+
+    s.fire('adminRevive', 2, { target = 1 })
+    t.equals(#s.revived(), 0, 'a player who is not an admin revived somebody')
+
+    s.fire('adminState', 2, {})
+    t.isNil(s.lastNamed('adminState'), 'a player who is not an admin was sent the match list')
+end)
+
+t.test('and an admin gets all three', function()
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+
+    s.fire('adminState', 1, {})
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'an admin was sent nothing at all')
+    t.equals(#pushed.payload.matches, 1, 'the live match was not listed')
+    t.equals(pushed.payload.matches[1].id, id, 'the wrong match was listed')
+end)
+
+-- ======================================================================
+-- WHAT IT SHOWS
+-- ======================================================================
+
+t.test('opening a match lists the fighters in it', function()
+    local s = newArena({ [1] = true })
+    local id = s.open(3)
+
+    s.fire('adminState', 1, { matchId = id })
+    local focused = s.lastNamed('adminState').payload.focused
+    t.isNotNil(focused, 'the match was not opened at all')
+    t.equals(#focused.players, 3, 'the wrong number of fighters')
+    t.equals(focused.id, id)
+end)
+
+t.test('and a fighter carries what the arena is holding for them', function()
+    -- THE POINT OF THE SCREEN. "Their kit is safe" and "their stake is held"
+    -- are claims this resource makes constantly and could not be asked to
+    -- demonstrate: both lived in local tables with no reader, so the only way
+    -- to see either was to end the round and watch what came back.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+
+    s.held[2] = {
+        stash = 'crimson_arena_CID002',
+        expected = 3,
+        items = { { name = 'phone', count = 1 }, { name = 'burger', count = 2 } },
+    }
+
+    s.fire('adminState', 1, { matchId = id })
+    local rows = s.lastNamed('adminState').payload.focused.players
+
+    local row
+    for _, candidate in ipairs(rows) do
+        if candidate.src == 2 then row = candidate end
+    end
+
+    t.isNotNil(row, 'fighter 2 was not in the list')
+    t.equals(#row.escrow, 2, 'the stash contents did not reach the screen')
+    t.equals(row.escrowStash, 'crimson_arena_CID002', 'and neither did which stash it is')
+
+    -- AND WHAT THE ARENA BELIEVES IT PUT AWAY, beside it. Those two
+    -- disagreeing is the whole of the bug that lost people their belongings,
+    -- and an admin staring at a short list needs to see the difference rather
+    -- than work it out.
+    t.equals(row.escrowExpected, 3,
+        'the screen cannot show that the stash is holding less than it was given')
+end)
+
+t.test('and a fighter with no stash shows an empty one rather than throwing', function()
+    -- The door can be off, or a stow can have failed, and neither is an error
+    -- for this screen to fall over on.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+
+    s.fire('adminState', 1, { matchId = id })
+    local rows = s.lastNamed('adminState').payload.focused.players
+    t.equals(#rows[1].escrow, 0, 'a player with no stash was given contents from somewhere')
+    t.equals(rows[1].escrowExpected, 0)
+end)
+
+-- ======================================================================
+-- WHAT IT DOES
+-- ======================================================================
+
+t.test('THE GUARANTEE: stopping a match refunds every stake', function()
+    -- IN THE OPERATOR'S WORDS: "when I stop a match it gives all items that
+    -- are held in escrow, refunds all bets etc, as if the match never
+    -- happened."
+    --
+    -- It is ArenaMatch.Abort -- the same call the text command, the idle
+    -- sweep and a resource restart make -- and this asserts it against the
+    -- TABLET's own door rather than borrowing the text command's coverage.
+    local s = newArena({ [1] = true }, function(config)
+        config.Betting.enabled = true
+        config.Betting.entryFee = { enabled = true, min = 0, max = 50000, default = 5000 }
+    end)
+
+    s.fire('createMatch', 1, {
+        arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 5000, account = 'cash',
+    })
+    local id = s.lobby.All()[1].id
+    s.fire('joinMatch', 2, { matchId = id, account = 'cash' })
+
+    t.equals(s.qbx.players[1].money.cash, 95000, 'the host was not charged')
+    t.equals(s.qbx.players[2].money.cash, 95000, 'the joiner was not charged')
+    t.isTrue(s.betting.GetPot(id) > 0, 'nothing is in the pot, so there is nothing to refund')
+
+    s.fire('adminStop', 1, { matchId = id })
+
+    t.isNil(s.lobby.Get(id), 'the match was not stopped')
+    t.equals(s.qbx.players[1].money.cash, 100000, 'the host was not refunded')
+    t.equals(s.qbx.players[2].money.cash, 100000, 'the joiner was not refunded')
+    t.equals(s.betting.GetPot(id), 0, 'the pot still holds money for a match that is gone')
+end)
+
+t.test('and the tablet is sent back to the list, not left on a dead match', function()
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+
+    s.fire('adminStop', 1, { matchId = id })
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'the tablet was told nothing after the match ended')
+    t.isNil(pushed.payload.focused,
+        'the tablet is still showing a match that no longer exists')
+    t.equals(#pushed.payload.matches, 0, 'and still listing it')
+end)
+
+t.test('and stopping a match that does not exist is refused rather than thrown', function()
+    local s = newArena({ [1] = true })
+    s.fire('adminStop', 1, { matchId = 'nosuchmatch' })
+    -- Reaching here at all is the assertion; the refusal is the notification.
+    t.isTrue(true)
+end)
+
+t.test('reviving puts one fighter back on their feet', function()
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    -- LIVE, not merely started. ArenaMatch.Start places everybody and leaves
+    -- the round in `countdown`; goLive runs on the thread it spawns, and
+    -- OnDeath refuses a match that is not live -- so without this the death
+    -- lands on nothing and the test proves the opposite of what it says.
+    s.step()
+    s.match.OnDeath(2, 1)
+
+    t.isFalse(s.lobby.Get(id).players[2].alive, 'fighter 2 is not down, so this proves nothing')
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    -- BACK IN THE ROUND BY THE RESPAWN, NOT BY THE FLAG. A fighter dead in a
+    -- live round with lives left already has a respawn scheduled; Revive
+    -- used to flip the row alive on the spot, which made that thread bail
+    -- and left them held on the floor with no respawn ever sent -- counted
+    -- as standing, and once able to win. So the button leaves the standing
+    -- alone there and the round stands them up itself. Step it.
+    for _ = 1, 10 do s.step() end
+    t.isTrue(s.lobby.Get(id).players[2].alive, 'the roster still says they are down')
+    -- THE LAST ONE, not the first: everybody is revived once on the way into
+    -- the arena now, so the first entry in this list is that rather than the
+    -- button this test pressed.
+    local told = s.revived()
+    t.equals(told[#told], 2, 'the medical script was never told')
+end)
+
+t.test('and nobody outside a match can be revived through it', function()
+    -- There is a /arenarevive for that. Taking the id straight off the wire
+    -- would make this a revive-anybody button dressed as an arena tool.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminRevive', 1, { target = 3 })
+    t.equals(#s.revived(), 0, 'somebody who is not in a match was revived from the arena tablet')
+end)
+
+t.test('and a payload with no target at all is refused', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.fire('adminRevive', 1, {})
+    t.equals(#s.revived(), 0, 'an empty payload revived somebody')
+end)
+
+-- ======================================================================
+-- THE COMMAND
+-- ======================================================================
+
+t.test('/arenaadmin with no arguments opens the tablet for a player', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+
+    local opened = s.lastNamed('openAdmin')
+    t.isNotNil(opened, 'the command did not open anything')
+    t.equals(opened.target, 1, 'the tablet was opened for the wrong person')
+    t.equals(#opened.payload.matches, 1, 'it opened on an empty list')
+end)
+
+t.test('and the console still gets the text list it always had', function()
+    -- The console has no NUI to open a screen in, so `tablet` is deliberately
+    -- only the default for a real player.
+    local s = newArena({})
+    s.open(2)
+
+    s.command('arenaadmin', 0, {})
+    t.isNil(s.lastNamed('openAdmin'), 'the console was sent a screen it cannot draw')
+    t.isTrue(s.log():find('lobby', 1, true) ~= nil,
+        'the console was not given the match list: ' .. s.log())
+end)
+
+t.test('and a player who is not an admin gets neither', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 2, {})
+    t.isNil(s.lastNamed('openAdmin'), 'the command opened the tablet for a non-admin')
+end)
+
+-- ======================================================================
+-- WHAT NEVER MADE IT BACK
+-- ======================================================================
+
+t.test('the tablet lists stashes nobody has had back', function()
+    -- THE COUNT WAS THE ONLY THING ANYBODY COULD ASK FOR, and a count is not
+    -- actionable: "3 outstanding" tells an operator that three people are
+    -- short and nothing about who, what, or whether the sweep is getting
+    -- anywhere. The retry runs on its own, but the case it CANNOT finish --
+    -- somebody who has not been back on the server since -- is exactly the
+    -- one a person has to see.
+    local s = newArena({ [1] = true })
+    s.owe({
+        { citizenid = 'CID002', stash = 'crimson_arena_CID002',
+          items = { { name = 'phone', count = 1 } } },
+    })
+
+    s.fire('adminState', 1, {})
+    local owed = s.lastNamed('adminState').payload.owed
+    t.equals(#owed, 1, 'the outstanding stash did not reach the screen')
+    t.equals(owed[1].citizenid, 'CID002', 'and neither did whose it is')
+    t.equals(owed[1].items[1].name, 'phone', 'nor what is in it')
+end)
+
+t.test('and names the server id of whoever is online to receive it', function()
+    -- `owed` is keyed by citizen id on purpose -- a server id is whoever
+    -- holds it now, and that table has to survive a reconnect -- but a
+    -- hand-back needs a live source to give items to. The absence of one is a
+    -- real answer the screen shows rather than a row it hides.
+    local s = newArena({ [1] = true })
+    s.owe({
+        { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} },
+        { citizenid = 'CID999', stash = 'crimson_arena_CID999', items = {} },
+    })
+
+    s.fire('adminState', 1, {})
+    local owed = s.lastNamed('adminState').payload.owed
+
+    local byId = {}
+    for _, row in ipairs(owed) do byId[row.citizenid] = row end
+
+    t.equals(byId.CID002.src, 2, 'a player who IS on the server was not matched to their stash')
+    t.isNil(byId.CID999.src, 'a stash whose owner is gone was given somebody else\'s id')
+end)
+
+t.test('and an admin can hand one back from the tablet', function()
+    local s = newArena({ [1] = true })
+    s.owe({ { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} } })
+
+    s.fire('adminReturn', 1, { target = 2 })
+    t.equals(#s.returned(), 1, 'nothing was handed back')
+    t.equals(s.returned()[1], 2, 'it was handed to the wrong person')
+end)
+
+t.test('and a player who is not an admin cannot', function()
+    -- The same rule as every other button on this screen: the command opens
+    -- it, the handler decides.
+    local s = newArena({ [1] = true })
+    s.owe({ { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} } })
+
+    s.fire('adminReturn', 3, { target = 2 })
+    t.equals(#s.returned(), 0, 'a player who is not an admin emptied somebody\'s stash')
+end)
+
+t.test('and a payload with no target is refused', function()
+    local s = newArena({ [1] = true })
+    s.fire('adminReturn', 1, {})
+    t.equals(#s.returned(), 0, 'an empty payload handed something back')
+end)
+
+t.test('and says how many older stashes it did not open', function()
+    -- Four stashes with things in them means something different depending on
+    -- whether that is all of them or the first sixty of nine hundred, and an
+    -- admin cannot tell those apart from the list alone.
+    local s = newArena({ [1] = true })
+    s.owe({
+        { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} },
+    }, 900)
+
+    s.fire('adminState', 1, {})
+    local pushed = s.lastNamed('adminState').payload
+    t.equals(pushed.stashesFound, 900, 'the screen was not told how many exist')
+    t.equals(pushed.stashesRead, 1, 'nor how many were opened')
+end)
+
+t.test('and a stash this run has never heard of is still listed', function()
+    -- THE WHOLE POINT OF GOING TO THE DATABASE. `owed` and `stashed` are in
+    -- MEMORY: they survive a reconnect, the sweep works from them, and they
+    -- are gone the moment the resource restarts. The stashes are not -- they
+    -- are real ox_inventory rows -- so a player whose belongings were
+    -- outstanding when the server went down was somebody nothing in this
+    -- resource could name afterwards. That is the exact case where a person
+    -- stays short for ever, and it was invisible.
+    local s = newArena({ [1] = true })
+    s.owe({
+        {
+            citizenid = 'CID777', stash = 'crimson_arena_CID777',
+            items = { { name = 'phone', count = 1 } },
+            -- Not in `owed` and not in `stashed`: found by name, not by
+            -- memory.
+            remembered = false,
+        },
+    })
+
+    s.fire('adminState', 1, {})
+    local rows = s.lastNamed('adminState').payload.owed
+    t.equals(#rows, 1, 'a stash from an earlier run was not listed')
+    t.equals(rows[1].citizenid, 'CID777')
+    t.isFalse(rows[1].remembered,
+        'the screen cannot tell a stash this run knows from one it found by name')
+end)
+
+t.test('and an offline owner has their return QUEUED rather than refused', function()
+    -- THE GAP THIS CLOSES, and it is not a convenience. There is no live
+    -- inventory to put items into for somebody who is not on the server, so
+    -- the only safe thing an admin can do for them is make sure the server
+    -- tries the instant they come back.
+    --
+    -- And it has to be possible, because `owed` is in MEMORY: a restart
+    -- empties it, and the sweep only ever tries the people ON it. A stash
+    -- left outstanding when the server went down was invisible to the retry
+    -- for ever after -- the items safe in a real stash, and nothing ever
+    -- going to hand them over. This is what puts it back on the list.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminReturn', 1, {
+        target = 0,
+        citizenid = 'CID777',
+        stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.returned(), 0, 'it tried to hand items to somebody who is not there')
+    t.equals(#s.queued(), 1, 'the return was not queued for when they come back')
+    t.equals(s.queued()[1].citizenid, 'CID777', 'it was queued under the wrong name')
+    t.equals(s.queued()[1].stash, 'crimson_arena_CID777', 'and against the wrong stash')
+end)
+
+t.test('and an online owner is still handed it there and then', function()
+    -- The same button, and the live path must not have been traded away for
+    -- the offline one.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminReturn', 1, {
+        target = 2,
+        citizenid = 'CID002',
+        stash = 'crimson_arena_CID002',
+    })
+
+    t.equals(#s.returned(), 1, 'a player who IS on the server was only queued')
+    t.equals(s.returned()[1], 2)
+    t.equals(#s.queued(), 0, 'and queued as well, which would hand it over twice')
+end)
+
+t.test('and a queue with no stash to queue is refused', function()
+    local s = newArena({ [1] = true })
+    s.fire('adminReturn', 1, { target = 0, citizenid = 'CID777' })
+    t.equals(#s.queued(), 0, 'a half-named stash was queued')
+
+    s.fire('adminReturn', 1, { target = 0, stash = 'crimson_arena_CID777' })
+    t.equals(#s.queued(), 0, 'a stash with no owner was queued')
+end)
+
+t.test('and a player who is not an admin cannot queue one either', function()
+    local s = newArena({ [1] = true })
+    s.fire('adminReturn', 3, {
+        target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
+    })
+    t.equals(#s.queued(), 0, 'a non-admin queued a return')
+end)
+
+-- ======================================================================
+-- A STASH THE DOOR IS HOLDING BACK
+--
+-- A jam is the door refusing to empty one stash, on purpose: something came
+-- out of it that the arena could not account for, so it can no longer tell
+-- what it has already given out and will not risk handing the same things
+-- over twice. It is settled by a person reading the contents.
+--
+-- The tablet listed one of these exactly like any other stash -- same rows,
+-- same button -- and BOTH ways the button could go were wrong.
+-- ======================================================================
+
+t.test('THE BUG: hand-back on a held-back stash promised a return that never comes', function()
+    -- Offline, the press fell through to QueueReturn, which took it happily,
+    -- and the screen said the belongings were queued and would go back the
+    -- next time that character was seen. The exit refuses a held-back stash
+    -- every single time the jam stands -- which is for ever, without a human
+    -- -- so the promise could not be kept and nothing said so. The operator
+    -- pressed it, believed it, and moved on.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminReturn', 1, {
+        target = 0,
+        citizenid = 'CID777',
+        stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 0, 'a held-back stash was queued for a return the door will refuse')
+    t.equals(#s.returned(), 0, 'and something was handed over as well')
+end)
+
+t.test('and an ONLINE owner is not quietly handed the NEXT stash along instead', function()
+    -- The worse half, because it reported success. ReturnLeftovers works the
+    -- stash name out for itself and stashFor SKIPS a jammed name -- so the
+    -- press emptied the next stash along, logged "complete", and left the row
+    -- the operator actually pressed untouched.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID002')
+
+    s.fire('adminReturn', 1, {
+        target = 2,
+        citizenid = 'CID002',
+        stash = 'crimson_arena_CID002',
+    })
+
+    t.equals(#s.returned(), 0, 'a hand-back ran for a stash the door is holding back')
+    t.equals(#s.queued(), 0, 'and it was queued too')
+end)
+
+t.test('and the SAME press on a stash that is NOT held still goes through', function()
+    -- The control. A refusal that fires on everything is not a fix.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID999')
+
+    s.fire('adminReturn', 1, {
+        target = 0,
+        citizenid = 'CID777',
+        stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 1, 'an ordinary outstanding stash stopped being queued')
+end)
+
+t.test('THE HOLD IS CLEARED FROM THE TABLET, by somebody who has read the contents', function()
+    -- It was a console command and nothing else, so the one screen that lists
+    -- the stash item by item could not act on what it showed. The rule that
+    -- made it a command -- a human must look first -- is kept by the shape of
+    -- the screen: the button lives on the detail view, under the contents.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 1, 'the hold was not cleared')
+    t.equals(s.unjammed()[1], 'crimson_arena_CID777', 'a different stash was cleared')
+end)
+
+t.test('and the hand-back that was refused a moment ago now works', function()
+    -- The whole point of the button: the operator settles the stash and gets
+    -- their belongings moving, without leaving the tablet.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminReturn', 1, {
+        target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
+    })
+    t.equals(#s.queued(), 0, 'the refusal under test did not happen')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+    s.fire('adminReturn', 1, {
+        target = 0, citizenid = 'CID777', stash = 'crimson_arena_CID777',
+    })
+
+    t.equals(#s.queued(), 1, 'clearing the hold did not let the belongings move')
+end)
+
+t.test('and the screen is redrawn, so the mark and the button go with it', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.isTrue(#s.sentNamed('adminState') > before,
+        'the hold was cleared and the screen still showed it as held')
+end)
+
+t.test('and clearing a hold that is not there is refused rather than reported as done', function()
+    -- The commonest reason by far is the harmless one -- somebody else
+    -- cleared it a moment ago -- and the operator has to be able to tell that
+    -- from a button that did nothing.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0, 'a stash nobody was holding back was cleared')
+end)
+
+t.test('and a player who is not an admin cannot clear one', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 3, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0, 'a non-admin cleared the door\'s hold on a stash')
+end)
+
+t.test('THE BUG: the tablet cleared a hold over a FULL stash on one press', function()
+    -- The console has refused exactly this for as long as /arenaunjam has
+    -- existed: what is left in a held-back stash goes back inside the next
+    -- ceiling and the next exit hands it to the owner -- a second copy of
+    -- everything they already carry. The button was wired to Unjam, which is
+    -- the mechanism and asks nothing, so it reached past every word of that.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.equals(#s.unjammed(), 0,
+        'a hold over a stash still holding three kinds of thing was cleared on one press')
+end)
+
+t.test('and it DOES clear once the operator says they have read it', function()
+    -- The refusal is a question, not a wall.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777', force = true })
+
+    t.equals(#s.unjammed(), 1, 'an operator who had read the contents still could not clear it')
+    t.isTrue(s.forcedClears()[1], 'and the confirmation was not passed on')
+end)
+
+t.test('and the screen is redrawn on the REFUSAL too, not only on the clear', function()
+    -- The refusal is the one moment this screen knows something about that
+    -- stash the operator does not.
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777', 3)
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminUnjam', 1, { stash = 'crimson_arena_CID777' })
+
+    t.isTrue(#s.sentNamed('adminState') > before,
+        'a refused clear left the screen with nothing to say')
+end)
+
+t.test('THE REQUEST: the tablet stops every match, and asks before it does', function()
+    -- /arenaadmin wipe has always existed at a console. Bringing it to the
+    -- tablet brings the console's one protection with it and then some: the
+    -- SERVER refuses an unconfirmed wipe, so a mis-click cannot be turned
+    -- into one by a crafted request either.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    t.equals(#s.lobby.All(), 1, 'the fixture did not make a match to wipe')
+
+    s.fire('adminWipe', 1, {})
+    t.equals(#s.lobby.All(), 1, 'an unconfirmed wipe took the server out')
+
+    s.fire('adminWipe', 1, { confirm = true })
+    t.equals(#s.lobby.All(), 0, 'a confirmed wipe stopped nothing')
+end)
+
+t.test('and a confirmation that is not a real yes is not one', function()
+    -- The same coercion setReady's relay does. A truthy string arriving from
+    -- a crafted request is not somebody pressing a button twice.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminWipe', 1, { confirm = 'yes' })
+    s.fire('adminWipe', 1, { confirm = 1 })
+
+    t.equals(#s.lobby.All(), 1, 'a wipe went through on something that was not a yes')
+end)
+
+t.test('and a player who is not an admin cannot wipe the server', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminWipe', 3, { confirm = true })
+
+    t.equals(#s.lobby.All(), 1, 'a non-admin stopped every match on the server')
+end)
+
+t.test('and the screen is redrawn afterwards, even though nothing is left', function()
+    -- An operator who pressed a destructive button and saw the same list
+    -- presses it again.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    local before = #s.sentNamed('adminState')
+
+    s.fire('adminWipe', 1, { confirm = true })
+
+    t.isTrue(#s.sentNamed('adminState') > before, 'the wipe left the screen showing the dead rounds')
+end)
+
+t.test('and a clear with no stash named is refused', function()
+    local s = newArena({ [1] = true })
+    s.jam('crimson_arena_CID777')
+
+    s.fire('adminUnjam', 1, {})
+
+    t.equals(#s.unjammed(), 0, 'a nameless clear cleared something')
+end)
+
+t.test('WHETHER THE HOLD LIST HAS BEEN READ rides out with the screen', function()
+    -- An unread list answers "not held back" for every stash on earth. The
+    -- screen has to be able to tell that from a list that has been read and
+    -- holds nothing, because only one of them means there is nothing to do --
+    -- the same distinction the stash counts and the owed-kit line draw.
+    local s = newArena({ [1] = true })
+    s.fire('adminState', 1, {})
+    t.equals(s.lastNamed('adminState').payload.jamsKnown, true,
+        'a hold list that HAS been read was sent as unread')
+
+    local blind = newArena({ [1] = true })
+    blind.jamsUnread()
+    blind.fire('adminState', 1, {})
+    t.equals(blind.lastNamed('adminState').payload.jamsKnown, false,
+        'a hold list that has NOT been read was sent as fact')
+end)
+
+-- ======================================================================
+-- AND THE SCREEN GOES UP EVEN WHEN THE DATABASE DOES NOT ANSWER
+-- ======================================================================
+
+t.test('THE BUG: a stash sweep that never answered meant /arenaadmin did NOTHING', function()
+    -- The whole screen used to be opened from INSIDE the sweep's callback, on
+    -- the reasoning that a first draw without the stash list would tell an
+    -- operator "nothing outstanding" when somebody is short. Right about the
+    -- lie, wrong about the cure: the sweep is a database read, and a database
+    -- that never answers is not an error anybody can catch -- the query was
+    -- accepted, so the pcall around it succeeded and the callback simply
+    -- never ran.
+    --
+    -- What that looked like from a seat: type /arenaadmin, and nothing
+    -- happens. No screen, no refusal, nothing in the console.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.stallStashes()
+
+    s.command('arenaadmin', 1, {})
+
+    local opened = s.lastNamed('openAdmin')
+    t.isNotNil(opened, 'the command put no screen up at all')
+    t.equals(opened.target, 1, 'the screen was opened for the wrong person')
+    t.equals(#opened.payload.matches, 1, 'and it opened without the live matches on it')
+end)
+
+t.test('and the screen it puts up does not claim nobody is short', function()
+    -- The first draw is honest about what it does not know yet: an EMPTY
+    -- owed list draws no "not handed back yet" section at all, rather than an
+    -- empty one captioned as good news. The counts say the same thing -- zero
+    -- found, zero read, which is "not looked yet" rather than "looked and
+    -- found none".
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.stallStashes()
+
+    s.command('arenaadmin', 1, {})
+
+    local payload = s.lastNamed('openAdmin').payload
+    t.equals(#payload.owed, 0, 'the first draw invented a stash list it had not read')
+    t.equals(payload.stashesFound, 0, 'it claimed to know how many stashes exist')
+    t.equals(payload.stashesRead, 0, 'and how many it had opened')
+end)
+
+t.test('BOTH admin payloads carry the currency symbol, or the tablet prints a hard-coded $',
+function()
+    -- THE SERVER HALF, which nothing held. The panel's own test hand-feeds a
+    -- symbol into the message, so it proves app.js reads one and says nothing
+    -- at all about whether the server sends one -- deleting both lines from
+    -- server/main.lua left the panel suite, this suite and verify_contracts
+    -- green. That is the exact shape of hole the harness change in this same
+    -- commit was written to close, reintroduced one file away.
+    --
+    -- WHY IT MATTERS: money() on the panel reads `state.config`, and
+    -- `state.config` is only ever filled by the PLAYER panel's snapshot. An
+    -- admin who runs /arenaadmin without opening the player panel has no
+    -- other source for the symbol, so a missing key here means every pot,
+    -- stake and sum owed on that screen prints with a `$` whatever the server
+    -- is configured to use.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    local opened = s.lastNamed('openAdmin')
+    t.isNotNil(opened, 'premise: the tablet never opened')
+    t.equals(opened.payload.currencySymbol, s.env.Config.Betting.currencySymbol,
+        'openAdmin does not carry the currency symbol, so the tablet falls back to $')
+
+    s.fire('adminState', 1, {})
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'premise: no refresh was pushed')
+    t.equals(pushed.payload.currencySymbol, s.env.Config.Betting.currencySymbol,
+        'adminState does not carry it either, so a refresh drops it again')
+end)
+
+t.test('and a server that configures a different symbol sends THAT one', function()
+    -- The control. Asserting against Config on both sides would pass with the
+    -- payload hard-coded to '$', so one of them has to be a value nothing
+    -- else in the file uses.
+    local s = newArena({ [1] = true })
+    s.env.Config.Betting.currencySymbol = '\u{20AC}'
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    t.equals(s.lastNamed('openAdmin').payload.currencySymbol, '\u{20AC}',
+        'the payload is not reading the symbol out of Config at all')
+end)
+
+t.test('and the stash list follows on its own once the sweep DOES answer', function()
+    -- The command opens the screen and then asks for exactly the refresh the
+    -- screen's own button asks for, so an admin never has to press anything
+    -- to see the half of it they opened it for.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.owe({
+        { citizenid = 'CID002', stash = 'crimson_arena_CID002',
+          items = { { name = 'phone', count = 1 } } },
+    })
+
+    s.command('arenaadmin', 1, {})
+
+    t.isNotNil(s.lastNamed('openAdmin'), 'the screen never went up')
+    local pushed = s.lastNamed('adminState')
+    t.isNotNil(pushed, 'the stash sweep was never asked for')
+    t.equals(pushed.target, 1, 'it was pushed to the wrong person')
+    t.equals(#pushed.payload.owed, 1, 'and it arrived without the outstanding stash on it')
+    t.equals(pushed.payload.owed[1].citizenid, 'CID002')
+end)
+
+t.test('and a player who is not an admin still gets neither half', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.owe({ { citizenid = 'CID002', stash = 'crimson_arena_CID002', items = {} } })
+
+    s.fire('adminState', 1, {})   -- one legitimate push, so `lastNamed` has a floor
+    local before = #s.sentNamed('adminState')
+
+    s.command('arenaadmin', 2, {})
+    t.isNil(s.lastNamed('openAdmin'), 'the command opened the tablet for a non-admin')
+    t.equals(#s.sentNamed('adminState'), before,
+        'a non-admin got the stash sweep pushed at them anyway')
+end)
+
+-- ======================================================================
+-- A REVIVE IS NOT A RESURRECTION INTO THE ROUND
+-- ======================================================================
+
+t.test('THE BUG: reviving an ELIMINATED fighter put them back in the running', function()
+    -- Arena.IsEliminated is exactly `alive ~= true and lives <= 0`, so
+    -- flipping the flag alone put a fighter the round had already finished
+    -- with back into every winner-selection path in server/match.lua -- while
+    -- standing outside the arena, unkillable, and not fighting.
+    --
+    -- Two things followed. The round could no longer END by last-man-
+    -- standing, because a spectator was being counted as standing; and once
+    -- the real fighters had eliminated each other, that spectator was the
+    -- last one left, crowned, and paid the pot.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+    row.lives = 0
+    t.isTrue(s.env.Arena.IsEliminated(row), 'fighter 2 is not eliminated, so this proves nothing')
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isTrue(s.env.Arena.IsEliminated(s.lobby.Get(id).players[2]),
+        'an eliminated fighter was put back into the running from the tablet -- they can now '
+        .. 'be crowned and paid the pot without firing a shot')
+end)
+
+t.test('THE REPORT: and a fighter down during the START COUNTDOWN can be revived', function()
+    -- IN A PLAYER'S WORDS: "i was unable to use arenaadmin tablet to revive
+    -- them", of somebody killed before the match started.
+    --
+    -- The guard read `state == 'live'`, and the start countdown is
+    -- `countdown` -- everybody standing in the arena, frozen, waiting for the
+    -- guns. Somebody who arrived down is exactly the person an admin is
+    -- reaching for at that moment, and the tablet refused: the medical revive
+    -- went out while the roster went on calling them dead, so they stood up
+    -- and the round still treated them as a corpse.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    t.equals(s.lobby.Get(id).state, 'countdown', 'the round is not in its countdown')
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isTrue(s.lobby.Get(id).players[2].alive,
+        'a fighter down in the start countdown could not be put back on their feet')
+end)
+
+t.test('and a lobby that has not started is still refused', function()
+    -- Nobody is in an arena then, so there is no round standing to restore --
+    -- and the medical revive is /arenarevive's job, not this screen's.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    t.equals(s.lobby.Get(id).state, 'lobby', 'the match already started')
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+
+    s.fire('adminRevive', 1, { target = 2 })
+
+    t.isFalse(s.lobby.Get(id).players[2].alive,
+        'a lobby that has not begun had a round standing restored in it')
+end)
+
+t.test('and is still picked up off the floor, because that is what the button says', function()
+    -- The two halves are separate on purpose. Standing somebody up medically
+    -- is never the wrong thing to do; putting them back into a round that has
+    -- finished with them is.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+
+    local row = s.lobby.Get(id).players[2]
+    row.alive = false
+    row.lives = 0
+
+    s.fire('adminRevive', 1, { target = 2 })
+    -- THE LAST ONE, not the first: everybody is revived once on the way into
+    -- the arena now, so the first entry in this list is that rather than the
+    -- button this test pressed.
+    local told = s.revived()
+    t.equals(told[#told], 2, 'the medical script was never told')
+end)
+
+t.test('and a fighter with lives LEFT is still put back into the round', function()
+    -- The control. A fix that simply stopped touching `alive` would pass the
+    -- test above and turn the button into a no-op for everybody it is for.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.match.Start(id)
+    s.step()
+    s.match.OnDeath(2, 1)
+
+    local row = s.lobby.Get(id).players[2]
+    t.isFalse(row.alive, 'fighter 2 is not down, so this proves nothing')
+    t.isTrue((row.lives or 0) > 0, 'and they are out of lives, which is the other test')
+
+    s.fire('adminRevive', 1, { target = 2 })
+    -- BACK IN THE ROUND BY THE RESPAWN, NOT BY THE FLAG. A fighter dead in a
+    -- live round with lives left already has a respawn scheduled; Revive
+    -- used to flip the row alive on the spot, which made that thread bail
+    -- and left them held on the floor with no respawn ever sent -- counted
+    -- as standing, and once able to win. So the button leaves the standing
+    -- alone there and the round stands them up itself. Step it.
+    for _ = 1, 10 do s.step() end
+    t.isTrue(s.lobby.Get(id).players[2].alive, 'the roster still says they are down')
+end)
+
+-- ======================================================================
+-- AND A SLOW REFRESH DOES NOT PAINT OVER A NEW ONE
+-- ======================================================================
+
+t.test('THE BUG: a stash scan that answered late threw the admin out of the match', function()
+    -- The stash sweep is a database read and can take seconds. Nothing
+    -- sequenced two of them and the tablet applies every payload it is sent
+    -- -- so an admin who refreshed against a slow database and then clicked
+    -- into a match had the first scan answer afterwards, with `focused` nil
+    -- and match rows several seconds old. A match aborted in between still
+    -- showed as live, and still offered a Stop button for it.
+    local s = newArena({ [1] = true })
+    local id = s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})              -- scan 1: the match list
+    s.fire('adminState', 1, { matchId = id }) -- scan 2: one match, opened
+    t.equals(s.pendingStashes(), 2, 'the fixture did not hold both scans')
+
+    s.answerStash(2)   -- the NEWER one draws
+    t.isNotNil(s.lastNamed('adminState').payload.focused, 'the newer scan drew nothing')
+
+    s.answerStash(1)   -- and the older one, arriving late, must not
+
+    t.isNotNil(s.lastNamed('adminState').payload.focused,
+        'a stale scan threw the admin back out to the match list')
+end)
+
+t.test('and an ordinary refresh still draws', function()
+    -- The control: a ticket that refused everything would pass the test above
+    -- and leave the screen permanently frozen on its first draw.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})
+    t.isTrue(s.answerStash(1), 'there was no scan to answer')
+    t.isNotNil(s.lastNamed('adminState'), 'the refresh drew nothing at all')
+end)
+
+t.test('and a scan still in flight when its admin leaves is dropped', function()
+    -- The ticket is keyed by server id, and server ids are recycled. A scan
+    -- answering after its admin has gone would otherwise be sent to whoever
+    -- holds that id next.
+    local s = newArena({ [1] = true })
+    s.open(2)
+    s.deferStashes()
+
+    s.fire('adminState', 1, {})
+    local before = #s.sentNamed('adminState')
+
+    s.dropPlayer(1)
+    s.answerStash(1)
+
+    t.equals(#s.sentNamed('adminState'), before,
+        'a scan was pushed at a server id whose admin had already left')
+end)
+
+-- ======================================================================
+-- AND THE DOORS ARE ON EVERY PUSH
+--
+-- The tablet has a switch for them and draws a whole screen off them, and a
+-- switch that cannot show its own state is a switch nobody can trust.
+-- ======================================================================
+
+t.test('the tablet is told whether the arena is open, and who decided that', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminState', 1, {})
+    local payload = s.lastNamed('adminState').payload
+
+    t.isTrue(payload.hoursOpen, 'the tablet was not told the arena is open')
+    t.isNil(payload.hoursForced, 'it was told somebody had decided that, and nobody had')
+end)
+
+t.test('and the same on the very first draw, not only on a refresh', function()
+    -- The command opens the screen before the stash sweep answers. A doors
+    -- state that only arrived with the refresh would leave the first frame
+    -- drawing a closed arena as open, or the other way about.
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.command('arenaadmin', 1, {})
+    local opened = s.lastNamed('openAdmin').payload
+
+    t.isTrue(opened.hoursOpen, 'the first draw was not told whether the arena is open')
+end)
+
+t.test('and it carries the HOURS, so a closed arena can say what it is closed until', function()
+    -- A field the server does not send is a field the screen cannot draw, and
+    -- both ends look correct while it is missing. This resource has shipped
+    -- that bug more than once.
+    -- NO MATCH OPENED, deliberately: with hours enforced this window may well
+    -- be shut at the moment the suite runs, and a lobby that could not be
+    -- created would fail this test for a reason it is not about.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 0 }
+    end)
+
+    s.fire('adminState', 1, {})
+    local payload = s.lastNamed('adminState').payload
+
+    t.equals(payload.hoursLine, '05:00-07:00', 'the schedule did not reach the screen')
+end)
+
+t.test('and says so plainly on a server that keeps no hours at all', function()
+    -- Not the same as "open all day" said badly: there is no window to quote,
+    -- and the screen has its own words for that.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = false, windows = {}, offsetHours = 0 }
+    end)
+
+    s.fire('adminState', 1, {})
+    t.isNil(s.lastNamed('adminState').payload.hoursLine,
+        'a server keeping no hours sent some anyway')
+end)
+
+t.test('and an admin closing it is reported back as an admin closing it', function()
+    local s = newArena({ [1] = true })
+    s.open(2)
+
+    s.fire('adminHours', 1, { forced = 'shut' })
+
+    local payload = s.lastNamed('adminState').payload
+    t.isFalse(payload.hoursOpen, 'the tablet still thinks the arena is open')
+    t.equals(payload.hoursForced, 'shut', 'and cannot tell an admin closed it')
+end)
+
+-- ========================================================================
+-- THE REPORTS: /arenaadmin's third screen
+--
+-- Three readings an operator used to have to type a console command for --
+-- instancing, opening hours, held-back stashes -- moved onto the tablet.
+-- The handler is gated like every other action here, answers only the three
+-- names it knows, and runs each report through pcall because they read live
+-- server state (routing buckets, the clock, ox_inventory) and one of them
+-- throwing must not take the tablet down with it.
+--
+-- AND EVERY ANSWER NAMES THE TOOL IT IS ANSWERING. The panel drops a report
+-- whose name is not the one on screen, so an operator who presses Instancing,
+-- changes their mind and presses Opening hours does not have the slower of
+-- the two land on top of what they are reading. That only works if the
+-- server says which one it ran.
+-- ========================================================================
+
+--- Every key of ADMIN_TOOLS, read out of server/main.lua's source.
+---
+--- A HAND-KEPT LIST WAS THE BUG HERE. These three tests used to loop over
+--- { 'isolation', 'hours', 'jams' } written out by hand, so a fourth tool
+--- added to the tablet -- Police & EMS was the one that exposed it -- was
+--- gated, rate-limited, pcall-wrapped and covered by nothing. Reading the
+--- set out of the file means the next tool is covered the moment it exists,
+--- and a renamed one fails here rather than silently dropping its coverage.
+--- @return string[]
+--- The 'hours' tool's lines, as one block of text.
+local function hoursText(s)
+    s.fire('adminTool', 1, { tool = 'hours' })
+    return table.concat(((s.lastNamed('adminTool') or {}).payload or {}).lines or {}, '\n')
+end
+
+t.test('OPENING HOURS: an override names no schedule time, because none of them govern', function()
+    -- THE and/or FALLTHROUGH, AND WHAT IT TOLD AN ADMIN.
+    --
+    -- The line was `hours.open and hours.snapshot.closesAt or
+    -- hours.snapshot.opensAt`. closesAt is set only while the SCHEDULE says
+    -- open, opensAt only while it says shut -- so with the doors HELD OPEN
+    -- past a schedule that says shut, closesAt is nil and the idiom falls
+    -- through to opensAt. The next OPENING time was printed behind the word
+    -- "until", two lines under "OVERRIDDEN: an admin has the doors HELD OPEN".
+    --
+    -- An admin who held the doors for an event reads that the arena shuts at
+    -- that time. It does not: nothing shuts it until somebody releases the
+    -- override or the server restarts. The other two override cases quoted a
+    -- real time that had equally stopped governing anything.
+    --
+    -- Nothing in the suite asserted a single line of this report before this
+    -- test, which is how it survived.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+    end)
+
+    s.fire('adminHours', 1, { forced = 'open' })
+    local held = hoursText(s)
+
+    t.contains(held, 'OVERRIDDEN', 'the override was not reported at all, so this proves nothing')
+    t.contains(held, 'OPEN', 'an override holding the doors open did not report them open')
+    t.notContains(held, ', until 0',
+        'a schedule time was quoted as the closing time while an admin override governs the doors')
+    t.notContains(held, 'opens at',
+        'a schedule opening time was quoted while an admin override governs the doors')
+    t.contains(held, 'hands the doors back to the schedule',
+        'the report named no time and did not say why, which is worse than the wrong time')
+
+    -- AND THE MIRROR, so this cannot be satisfied by never naming a time.
+    s.fire('adminHours', 1, { forced = 'shut' })
+    local shut = hoursText(s)
+    t.contains(shut, 'SHUT', 'an override closing the doors did not report them shut')
+    t.notContains(shut, 'opens at',
+        'a schedule opening time was quoted while an admin override holds the doors shut')
+end)
+
+t.test('and an offset the code IGNORES is not reported as in force', function()
+    -- ArenaHoursNow shifts by 0 for anything outside -14..14. This line
+    -- printed the RAW config value, so an operator who typed 500 was told
+    -- that offset was in force while the arena clock on the very next line
+    -- showed no shift -- on the one screen built to diagnose a timezone.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.offsetHours = 500
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'IGNORED',
+        'an out-of-range offset was reported as though the doors were going by it')
+    t.contains(said, '+0', 'the report does not say what offset is actually applied')
+end)
+
+t.test('and an in-range offset is reported plainly, which is the control', function()
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.offsetHours = -5
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '-5', 'a usable offset was not reported')
+    t.notContains(said, 'IGNORED', 'a usable offset was reported as ignored')
+end)
+
+--- The one REPORT line about the offset, and only the number it says is in
+--- force -- never the one it says the file contains.
+---
+--- Both are on that line on purpose, which is exactly why an assertion made
+--- against the whole of it proves nothing: `contains '+500'` passes on a line
+--- reading "+0 (config says +500 ... IGNORED)" and on one reading "+500".
+--- @return string
+local function reportedOffset(s)
+    for line in (hoursText(s) .. '\n'):gmatch('(.-)\n') do
+        local applied = line:match('offsetHours:%s+(%S+)')
+        if applied then return applied end
+    end
+    return ''
+end
+
+--- The same number off the BOOT LOG's hours line, and off that line alone.
+---
+--- Arena.ReportConfigProblems prints its own complaint about this very field
+--- a line or two above, naming the configured value: an assertion made
+--- against the whole console is satisfied by the complaint whatever the
+--- hours line says.
+--- @return string offset -- as printed, e.g. '+0h'
+--- @return string line -- the whole hours line, for the rest of it
+local function bootOffset(s)
+    s.boot()
+    local found = ''
+    for line in (s.log() .. '\n'):gmatch('(.-)\n') do
+        if line:find('] hours: ', 1, true) then found = line end
+    end
+    return (found:match('offset (%S+)')) or '', found
+end
+
+t.test('THE BOOT LOG makes the same claim as the report, and it was making another', function()
+    -- The console line prints the offset and the shifted arena clock in one
+    -- breath, so a raw config value there contradicts the number beside it --
+    -- and it is the screen an operator reads FIRST, often instead of
+    -- /arenahours. The report was taught to name the applied offset and this
+    -- line was not, because nothing in this suite had ever read it.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 500 }
+    end)
+
+    local offset, line = bootOffset(s)
+    t.equals(offset, '+0h', 'the boot log named an offset the clock was never shifted by')
+    t.contains(line, 'IGNORED', 'it named 500 as though the doors were going by it')
+    t.contains(line, '+500', 'and it did not say what the file actually contains')
+end)
+
+t.test('and the control: an offset in range is printed there plainly', function()
+    -- Without this the test above is satisfied by a line hard-wired to +0h.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = -5 }
+    end)
+
+    local offset, line = bootOffset(s)
+    t.equals(offset, '-5h', 'a usable offset did not reach the boot log')
+    t.notContains(line, 'IGNORED', 'a usable offset was reported as thrown away')
+end)
+
+t.test('and an offset no %d can print does not put the format string on the screen', function()
+    -- string.format('%+d', 1e20) RAISES -- "number has no integer
+    -- representation" -- because Arena.ToInt floors with math.floor, which
+    -- leaves a float that large as a FLOAT. Both printers swallow it:
+    -- ArenaLog's compose and the report's `say` each pcall string.format and
+    -- fall back to the raw template, so the line reached the operator with
+    -- '%+d' in it and no number anywhere. The one field they mistyped was the
+    -- one thing the screen would not tell them about.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = { enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = 1e20 }
+    end)
+
+    local said = hoursText(s)
+    t.notContains(said, '%+d', 'the report printed its own format string instead of a number')
+    t.equals(reportedOffset(s), '+0', 'the report did not name the offset actually applied')
+    t.contains(said, '1e+20', 'the report never named the value the operator typed')
+
+    local offset, line = bootOffset(s)
+    t.notContains(line, '%+d', 'the boot log printed its own format string instead of a number')
+    t.equals(offset, '+0h', 'the boot log did not name the offset actually applied')
+end)
+
+t.test('and math.abs was not the range test, because integer abs OVERFLOWS', function()
+    -- math.abs(math.mininteger) is math.mininteger -- still negative -- so
+    -- `math.abs(x) <= 14` ACCEPTED it, in all three places that asked. The
+    -- config validator printed no complaint; the shift multiplied out to
+    -- exactly 0 so the clock did not move at all; and both screens announced
+    -- an offset of -9223372036854775808 hours standing beside it.
+    --
+    -- Every other out-of-range value in this file is refused. This one was
+    -- not, and it is the only integer that could do it.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = {
+            enabled = true, windows = { { from = 5, to = 7 } }, offsetHours = math.mininteger,
+        }
+    end)
+
+    t.equals(reportedOffset(s), '+0', 'the report named a shift the clock never made')
+    t.contains(hoursText(s), 'IGNORED', 'an offset no clock can apply was reported as in force')
+
+    local offset = bootOffset(s)
+    t.equals(offset, '+0h', 'the boot log named a shift the clock never made')
+
+    -- AND THE OPERATOR IS TOLD, which is the half that was silent.
+    t.contains(s.log(), 'Config.Schedule.offsetHours is -9223372036854775808',
+        'the validator waved through the one value it should have named loudest')
+end)
+
+t.test('and windows that were all thrown away do not read as "no windows written"', function()
+    -- Both printed "(none -- open at every hour)". One is an operator who
+    -- wrote no schedule; the other wrote windows and had every one rejected
+    -- -- and being told the arena is open at every hour, under a heading
+    -- reading ON, invites them to believe the hours are being enforced.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { open = 'nonsense', close = 'also nonsense' } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'none usable',
+        'a schedule whose every window was thrown away reads as a server with no schedule')
+    t.contains(said, 'NOTHING is being refused',
+        'the report did not say that the hours are not actually being enforced')
+end)
+
+t.test('DEFECT: but an ALL-DAY window is not "thrown away" -- config.lua recommends it by name', function()
+    -- Arena.ScheduleLine returns nil on three different facts and only one
+    -- of them is a mistake. `{ from = 0, to = 24 }` parses perfectly, is
+    -- kept, and covers the whole day -- so there is no range worth printing
+    -- and the line comes back nil. The report read that as "every window you
+    -- wrote was rejected" and sent the operator to a startup console that
+    -- names nothing.
+    --
+    -- AND config.lua SAYS TO WRITE IT, on the line directly above `windows`:
+    -- "{ from = 0, to = 24 } for all day". So the operator who followed this
+    -- resource's own documentation was accused of writing a broken schedule,
+    -- on the one screen built to end that kind of hunt.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 24 } }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, 'none usable',
+        'an all-day window -- the one config.lua recommends by name -- was reported as thrown '
+        .. 'away, and the operator was sent to read a console that names nothing')
+    t.contains(said, '1 of 1 good',
+        'the report did not say the windows are fine, so the operator still cannot tell this '
+        .. 'apart from a schedule that was rejected')
+    t.notContains(said, 'THROWN AWAY',
+        'a schedule with nothing wrong with it was told something had been thrown away')
+end)
+
+t.test('DEFECT: and a MIXED schedule is not vouched for wholesale', function()
+    -- THE FIX FOR THE ALL-DAY CASE INVENTED A WORSE LIE THAN THE ONE IT
+    -- REPLACED. The branch gated on how many SPANS survived and then printed
+    -- how many windows were WRITTEN, inside the words "all of them GOOD".
+    --
+    -- One good all-day window plus one typo -- the exact mixture an operator
+    -- produces while editing -- read "2 written, all of them GOOD" while one
+    -- of the two had been thrown away. The old message at least sent them to
+    -- the startup console; this one told them there was nothing to look for.
+    -- A report that invents an all-clear is the thing this screen exists to
+    -- stop.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 24 }, { from = 99, to = 100 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '1 of 2 good',
+        'a schedule with one good window and one typo was counted as though all of it were good')
+    t.contains(said, 'THROWN AWAY',
+        'one window was thrown away and the operator was not told, so they never look at the '
+        .. 'startup console that names it')
+end)
+
+t.test('and windows that MERGE are not mistaken for windows that were thrown away', function()
+    -- THE OTHER HALF, AND THE REASON THE COUNT CANNOT COME FROM #spans.
+    -- Spans are MERGED: 0-12 and 12-24 are two perfectly good windows that
+    -- collapse into one span. Counting spans would report "1 of 2 good" and
+    -- accuse the operator of a mistake they did not make -- which is the
+    -- same defect as the test above, pointing the other way.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 0, to = 12 }, { from = 12, to = 24 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '2 of 2 good',
+        'two good windows that merged into one span were counted as one good window')
+    t.notContains(said, 'THROWN AWAY',
+        'two perfectly good windows were reported as partly thrown away')
+end)
+
+t.test('DEFECT: and windows left in a schedule that is switched OFF are not "thrown away" either', function()
+    -- The second of the three. With Config.Schedule.enabled false,
+    -- Arena.ScheduleSpans reads nothing at all, so the line is nil and the
+    -- windows sitting in the file are simply not in use -- which the heading
+    -- two lines up already says, in capitals.
+    --
+    -- Telling that operator their four windows were rejected sends them to
+    -- fix windows that are not broken, and away from the one-word setting
+    -- that is actually why the hours are not being kept.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = false
+        config.Schedule.windows = {
+            { from = 0, to = 4 }, { from = 9, to = 12 },
+            { from = 14, to = 18 }, { from = 20, to = 24 },
+        }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, 'none usable',
+        'a schedule that is switched off reported its windows as rejected, so the operator '
+        .. 'goes and fixes four windows that are fine')
+    t.contains(said, 'NOT IN USE',
+        'the report did not name the reason the windows are doing nothing')
+    t.notContains(said, 'Nothing is wrong with them',
+        'the report vouched for windows nothing has looked at -- with the schedule off, '
+        .. 'ScheduleSpans returns before the validity test and ValidateConfig skips its whole '
+        .. 'schedule block, so this is a clean bill of health from nobody')
+    t.contains(said, 'NOTHING HAS CHECKED THEM',
+        'the operator was not told that switching the schedule on is what validates the windows')
+end)
+
+t.test('DEFECT: and the OFF arm does not vouch for windows that are actually broken', function()
+    -- THREE UNUSABLE WINDOWS, SCHEDULE OFF. Out of range, from == to, and not
+    -- a pair of hours at all. Nothing in the resource has looked at any of
+    -- them -- Arena.ScheduleSpans bails before the validity test when the
+    -- schedule is off, and Arena.ValidateConfig's entire schedule block is
+    -- gated on `enabled == true`, so the startup console names none of them.
+    -- The report used to end "Nothing is wrong with them".
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = false
+        config.Schedule.windows = { { from = 99, to = 100 }, { from = 5, to = 5 }, { open = 'x' } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '3 written', 'the windows were not counted, so this proves nothing')
+    t.notContains(said, 'Nothing is wrong with them',
+        'three unusable windows were given a clean bill of health by a screen that had not '
+        .. 'looked at them, and by a validator that had skipped them')
+end)
+
+t.test('DEFECT: windows written as ONE window rather than a list says so, and says braces', function()
+    -- THE LIKELIEST FORM OF THE MISTAKE, and the one the old single count got
+    -- most wrong: two string keys (`from` and `to`) were reported as "2
+    -- entries have a NAME ... with no `name =` in front". There is one window,
+    -- there is no `name =` in their file, and the repair is braces.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { from = 0, to = 24 }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'LOOKS LIKE ONE WINDOW', 'the shape was not recognised')
+    t.contains(said, '{ { from = 5, to = 7 } }', 'the report did not show the repair')
+    t.notContains(said, 'has a NAME', 'from and to were reported as names an operator had typed')
+    t.notContains(said, '2 entr', 'one window was counted as two entries')
+end)
+
+t.test('DEFECT: and a window past a GAP in the list is not called a name', function()
+    -- An INTEGER key past a hole. ipairs stops at the gap, so the window is
+    -- invisible -- but it has no name, and telling the operator to remove one
+    -- sends them looking for something that is not there.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { [1] = { from = 0, to = 24 }, [3] = { from = 9, to = 11 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'past a GAP', 'the gap was not named')
+    t.notContains(said, 'has a NAME', 'an integer key past a gap was reported as a name')
+end)
+
+t.test('and a window numbered BELOW 1 is not sent looking for a gap either', function()
+    -- THE THIRD NUMERIC SHAPE, and the GAP message is wrong for it in the
+    -- same way the NAME message was wrong for the GAP. ipairs starts at 1, so
+    -- `[0]` is never reached -- but the list has no hole in it. "Close the
+    -- gap" sends the operator hunting something that does not exist, which is
+    -- exactly what splitting these messages up was for.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { [0] = { from = 9, to = 11 }, { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'numbered BELOW 1', 'a window the list never reaches was not reported')
+    t.notContains(said, 'past a GAP',
+        'a key under 1 was reported as sitting past a gap, and the list has no gap in it')
+    t.notContains(said, 'has a NAME', 'a numeric key was reported as a name')
+end)
+
+t.test('and a table with BOTH gets BOTH, because one sentence cannot say two things', function()
+    -- Without this the split above is satisfied by a report that swaps one
+    -- wrong sentence for another wrong sentence.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = {
+            [0] = { from = 1, to = 2 }, [1] = { from = 5, to = 7 }, [3] = { from = 9, to = 11 },
+        }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'past a GAP', 'the window past the gap went unreported')
+    t.contains(said, 'numbered BELOW 1', 'the window under the start went unreported')
+
+    -- AND THE CONTROL: a list with neither says neither.
+    local clean = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, { from = 9, to = 11 } }
+    end)
+    local fine = hoursText(clean)
+    t.notContains(fine, 'numbered BELOW 1', 'a well-formed list was accused of a stray key')
+    t.notContains(fine, 'past a GAP', 'a well-formed list was accused of a gap')
+end)
+
+t.test('and a note left in the table is not told to become a window', function()
+    -- `note = 'x'` is not a window and never will be. The old message told
+    -- the operator to write it as { from = 5, to = 7 }.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, note = 'x' }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'has a NAME rather than a place in the list', 'the stray key was not named')
+    t.contains(said, 'if not, nothing reads it either way',
+        'the report insisted the entry must be a window')
+end)
+
+t.test('DEFECT: a WRAP-AROUND window is one window, not the two spans it becomes', function()
+    -- THE HALF OF THE SECOND RETURN NOTHING COULD SEE. Arena.ScheduleSpans'
+    -- doc block justifies returning a count at all on two facts: two touching
+    -- windows are TWO windows but ONE span, and a wrap-around is ONE window
+    -- but TWO spans. Only the first was pinned -- every fixture that reached
+    -- the count happened to have accepted == the raw span count, so a version
+    -- that counted raw spans was invisible to all 129 spec files.
+    --
+    -- 22:00-03:00 crosses midnight, so ScheduleSpans appends { 22:00, 24:00 }
+    -- and { 00:00, 03:00 } for the single window the operator typed. Pair it
+    -- with a window that closes the day, so the coverage reaches 24 hours and
+    -- there is no printable range -- which is the only way the count reaches
+    -- the screen.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 22, to = 3 }, { from = 3, to = 22 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '2 of 2 good',
+        'two windows -- one of them a wrap-around, which becomes THREE raw spans between them '
+        .. '-- were not counted as two. A count of raw spans would read "3 of 2 good" here, '
+        .. 'which is the mutation no other test in this suite can see')
+    t.notContains(said, '3 of 2', 'the count is counting raw spans, not the windows written')
+end)
+
+t.test('DEFECT: the written==0 arm is chosen for written==0, not merely worded for it', function()
+    -- THE ARM ORDER WAS PINNED BY NOTHING. The only written==0 test left the
+    -- sandbox default of Schedule.enabled = false in place, so its config
+    -- satisfied BOTH the written==0 arm and the not-enabled arm -- and its
+    -- assertion, contains 'open at every hour', is a phrase both messages
+    -- carry. Swapping the two arms is a real behaviour change and the suite
+    -- stayed green.
+    --
+    -- This pins the choice: schedule ON, no windows, so only the written==0
+    -- arm can produce the reading.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = {}
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '(none -- open at every hour)',
+        'a schedule that is ON with no windows did not take the written==0 arm')
+    t.notContains(said, 'NOT IN USE',
+        'the not-enabled arm answered for a schedule that IS enabled')
+end)
+
+t.test('and a non-boolean `enabled` is not reported as the word false', function()
+    -- `hours.enabled` is `schedule.enabled == true`, so `enabled = 1` lands in
+    -- the NOT IN USE branch -- correctly, because every reader in this
+    -- resource tests `== true`. But the branch used to state as fact that
+    -- "Config.Schedule.enabled is false", which is not what the file says.
+    -- The operator goes looking for a line that is not there.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = 1
+        config.Schedule.windows = { { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'NOT IN USE', 'a non-boolean enabled was treated as switching the hours on')
+    t.notContains(said, 'enabled is false',
+        'the report told the operator their file says false when it says 1')
+end)
+
+t.test('DEFECT: and a named window is named even when the range prints fine', function()
+    -- THE FIX FOR THE NAMED WINDOW WAS ITSELF INCOMPLETE, and incomplete in
+    -- the direction that matters most.
+    --
+    -- The count and the warning sat inside the `else` of `if hours.line`, so
+    -- they only ran when there was NO printable range. Whenever a good window
+    -- existed alongside the named one -- which is the likely way to end up
+    -- with one, editing an existing schedule -- the report took the other arm
+    -- and said nothing at all:
+    --
+    --   windows = { { from = 5, to = 7 }, evening = { from = 20, to = 22 } }
+    --     "windows:  05:00-07:00"      and not one word about the evening.
+    --
+    -- Two windows written, one silently unread by every part of this
+    -- resource, and the screen the operator would check to find out reads
+    -- perfectly healthy. That is worse than the contradiction it replaced.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 }, evening = { from = 20, to = 22 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '05:00-07:00',
+        'the good window stopped printing its range, so this is a different branch')
+    t.contains(said, 'rather than a place in the list',
+        'a window nothing in this resource reads went unmentioned because a DIFFERENT window '
+        .. 'happened to be printable -- the report looks healthy and the operator never learns')
+end)
+
+t.test('CONTROL: and a schedule that is ON with windows that work prints the range', function()
+    -- Without this the two above are satisfied by a report that never says
+    -- "none usable" about anything, including the case it was written for.
+    --
+    -- THIS ONE DOES NOT REACH THE BRANCH THE OTHERS ARE ABOUT, and saying so
+    -- matters: with a printable range, hoursReport takes the `if hours.line`
+    -- arm and never enters the else block at all. So it is a control for the
+    -- REPORT, not for the branch -- it proves the happy path still prints a
+    -- range. The next test is the control for the branch itself.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, '05:00-07:00', 'a working schedule did not print its range')
+    t.notContains(said, 'none usable', 'a working schedule was reported as thrown away')
+    t.notContains(said, 'NOT IN USE', 'a schedule that IS in use was reported as switched off')
+end)
+
+t.test('CONTROL FOR THE BRANCH: a schedule whose every window IS bad still says so', function()
+    -- The one the test above cannot be: it has no printable line, so it goes
+    -- through the else block every other test here is about, and it is the
+    -- case that must keep reading "none usable" while the branches around it
+    -- were being softened.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { { from = 99, to = 100 }, { from = 5, to = 5 } }
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'none usable', 'a schedule with nothing usable in it was not reported as such')
+    t.contains(said, '2 written', 'the report did not say how many the operator had written')
+    t.notContains(said, 'good', 'a schedule with no good window in it was partly vouched for')
+end)
+
+t.test('DEFECT: and a window given a NAME is not counted as one the code can see', function()
+    -- THE TWO SCREENS CONTRADICTED EACH OTHER OUTRIGHT. This report counted
+    -- the windows with `pairs`; everything that acts on them -- ScheduleSpans
+    -- and ValidateConfig alike -- walks with `ipairs`. A window written with
+    -- a string key is in one count and not the other:
+    --
+    --   /arenahours  "none usable -- 1 written, all of them thrown away.
+    --                 The startup console names each one."
+    --   the console  "Config.Schedule is enabled with no windows at all."
+    --
+    -- One written or none written, take your pick -- and the console it sent
+    -- the operator to named no window, because it could not see it either.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.enabled = true
+        config.Schedule.windows = { morning = { from = 5, to = 7 } }
+    end)
+    local said = hoursText(s)
+
+    t.notContains(said, '1 written',
+        'a window nothing in this resource reads was counted as one the code can see, which '
+        .. 'contradicts the startup console outright')
+    t.contains(said, 'rather than a place in the list',
+        'the one mistake that is invisible to every other check went unnamed here too')
+end)
+
+t.test('and a server with no windows at all still says so plainly', function()
+    -- The control for the test above: without it, that one passes against a
+    -- report that cries "none usable" on every server that never wrote one.
+    local s = newArena({ [1] = true }, function(config)
+        config.Schedule = config.Schedule or {}
+        config.Schedule.windows = {}
+    end)
+    local said = hoursText(s)
+
+    t.contains(said, 'open at every hour', 'a server with no schedule lost its plain answer')
+    t.notContains(said, 'none usable',
+        'a server that wrote no windows was told its windows were thrown away')
+end)
+
+t.test('and with NO override the schedule time is still named, which is the control', function()
+    -- Without this the test above passes against a report that never names a
+    -- time at all -- and naming the next change is the whole reason an
+    -- operator opens this screen.
+    local s = newArena({ [1] = true })
+    local said = hoursText(s)
+
+    t.notContains(said, 'OVERRIDDEN', 'the control is not actually unoverridden')
+    t.notContains(said, 'hands the doors back to the schedule',
+        'the override wording leaked onto a server with no override')
+    t.contains(said, 'right now', 'the report lost its verdict line entirely')
+end)
+
+t.test('A PRESS THE RATE LIMIT DROPS IS STILL ANSWERED, or the tablet spins for ever', function()
+    -- THE PAGE COMMITS TO A REPLY BEFORE IT POSTS. Pressing a Tools button
+    -- sets toolWaiting = true and draws "Taking that reading..." at once.
+    -- adminTool had no throttled callback, so a press the 500ms admin limit
+    -- dropped returned in silence, nothing arrived to clear the spinner, and
+    -- the panel sat on it over a blank report until the tablet was closed.
+    -- The operator reads that as a hung server.
+    --
+    -- 500ms IS NOT WIDE. The picker is a row of seven buttons side by side; a
+    -- live server's log shows six of the seven run in one sitting.
+    --
+    -- WHY NO TEST SAW IT: this fixture's GetGameTimer adds 60 SECONDS on
+    -- every call, deliberately, so no rate bucket ever bites. Freezing it is
+    -- the only way to reach the path at all.
+    local s = newArena({ [1] = true })
+    local frozen = 5000000
+    s.env.GetGameTimer = function() return frozen end
+
+    s.fire('adminTool', 1, { tool = 'isolation' })
+    local first = s.lastNamed('adminTool')
+    t.isNotNil(first, 'the first press was not answered, so the limit is not what dropped the second')
+
+    s.fire('adminTool', 1, { tool = 'hours' })
+    local second = s.lastNamed('adminTool')
+
+    t.isNotNil(second, 'a dropped press was answered with nothing at all -- the tablet spins for ever')
+    t.equals(second.payload.tool, 'hours',
+        'the refusal did not name the tool that was pressed, so the page discards it as somebody '
+        .. 'else\'s answer and the spinner stays up')
+    t.contains(table.concat(second.payload.lines, '\n'), 'too quickly',
+        'the reply did not say why it is not the report they asked for')
+end)
+
+t.test('and a NON-admin spamming that event is still told nothing', function()
+    -- THE HOLE THE FIX COULD HAVE OPENED. The throttled callback runs INSTEAD
+    -- of the handler, so it runs before the handler's own ArenaIsAdmin gate.
+    -- Without its own check, any client could spam the event and be told
+    -- which tool names exist -- and answering a flood is exactly the
+    -- amplifier onClient's comment warns about.
+    local s = newArena({ [1] = true })
+    local frozen = 5000000
+    s.env.GetGameTimer = function() return frozen end
+
+    s.fire('adminTool', 2, { tool = 'isolation' })
+    s.fire('adminTool', 2, { tool = 'hours' })
+
+    t.isNil(s.lastNamed('adminTool'),
+        'a player who is not an admin was answered by the throttled path')
+end)
+
+t.test('THE MEDICAL AUDIT LINE NAMES WHO WAS ACTUALLY REVIVED, not what was typed', function()
+    -- It logged the RAW payload, so the empty box -- the common case -- wrote
+    -- "against server id (none given)" while a real revive fired against the
+    -- admin themselves. Seen on a live server, beside a report naming the
+    -- player it had just stood up. adminRevive logs ArenaPlayerName(target);
+    -- this was the one admin action in the file that did not record what it
+    -- touched, so an operator could not tell a self-test from a no-op.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical' })
+    local blank = s.log()
+    t.notContains(blank, '(none given)',
+        'the log still records the empty box instead of the player who was revived')
+    t.contains(blank, 'no id given, so themselves',
+        'the log does not distinguish a deliberate self-test from a typed id')
+    t.contains(blank, '(1)', 'the log does not name the id that was actually revived')
+
+    -- AND A TYPED ID IS STILL RECORDED AS ITSELF, which is the control.
+    local typed = newArena({ [1] = true })
+    typed.fire('adminTool', 1, { tool = 'medical', target = 3 })
+    local said = typed.log()
+    t.contains(said, '(3)', 'a typed id was not recorded')
+    t.notContains(said, 'no id given',
+        'a typed id was recorded as though the box had been left empty')
+end)
+
+local function adminToolNames()
+    local handle = assert(io.open('../Crimson-Arena/server/main.lua', 'r'),
+        'server/main.lua is missing')
+    local body = handle:read('a')
+    handle:close()
+
+    local block = body:match('local ADMIN_TOOLS = {\n(.-)\n}\n')
+    assert(block, 'ADMIN_TOOLS is no longer a flat table literal in server/main.lua')
+
+    local names = {}
+    -- The leading newline matters: the capture above starts just past the
+    -- one that opens the table, so without it the FIRST tool is invisible to
+    -- this pattern and the list comes back one short and plausible.
+    for name in ('\n' .. block):gmatch('\n    ([%a_][%w_]*) = {') do names[#names + 1] = name end
+    assert(#names > 0, 'no tools were found in ADMIN_TOOLS')
+    table.sort(names)
+    return names
+end
+
+t.test('every tool on the tablet is covered by the three tests below', function()
+    -- The guard on the guard: if the parse above ever stops matching the
+    -- file, it comes back with a plausible-looking short list and the loops
+    -- go quietly green over less than they used to.
+    local names = adminToolNames()
+    t.isTrue(#names >= 4, ('only %d admin tool(s) were parsed out of server/main.lua -- '
+        .. 'the parse has come unstuck from the file'):format(#names))
+    t.contains(table.concat(names, ','), 'dispatch',
+        'the Police & EMS tool is not in ADMIN_TOOLS')
+end)
+
+t.test('a player who is not an admin gets no report at all', function()
+    local s = newArena({ [1] = true })
+    for _, tool in ipairs(adminToolNames()) do
+        s.fire('adminTool', 2, { tool = tool })
+        t.isNil(s.lastNamed('adminTool'),
+            'a player who is not an admin was sent the ' .. tool .. ' report')
+    end
+end)
+
+t.test('and an admin gets every one of them, each naming itself', function()
+    local s = newArena({ [1] = true })
+    for _, tool in ipairs(adminToolNames()) do
+        s.fire('adminTool', 1, { tool = tool })
+        s.step()
+        local sent = (s.lastNamed('adminTool') or {}).payload
+        t.isNotNil(sent, 'the ' .. tool .. ' report was never sent')
+        t.equals(sent.tool, tool,
+            'the report did not say which tool it was answering, so the panel cannot tell '
+                .. 'a late one from the one on screen')
+        t.equals(type(sent.title), 'string', 'the ' .. tool .. ' report carried no title')
+        t.equals(type(sent.lines), 'table', 'the ' .. tool .. ' report carried no lines')
+    end
+end)
+
+t.test('every line is a string, whatever the report handed back', function()
+    -- The panel prints these straight out. A number or a table reaching it
+    -- is a screen that says "table: 0x..." to an operator looking at a
+    -- server they already believe is broken.
+    --
+    -- ONE REPORT IS MADE TO HAND BACK RUBBISH, because every report this
+    -- fixture can reach already answers with strings -- so the loop was
+    -- checking the reports rather than the handler's coercion, and the
+    -- coercion could be deleted with this green. "Whatever the report handed
+    -- back" is the claim in the name; it has to be tested with something
+    -- that is not a string.
+    local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.CompatReport = function() return { 1, {}, true, 'a real line' } end
+
+    local checked = 0
+    for _, tool in ipairs(adminToolNames()) do
+        s.fire('adminTool', 1, { tool = tool })
+        s.step()
+        for index, line in ipairs((s.lastNamed('adminTool') or {}).payload.lines) do
+            checked = checked + 1
+            t.equals(type(line), 'string',
+                ('%s line %d reached the panel as a %s'):format(tool, index, type(line)))
+        end
+    end
+    t.isTrue(checked > 0, 'no line was examined at all, so this test cannot fail')
+end)
+
+t.test('THE REQUEST: the medical test runs against the id the operator typed', function()
+    -- /arenarevive is the one admin action that deliberately reaches somebody
+    -- who is NOT in a match: it exists so an operator can watch their medical
+    -- script answer the arena's revive without first putting a player through
+    -- a round. The tablet's own revive button refuses anyone outside the
+    -- match being looked at, so it could not stand in for this.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical', target = 7 })
+
+    t.equals(#s.medicalTargets(), 1, 'the medical test ran against nobody')
+    t.equals(s.medicalTargets()[1], 7, 'it revived the wrong player')
+    t.contains(table.concat(s.lastNamed('adminTool').payload.lines, ' '), 'ran against 7',
+        'the reading did not reach the screen')
+end)
+
+t.test('and an empty box means whoever is holding the tablet', function()
+    -- The common case by far: an operator testing their own medical script is
+    -- usually the person standing there watching it happen.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 1, { tool = 'medical' })
+    s.fire('adminTool', 1, { tool = 'medical', target = 0 })
+    s.fire('adminTool', 1, { tool = 'medical', target = 'nonsense' })
+
+    t.equals(#s.medicalTargets(), 3, 'a blank or unusable id ran against nobody at all')
+    for _, who in ipairs(s.medicalTargets()) do
+        t.equals(who, 1, 'a blank id revived somebody other than the operator')
+    end
+end)
+
+t.test('and no OTHER report revives anybody, whatever id is sent with it', function()
+    -- WHAT THIS CAN AND CANNOT PROVE, said plainly rather than implied by a
+    -- confident name. It pins the behaviour that matters: only the medical
+    -- test ever revives, so a stale id left in the box cannot be carried into
+    -- a reading by pressing the wrong button.
+    --
+    -- It does NOT prove the `tool.wants` line in main.lua. Every other report
+    -- takes no argument and ignores an extra one, so deleting that line
+    -- leaves this test green -- measured, not assumed. The line is there for
+    -- the NEXT tool that takes a target, and it is honest to say that no test
+    -- here holds it in place.
+    local s = newArena({ [1] = true })
+
+    for _, tool in ipairs(adminToolNames()) do
+        if tool ~= 'medical' then
+            s.fire('adminTool', 1, { tool = tool, target = 7 })
+        end
+    end
+
+    t.equals(#s.medicalTargets(), 0, 'a report that wants no target revived somebody')
+end)
+
+t.test('and a player who is not an admin cannot revive anybody through it', function()
+    -- The revive is a real action on a real player, so this is the one tool
+    -- where the permission check is not merely about who may READ a report.
+    local s = newArena({ [1] = true })
+
+    s.fire('adminTool', 2, { tool = 'medical', target = 1 })
+
+    t.equals(#s.medicalTargets(), 0, 'a non-admin revived a player from the tools tab')
+end)
+
+t.test('a tool name the server does not know is refused, not answered', function()
+    local s = newArena({ [1] = true })
+    -- INCLUDING THE NAMES THAT ARE NOT DATA. `ADMIN_TOOLS[name]` is a table
+    -- lookup on a string that came off the wire, so the metatable keys and
+    -- the inherited ones are part of the alphabet an attacker gets to pick
+    -- from. None of them is a tool, all of them must be refused the same way
+    -- a typo is, and none may reach `tool.run`.
+    for _, junk in ipairs({ 'nope', 'ISOLATION', '', 'hours ', 'jams;drop',
+        '__index', '__newindex', '__metatable', 'owed ', 'OWED', 'attachments\0',
+        string.rep('a', 400) }) do
+        s.fire('adminTool', 1, { tool = junk })
+        t.isNil(s.lastNamed('adminTool'),
+            'the server answered a tool it does not have: "' .. tostring(junk) .. '"')
+    end
+end)
+
+t.test('and a payload with no tool in it at all is refused rather than thrown', function()
+    local s = newArena({ [1] = true })
+    for _, payload in ipairs({ {}, { tool = 5 }, { tool = true }, { tool = {} } }) do
+        local ok = pcall(s.fire, 'adminTool', 1, payload)
+        t.isTrue(ok, 'a malformed tool payload threw instead of being refused')
+        t.isNil(s.lastNamed('adminTool'), 'a malformed tool payload was answered anyway')
+    end
+    local ok = pcall(s.fire, 'adminTool', 1, nil)
+    t.isTrue(ok, 'no payload at all threw instead of being refused')
+end)
+
+t.test('a report that throws is reported, not swallowed and not fatal', function()
+    -- The isolation report reaches into ArenaDispatch. Break it and the
+    -- tablet must still answer -- with the failure written down, because an
+    -- operator pressing this is already looking for what is wrong.
+    local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.IsolationReport = function() error('boom', 0) end
+
+    local ok = pcall(s.fire, 'adminTool', 1, { tool = 'isolation' })
+    t.isTrue(ok, 'a throwing report took the handler down with it')
+
+    local sent = (s.lastNamed('adminTool') or {}).payload
+    t.isNotNil(sent, 'a throwing report left the tablet with no answer at all')
+    t.equals(sent.tool, 'isolation')
+    t.isTrue(#sent.lines > 0, 'a throwing report came back with nothing to read')
+    t.isTrue(table.concat(sent.lines, ' '):find('could not be taken', 1, true) ~= nil,
+        'the failure was not written down: ' .. table.concat(sent.lines, ' '))
+end)
+
+t.test('and a build with no isolation report at all says so rather than throwing', function()
+    local s = newArena({ [1] = true })
+    s.env.ArenaDispatch.IsolationReport = nil
+
+    local ok = pcall(s.fire, 'adminTool', 1, { tool = 'isolation' })
+    t.isTrue(ok, 'a missing report threw')
+    local sent = (s.lastNamed('adminTool') or {}).payload
+    t.isNotNil(sent, 'a missing report left the tablet with no answer')
+    t.isTrue(#sent.lines > 0, 'a missing report came back empty')
+end)
+
+os.exit(t.summary())

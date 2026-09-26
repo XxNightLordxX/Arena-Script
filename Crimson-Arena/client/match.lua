@@ -2289,6 +2289,24 @@ local function modelFootprint(hash)
            (minimum.z or 0.0)
 end
 
+--- ASKED ONCE PER CHAIN PER BUILD, NOT ONCE PER PIECE -- with every
+--- exception listed, because each one is still a full walk and can still
+--- wait. layArenaProps remembers what each chain resolved to (see
+--- `resolvedChains` there) and comes back here:
+---   * on a chain's first piece;
+---   * on every piece of a chain that has not resolved, since a failure is
+---     never remembered;
+---   * when the model it remembered is no longer loaded;
+---   * on every piece whose chain is not a clean list of names -- a bare
+---     name, no chain at all, or one with anything but a string in it --
+---     which has no key to be remembered by;
+---   * and once more for the floor chain, whatever else happens: the
+---     platform is loaded here to be MEASURED before a single piece is
+---     laid, and that load is not part of the memory, so the floor chain is
+---     walked twice a build.
+--- That memory is sound only because heldModels keeps every model a build
+--- loads held until the teardown -- nothing releases one mid-build -- and
+--- no wait was added for it: this is still the only place a build waits.
 --- @param models string|string[]
 --- @param stillWanted function|nil -- asked while waiting; false abandons the load
 --- @return integer|nil hash
@@ -2691,9 +2709,84 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     -- The count itself is the thing worth attacking, and the way to attack it
     -- is the PROP, not the cap -- see the fallback warning further down.
 
+    -- WHICH MODEL EACH CHAIN RESOLVED TO, FOR THIS BUILD ONLY.
+    --
+    -- Every piece names a chain, and the chain used to be walked again for
+    -- every piece: hashed, checked against the build, requested, timed and
+    -- asked twice more whether it had arrived. Three chains and eighty-seven
+    -- pieces on the shipped skydome; the same three chains and over a
+    -- thousand pieces on the largest container floor, where every floor
+    -- piece's walk began by failing four DLC names -- all of it in the frame
+    -- this loop is kept to.
+    --
+    -- WHY THE SHORTCUT IS SAFE, point by point, because each point is a
+    -- trap somebody fell into or nearly did:
+    --
+    --   * KEYED BY THE NAMES, NOT THE TABLE. ArenaProps hands every cover
+    --     piece a chain table of its own, so a table key never matches twice.
+    --     A chain that is not a clean list of names gets no key at all and
+    --     is walked on every piece, as before.
+    --   * IN THEIR ORDER. The order is the preference: {a, b} and {b, a}
+    --     are two chains that resolve to two different props, and a cover
+    --     piece's list is the operator's to write either way round.
+    --   * SUCCESSES ONLY. A chain that failed is not remembered, so it is
+    --     tried again on the next piece exactly as it always was.
+    --   * THE LATEST SUCCESS WINS. A walk forced by a remembered model going
+    --     away can come back with a different model of the same chain --
+    --     the first one, arrived at last -- and that is what the next piece
+    --     is built from, as the old walk would have built it.
+    --   * A REMEMBERED MODEL IS STILL ASKED ABOUT, once per piece: if the
+    --     streamer no longer has it, the piece walks the chain again, waits
+    --     and all. A per-piece "is it still loaded" is where an eviction
+    --     showed itself once already -- the build that let models go between
+    --     batches -- and it is kept, not traded for the saving.
+    --   * A MISS STILL PASSES `stillWanted` and still returns on `abandoned`,
+    --     so a camera build can be called off at every wait it has left. A
+    --     draft that dropped both could no longer be called off at all.
+    --   * ONE BUILD LONG, never kept at file level. heldModels holds every
+    --     model loaded here until the teardown releases them all; a memory
+    --     that outlived that would build the next round from models the
+    --     streamer has been told it may drop.
+    --   * NO YIELD IS ADDED. A hit never waits, and a miss waits exactly as
+    --     the old walk did on the same piece.
+    --
+    -- ONE THING DOES CHANGE, ON PURPOSE. A chain whose first model is in the
+    -- build but arrives only after its ten-second wait, with a fallback
+    -- behind it: the first piece takes the fallback, and so now does every
+    -- later piece. The old walk asked for the first model again on each
+    -- piece, found it had arrived, and built the rest from it -- a mix of two
+    -- props in one wall, with another wait on the way. The late model is then
+    -- never loaded by a piece, so it is not among the models the teardown
+    -- releases, which is what already happens to one that never arrives --
+    -- and, in the old walk too, to a late one whose chain had no piece left
+    -- to ask for it. chainmemo_spec pins the change, both release sets with
+    -- it, and holds everything else to the old walk over a few hundred
+    -- seeded builds.
+    local resolvedChains = {}
+    local function chainKey(chain)
+        if type(chain) ~= 'table' then return nil end
+        -- UP TO THE FIRST HOLE, the way loadPropModel's ipairs walks it: the
+        -- key names exactly the models the walk can reach, and concat across
+        -- a hole would raise and take the whole build down with it.
+        local count = 0
+        for _, name in ipairs(chain) do
+            if type(name) ~= 'string' then return nil end
+            count = count + 1
+        end
+        return table.concat(chain, '\0', 1, count)
+    end
+
     for _, piece in ipairs(wanted) do
-        local hash, _, abandoned = loadPropModel(piece.models or piece.model, stillWanted)
-        if abandoned then return false end
+        local chain = piece.models or piece.model
+        local key = chainKey(chain)
+        local hash = key and resolvedChains[key] or nil
+        if hash and not HasModelLoaded(hash) then hash = nil end
+        if not hash then
+            local loaded, _, abandoned = loadPropModel(chain, stillWanted)
+            if abandoned then return false end
+            hash = loaded
+            if hash and key then resolvedChains[key] = hash end
+        end
         if hash then
             local placeZ = piece.z
 

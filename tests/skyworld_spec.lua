@@ -151,23 +151,31 @@ local function newClient(opts)
     -- seconds of grace really is ten ticks of a 500ms loop.
     overrides.GetGameTimer = function() return runner.elapsed end
 
-    -- A HOOK INTO THE MIDDLE OF THE BUILD. Loading a model is where the
-    -- entry handler yields, so it is the only seam a round ending mid-build
-    -- can be simulated from.
+    -- A HOOK INTO THE MIDDLE OF THE BUILD, fired as the build creates its
+    -- `interruptAfter`-th piece. At 2 that is one piece standing and the
+    -- rest still to come -- the window that leaks. The tests that use it
+    -- count what is standing when it fires, so they say which window they
+    -- tested rather than assume it.
     --
-    -- `interruptAfter` counts model loads rather than firing on the first,
-    -- because the first is the measurement load -- before a single piece
-    -- exists, which is not the window that leaks.
-    local realRequest = overrides.RequestModel
-    local loads = 0
-    overrides.RequestModel = function(...)
-        loads = loads + 1
-        if c.duringBuild and loads >= (c.interruptAfter or 1) then
+    -- IT COUNTED MODEL LOADS, AND CAN NO LONGER. A load used to be once per
+    -- piece, so the third load was the second piece, with one standing. The
+    -- build now remembers what each model chain resolved to (`resolvedChains`
+    -- in client/match.lua), so a load is once per CHAIN: the third fell on
+    -- the first container with the whole floor already down, and on a
+    -- config with fewer than three chains it would never have fired at all
+    -- -- leaving the arena standing and these tests reporting a defect that
+    -- was not there. Counting pieces puts the interrupt back where these
+    -- tests mean it, whatever the chains are.
+    local realCreate = overrides.CreateObject
+    local created = 0
+    overrides.CreateObject = function(...)
+        created = created + 1
+        if c.duringBuild and created >= (c.interruptAfter or 1) then
             local interrupt = c.duringBuild
             c.duringBuild = nil
             interrupt()
         end
-        return realRequest(...)
+        return realCreate(...)
     end
 
     -- THE SPECTATE MODULE, as far as client/match.lua reaches into it.
@@ -1463,15 +1471,18 @@ t.test('DEFECT: a round that ends mid-build leaves nothing standing at a thousan
     -- than this model, which is exactly where the pieces would be created.
     local c = newClient({ streamRange = 100000.0 })
 
-    -- Part-way through, not on the first load: the first is the measurement
-    -- pass and no piece exists yet, so an exit there leaks nothing.
-    c.interruptAfter = 3
+    -- Part-way through, not before the first piece: an exit with nothing
+    -- placed yet leaks nothing. As the second piece is created, one stands.
+    local live, standing = c.world.live, nil
+    c.interruptAfter = 2
     c.duringBuild = function()
+        standing = #live()
         c.fire('crimson_arena:client:exitArena', {})
     end
 
     c.enter('skydome')
 
+    t.equals(standing, 1, 'the round did not end with exactly one piece standing, so this tests another window')
     t.equals(#c.world.live(), 0,
         ('%d pieces were left standing after a round that ended mid-build')
             :format(#c.world.live()))
@@ -1482,13 +1493,16 @@ t.test('and the fighter is not placed into an arena the round has left', functio
     -- again rather than only cleaned up after: a player already sent home,
     -- with their own gear back, must not be teleported to an arena spawn.
     local c = newClient({ streamRange = 100000.0 })
-    c.interruptAfter = 3
+    local live, standing = c.world.live, nil
+    c.interruptAfter = 2
     c.duringBuild = function()
+        standing = #live()
         c.fire('crimson_arena:client:exitArena', {})
     end
 
     c.enter('skydome')
 
+    t.equals(standing, 1, 'the round did not end with exactly one piece standing, so this tests another window')
     local home = c.env.Config.Lobby.returnCoords
     t.isTrue(math.abs(c.pos().z - home.z) < 1.0,
         ('the player ended at z=%0.1f rather than back at the lobby'):format(c.pos().z))
@@ -2410,10 +2424,12 @@ end)
 t.test('DEFECT: a watch that ended mid-build left the whole arena standing', function()
     local c = newClient({ start = { x = 1500.0, y = 3000.0, z = 1201.0 } })
 
-    -- Past the measurement load, so pieces really are being created when the
-    -- watch ends -- which is the window that leaks.
-    c.interruptAfter = 3
+    -- With a piece already standing and the rest still to come, so pieces
+    -- really are being created when the watch ends -- the window that leaks.
+    local live, standing = c.world.live, nil
+    c.interruptAfter = 2
     c.duringBuild = function()
+        standing = #live()
         -- The panel's stop button, a lobby snapshot that no longer lists
         -- them: whatever the cause, this is what it does.
         c.env.ArenaSpectate.Stop()
@@ -2422,6 +2438,7 @@ t.test('DEFECT: a watch that ended mid-build left the whole arena standing', fun
 
     c.inThread(function() return c.env.ArenaMatch.EnsureSpectatorScenery('skydome', 1.0) end)
 
+    t.equals(standing, 1, 'the watch did not end with exactly one piece standing, so this tests another window')
     t.equals(#c.world.live(), 0,
         ('%d prop(s) were left standing a kilometre up by a player who is no longer watching '
             .. 'anything -- each pinned as a mission entity at full LOD'):format(#c.world.live()))

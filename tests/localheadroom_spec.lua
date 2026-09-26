@@ -24,8 +24,9 @@
     no luac, no debug library.
 
     THIS SPEC IS MEANT TO GO RED, AND SOON. With HEADROOM at 20 it fails the
-    day any file's main chunk reaches 181 active locals. server/ammo.lua is
-    at 169 as this is written -- 12 away -- and nothing else is above 120.
+    day any file's main chunk reaches 181 active locals. server/ammo.lua
+    reached 169; moving its twelve SQL statements into one table took it back
+    to 158 -- 23 away -- and nothing else is above 120.
     When it fires, the remedy is moving file-level locals into tables or
     splitting the file, and that is a refactor of its own with its own
     vetting: the trap in it is the FORWARD-DECLARED local (`local

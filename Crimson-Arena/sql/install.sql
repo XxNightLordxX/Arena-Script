@@ -51,8 +51,8 @@
 -- EACH STATEMENT BELOW HAS A COPY IN THE LUA, and there are FOUR of them:
 --
 --   crimson_arena_stats         server/stats.lua    SCHEMA_SQL
---   crimson_arena_owed_kit      server/ammo.lua     KIT_SCHEMA_SQL
---   crimson_arena_jammed_stash  server/ammo.lua     JAM_SCHEMA_SQL
+--   crimson_arena_owed_kit      server/ammo.lua     SQL.KIT_SCHEMA
+--   crimson_arena_jammed_stash  server/ammo.lua     SQL.JAM_SCHEMA
 --   crimson_arena_unpaid        server/betting.lua  UNPAID_SCHEMA_SQL
 --
 -- Edit one and you must edit the other, or first start after an import will

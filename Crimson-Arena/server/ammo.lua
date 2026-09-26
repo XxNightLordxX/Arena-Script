@@ -32,7 +32,7 @@ local probedAt = {}
 --- of a stash whose removals are being refused.
 ---
 --- AND IT HAS TO OUTLIVE THE PROCESS, for exactly the reason the outstanding-
---- kit slate does -- see the long note over KIT_SCHEMA_SQL, which says of
+--- kit slate does -- see the long note over SQL.KIT_SCHEMA, which says of
 --- itself "this must not go back to being memory-only".
 ---
 --- A jam is a statement about a stash that still has things in it. The
@@ -125,6 +125,29 @@ local JAM_READ_GRACE_SECONDS = 60
 local jamWaitFrom = nil
 local jamWaitGaveUp = false
 
+--- Every statement this file sends oxmysql, by name: SQL.JAM_WRITE,
+--- SQL.KIT_OUT and the rest. Each one is still written out further down,
+--- next to the note that explains it; this line only has to come first.
+---
+--- ONE TABLE RATHER THAN TWELVE LOCALS, AND ONLY FOR THE COUNT. A Lua main
+--- chunk holds at most 200 locals and this file had reached 169 -- one past
+--- 200 and it does not load, and every stash and kit path goes with it.
+--- tests/localheadroom_spec.lua says how close it is. The twelve statements
+--- were twelve of those locals; as fields of this table they cost one. That
+--- is headroom, not a fix: the file still grows toward the same limit.
+---
+--- WHY A FIELD IS SAFE WHERE A LOCAL WAS. The trap this file documents is a
+--- local used above its own declaration, which compiles as a global and is
+--- nil when it runs -- the forward declaration of markWeaponOut and
+--- strikeWeaponOff further down exists because of it. A field is looked up
+--- when the statement is sent, and SQL itself is declared here, above every
+--- definition and every use, so no closure can be compiled before it exists.
+--- A MISTYPED FIELD is nil exactly as a mistyped local name was a nil global,
+--- and tests/ammosql_spec.lua drives every path that sends one of these and
+--- compares what reaches oxmysql with the text, byte for byte. DO NOT move
+--- this line below the first statement.
+local SQL = {}
+
 -- ----------------------------------------------------------------------
 -- THE JAM LIST ON DISK
 --
@@ -135,7 +158,7 @@ local jamWaitGaveUp = false
 -- which is the ordinary case: every later pass over a jammed stash tries
 -- again.
 -- ----------------------------------------------------------------------
-local JAM_SCHEMA_SQL = [[
+SQL.JAM_SCHEMA = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_jammed_stash (
 
         stash VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -144,15 +167,15 @@ local JAM_SCHEMA_SQL = [[
     ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 ]]
 
-local JAM_WRITE_SQL = [[
+SQL.JAM_WRITE = [[
     INSERT IGNORE INTO crimson_arena_jammed_stash (stash) VALUES (?)
 ]]
 
-local JAM_DELETE_SQL = [[
+SQL.JAM_DELETE = [[
     DELETE FROM crimson_arena_jammed_stash WHERE stash = ?
 ]]
 
-local JAM_READ_SQL = [[
+SQL.JAM_READ = [[
     SELECT stash FROM crimson_arena_jammed_stash
 ]]
 
@@ -171,7 +194,7 @@ local function rememberJam(stash)
 
     jammedStash[stash] = true
 
-    ArenaDb('the jam list', JAM_WRITE_SQL, { stash }, function(answer)
+    ArenaDb('the jam list', SQL.JAM_WRITE, { stash }, function(answer)
         if answer ~= nil then
             dropUnsentJam(stash)
             return
@@ -224,7 +247,7 @@ local function replayJams()
     for _, stash in ipairs(flat) do
         local held = jammedStash[stash] == true
 
-        ArenaDb('the jam list', held and JAM_WRITE_SQL or JAM_DELETE_SQL, { stash }, function(answer)
+        ArenaDb('the jam list', held and SQL.JAM_WRITE or SQL.JAM_DELETE, { stash }, function(answer)
             if answer == nil then return end
 
             dropUnsentJam(stash)
@@ -3967,7 +3990,7 @@ local OWED_KIT_CHARACTERS = 200
 -- composing the key in Lua is simpler than either and portable to every
 -- MySQL a server might be running.
 -- ----------------------------------------------------------------------
-local KIT_SCHEMA_SQL = [[
+SQL.KIT_SCHEMA = [[
     CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
 
         citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -3993,7 +4016,7 @@ local KIT_SCHEMA_SQL = [[
 -- `kind` is written by the statement rather than passed, for the same
 -- reason it is worth being strict here: it is not data, it is which
 -- statement you called. DO NOT merge these back into one.
-local KIT_WEAPON_SQL = [[
+SQL.KIT_WEAPON = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, serial, amount)
     VALUES (?, ?, 'weapon', ?, ?, 1)
@@ -4011,28 +4034,28 @@ local KIT_WEAPON_SQL = [[
 --- `amount` is 1 for the same reason the weapon statement sets it: every
 --- column the item rows use has to carry something, and a weapon is one
 --- weapon. DO NOT give this its own ledger_key prefix.
-local KIT_OUT_SQL = [[
+SQL.KIT_OUT = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, serial, amount)
     VALUES (?, ?, 'out', ?, ?, 1)
     ON DUPLICATE KEY UPDATE kind = 'out', amount = 1
 ]]
 
-local KIT_ITEM_ADD_SQL = [[
+SQL.KIT_ITEM_ADD = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, amount)
     VALUES (?, ?, 'item', ?, ?)
     ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)
 ]]
 
-local KIT_ITEM_SET_SQL = [[
+SQL.KIT_ITEM_SET = [[
     INSERT INTO crimson_arena_owed_kit
         (citizenid, ledger_key, kind, name, amount)
     VALUES (?, ?, 'item', ?, ?)
     ON DUPLICATE KEY UPDATE amount = VALUES(amount)
 ]]
 
-local KIT_DROP_SQL =
+SQL.KIT_DROP =
     'DELETE FROM crimson_arena_owed_kit WHERE citizenid = ? AND ledger_key = ?'
 
 -- NEWEST FIRST, AND BOUNDED. This read the whole table on every start, and
@@ -4044,7 +4067,7 @@ local KIT_DROP_SQL =
 -- only thing `written_at` is for; DO NOT drop the column.
 local KIT_READ_LIMIT = 5000
 
-local KIT_READ_SQL =
+SQL.KIT_READ =
     'SELECT citizenid, ledger_key, kind, name, serial, amount FROM crimson_arena_owed_kit '
     .. 'ORDER BY written_at DESC LIMIT ' .. KIT_READ_LIMIT
 
@@ -4075,7 +4098,7 @@ local OWED_KIT_MAX_DAYS = 30
 --- same reason KIT_READ_LIMIT is: it is a constant of this file, never input.
 --- DO NOT turn it into a placeholder -- an INTERVAL will not take one on every
 --- MySQL a server might be running.
-local KIT_PURGE_SQL =
+SQL.KIT_PURGE =
     'DELETE FROM crimson_arena_owed_kit WHERE written_at < (NOW() - INTERVAL '
     .. OWED_KIT_MAX_DAYS .. ' DAY)'
 
@@ -4143,11 +4166,11 @@ local kitWriteLanded = false
 --- the table is the backup of it, so a key that is out of date is repaired by
 --- writing down WHAT MEMORY SAYS NOW -- an owed weapon, an owed stack at its
 --- current total, or nothing at all. Every statement that can say one of those
---- is absolute (KIT_WEAPON_SQL sets the amount to 1, KIT_ITEM_SET_SQL assigns
+--- is absolute (SQL.KIT_WEAPON sets the amount to 1, SQL.KIT_ITEM_SET assigns
 --- it, the DELETE removes the row), so a replay costs nothing when it repeats
 --- something the database already had.
 ---
---- WHICH IS ALSO WHY THE ADDING STATEMENT IS NEVER REPLAYED. KIT_ITEM_ADD_SQL
+--- WHICH IS ALSO WHY THE ADDING STATEMENT IS NEVER REPLAYED. SQL.KIT_ITEM_ADD
 --- is a different debt every time it lands, and it is only ever sent once, by
 --- the writer that has just added the same amount to memory; a stack is
 --- replayed as the SET form carrying the total memory holds. DO NOT replay
@@ -4303,16 +4326,16 @@ local function sendLedger(citizenid, key, sql, params)
 end
 
 local function dropLedgerRow(citizenid, key)
-    sendLedger(citizenid, key, KIT_DROP_SQL, { citizenid, key })
+    sendLedger(citizenid, key, SQL.KIT_DROP, { citizenid, key })
 end
 
 local function saveOwedWeapon(citizenid, row)
-    sendLedger(citizenid, weaponKey(row.serial), KIT_WEAPON_SQL,
+    sendLedger(citizenid, weaponKey(row.serial), SQL.KIT_WEAPON,
         { citizenid, weaponKey(row.serial), row.name, row.serial })
 end
 
 local function saveOwedItem(citizenid, name, amount)
-    sendLedger(citizenid, itemKey(name), KIT_ITEM_ADD_SQL,
+    sendLedger(citizenid, itemKey(name), SQL.KIT_ITEM_ADD,
         { citizenid, itemKey(name), name, amount })
 end
 
@@ -4325,7 +4348,7 @@ local function setOwedItem(citizenid, name, amount)
         dropLedgerRow(citizenid, itemKey(name))
         return
     end
-    sendLedger(citizenid, itemKey(name), KIT_ITEM_SET_SQL,
+    sendLedger(citizenid, itemKey(name), SQL.KIT_ITEM_SET,
         { citizenid, itemKey(name), name, amount })
 end
 
@@ -4360,7 +4383,7 @@ function markWeaponOut(record)
     if type(record) ~= 'table' then return end
     if not (Arena.IsKey(record.citizenid) and Arena.IsKey(record.serial)) then return end
 
-    ArenaDb('the outstanding-kit slate', KIT_OUT_SQL,
+    ArenaDb('the outstanding-kit slate', SQL.KIT_OUT,
         { record.citizenid, weaponKey(record.serial), record.name, record.serial }, wrote)
 end
 
@@ -6671,7 +6694,7 @@ function ArenaAmmo.Unjam(stash)
     -- this stash and settled it; a row saying otherwise would hold the door
     -- off it for ever, and the operator would run this command again after
     -- every restart wondering why it did not take.
-    ArenaDb('the jam list', JAM_DELETE_SQL, { stash }, function(answer)
+    ArenaDb('the jam list', SQL.JAM_DELETE, { stash }, function(answer)
         if answer ~= nil then
             dropUnsentJam(stash)
             return
@@ -7302,8 +7325,8 @@ function ArenaAmmo.LoadJams()
     -- read that never came back would shut the door for the whole uptime.
     SetTimeout(RETRY_TIMEOUT_MS, function() jamsLoading = false end)
 
-    ArenaDb('the jam list', JAM_SCHEMA_SQL, {}, function()
-        ArenaDb('the jam list', JAM_READ_SQL, {}, function(rows)
+    ArenaDb('the jam list', SQL.JAM_SCHEMA, {}, function()
+        ArenaDb('the jam list', SQL.JAM_READ, {}, function(rows)
             jamsLoading = false
 
             if type(rows) ~= 'table' then return end
@@ -7349,7 +7372,7 @@ function ArenaAmmo.LoadOwedKit()
     -- above. DO NOT set the flag without this releasing it.
     SetTimeout(RETRY_TIMEOUT_MS, function() kitLoading = false end)
 
-    ArenaDb('the outstanding-kit slate', KIT_SCHEMA_SQL, {}, function()
+    ArenaDb('the outstanding-kit slate', SQL.KIT_SCHEMA, {}, function()
         -- THE AGE-OUT, AND IT GOES ABOVE THE READ ON PURPOSE. A row past the
         -- limit must not come back into memory only to be evicted again by
         -- the cap; deleting it first is what makes the limit mean anything.
@@ -7368,11 +7391,11 @@ function ArenaAmmo.LoadOwedKit()
         -- a perfectly healthy database, for ever. Measured at 0 taken of a
         -- debt of 5. DO NOT remove it without giving kitWriteLanded another
         -- source first.
-        ArenaDb('the outstanding-kit slate', KIT_PURGE_SQL, {}, function(answer)
+        ArenaDb('the outstanding-kit slate', SQL.KIT_PURGE, {}, function(answer)
             if answer ~= nil then kitWriteLanded = true end
         end)
 
-        ArenaDb('the outstanding-kit slate', KIT_READ_SQL, {}, function(rows)
+        ArenaDb('the outstanding-kit slate', SQL.KIT_READ, {}, function(rows)
             -- CLEARED ON EVERY EXIT FROM HERE, including the failure below.
             -- ArenaDb calls the callback with nil when it cannot send, so both
             -- ways out come through this function -- but leaving the flag

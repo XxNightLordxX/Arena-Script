@@ -26,16 +26,15 @@ Config.Loadouts.weapons = {
     -- have and says so in the console, so a mistake costs an attachment
     -- rather than the weapon -- but it is still a mistake.
     --
-    -- NINETY-THREE OF THE 96 ENTRIES BELOW ARE `enabled = true`, INCLUDING ALL
-    -- THIRTEEN HEAVY WEAPONS -- the RPG, the homing, grenade, EMP, compact
-    -- and firework launchers, the minigun, both railguns, the Unholy
-    -- Hellbringer, the Widowmaker and the flamethrower. The MUSKET, the
-    -- DOUBLE-BARREL SHOTGUN and the MARKSMAN RIFLE are the three exceptions
-    -- and are switched off at the owner's instruction. Everything else being
-    -- on is deliberate: the arena was asked to offer
-    -- everything this server owns.
+    -- EIGHTY-FIVE OF THE 92 ENTRIES BELOW ARE `enabled = true`. SWITCHED OFF
+    -- AT THE OWNER'S INSTRUCTION: the Navy Revolver, and seven heavy weapons
+    -- -- the RPG, the homing and grenade launchers, the minigun, the railgun,
+    -- the Unholy Hellbringer and the Widowmaker. The rest of the heavy
+    -- category (EMP, compact and firework launchers, the XM3 railgun and the
+    -- flamethrower) stays on. The musket, the double-barrel shotgun and the
+    -- marksman rifles are no longer in the catalogue at all.
     --
-    -- WHY THOSE THREE AND NOT OTHERS, because it matters to anyone running
+    -- WHY THE MUSKET, DOUBLE-BARREL AND MARKSMAN RIFLE WENT, because it matters to anyone running
     -- this somewhere else: it is an ANTI-CHEAT on the owner's server and NOT
     -- anything in this file. That anti-cheat stops those three firing no
     -- matter how much ammunition the arena hands out. The arena's own side of
@@ -817,7 +816,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_GRENADELAUNCHER',
         label = 'Grenade Launcher',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '40mm Explosive', item = 'ammo-grenade' } },
         components = {},
@@ -828,7 +827,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_HOMINGLAUNCHER',
         label = 'Homing Launcher',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Rocket', item = 'ammo-rocket' } },
         components = {},
@@ -839,7 +838,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_MINIGUN',
         label = 'Minigun',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '7.62x39', item = 'ammo-rifle2' } },
         components = {},
@@ -850,7 +849,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_RPG',
         label = 'RPG',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Rocket', item = 'ammo-rocket' } },
         components = {},
@@ -861,7 +860,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_RAILGUN',
         label = 'Railgun',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Railgun charge', item = 'ammo-railgun' } },
         components = {},
@@ -883,7 +882,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_RAYCARBINE',
         label = 'Unholy Hellbringer',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Laser charge', item = 'ammo-laser' } },
         components = {},
@@ -894,7 +893,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_RAYMINIGUN',
         label = 'Widowmaker',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Laser charge', item = 'ammo-laser' } },
         components = {},

@@ -230,17 +230,19 @@ local function newClient()
         assert(coroutine.status(thread) == 'dead', name .. ' never finished')
     end
 
-    function c.enter(arenaKey)
+    --- @param factor number|nil -- the size the server sends; nil sends none
+    function c.enter(arenaKey, factor)
         local arena = clientEnv.Config.Arenas[arenaKey]
         local spawn = clientEnv.Arena.PickSpawn(arenaKey, nil, 1)
         c.fire('crimson_arena:client:enterArena', {
             matchId = 'match-1', arenaKey = arenaKey, modeKey = 'ffa',
             spawn = { x = spawn.x, y = spawn.y, z = spawn.z, w = spawn.w or 0.0 },
             scatterRadius = 0.0, radar = false, loadout = { weapons = {} },
+            sizeFactor = factor,
             boundary = arena.boundary and {
                 enabled = true,
                 center = { x = arena.boundary.center.x, y = arena.boundary.center.y, z = arena.boundary.center.z },
-                radius = arena.boundary.radius,
+                radius = arena.boundary.radius * ((factor and factor > 1.0) and factor or 1.0),
                 warningSeconds = 5, damagePerTick = 20, tickMs = 500,
             } or nil,
             freezeSeconds = 0,
@@ -334,6 +336,43 @@ t.test('and the round that follows is exactly one arena, not two', function()
 
     t.equals(#c.world.live(), clean,
         ('the arena came out as %d pieces where a clean one is %d'):format(#c.world.live(), clean))
+end)
+
+t.test('and a stray in the ring a grown arena reaches into is swept when it grows', function()
+    -- THE GAP A SKIP KEYED ON THE ARENA ALONE WOULD LEAVE. The teardown at
+    -- the start of a build sweeps the arena this client last built, at the
+    -- size it last built it; the build then sweeps the arena it is about to
+    -- lay, at ITS size. When a round grows the arena, the second reach is
+    -- the wider one, and the ring between the two is covered by nobody but
+    -- the build's own sweep. Skipping that sweep because the teardown "just
+    -- swept the same arena" -- same key, different size -- leaves a stray
+    -- standing out there: 104 pieces where a clean grown arena is 103.
+    local c = newClient()
+    local small = c.env.Arena.PropSweep('skydome', 1.0)
+    local big = c.env.Arena.PropSweep('skydome', 2.0)
+    t.isTrue(big.radius > small.radius + 10.0, 'the arena does not grow, so there is no ring to test')
+
+    c.enter('skydome', 1.0)
+    c.fire('crimson_arena:client:exitArena', {})
+    t.equals(#c.world.live(), 0, 'the ordinary teardown already failed')
+
+    -- Between the two reaches, and inside the height: the small sweep
+    -- cannot see it and the big one must.
+    local ring = (small.radius + big.radius) * 0.5
+    local stray = c.plant('prop_container_01a', SKY.x + ring, SKY.y, SKY.z - 10.0)
+
+    c.enter('skydome', 2.0)
+
+    for _, object in ipairs(c.world.live()) do
+        t.isTrue(object.handle ~= stray,
+            ('a stray %.0fm out survived the arena growing to reach %.0fm'):format(ring, big.radius))
+    end
+
+    local clean = newClient()
+    clean.enter('skydome', 2.0)
+    t.equals(#c.world.live(), #clean.world.live(),
+        ('the grown arena came out as %d pieces where a clean one is %d')
+            :format(#c.world.live(), #clean.world.live()))
 end)
 
 t.test('a stray of a model this arena never builds is left alone', function()

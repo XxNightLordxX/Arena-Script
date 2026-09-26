@@ -2541,6 +2541,9 @@ local function clearArenaScenery(mine)
 
     removeArenaProps()
     spectatorBuilt = false
+    -- A BUILD SKIPS ITS OWN SWEEP ON THE STRENGTH OF THIS LINE: see
+    -- `sweptAlready` in layArenaProps. Making this sweep conditional, or
+    -- moving it after anything that yields, takes that skip's reason away.
     if builtArena then sweepStrayArenaProps(builtArena.key, builtArena.factor) end
     arenaSurfaceZ = nil
 end
@@ -2549,9 +2552,31 @@ end
 --- in-flight flag and runs this under pcall -- never call it directly.
 --- @param stillWanted function|nil -- see buildArenaProps
 local function layArenaProps(arenaKey, factor, boundary, stillWanted)
+    -- ONE WALK OF THE POOL WHERE ONE IS ENOUGH. The teardown below sweeps
+    -- the arena this client last built, at the size it last built it; the
+    -- sweep after it looks for strays of the arena about to be laid. When
+    -- those are the same arena AT THE SAME SIZE they are the same question:
+    -- Arena.PropSweep answers from the key, the factor and the config alone,
+    -- and nothing between the two yields, so the second walk would search a
+    -- pool the first had just cleaned -- finding only what the first failed
+    -- to delete, and failing again. So it is skipped then, and only then.
+    --
+    -- READ BEFORE THIS BUILD OVERWRITES `builtArena`, because that record is
+    -- what the teardown sweeps from: it sweeps exactly when one is set, and
+    -- exactly the arena and size it names.
+    --
+    -- THE SIZE IS NOT OPTIONAL. Key alone would skip a round that GREW the
+    -- arena, and the grown reach is the wider one: the ring between the two
+    -- is swept by nobody else, and a stray there survives -- 104 pieces
+    -- where a clean arena is 103. A FRESH client (builtArena nil) and a
+    -- different arena still sweep here exactly as before; the fresh client
+    -- is the case this sweep was written for, with no record for a teardown
+    -- to sweep from. propsweep_spec and sweeponce_spec hold all three.
+    local sweptAlready = builtArena ~= nil and builtArena.key == arenaKey
+        and builtArena.factor == factor
     clearArenaScenery(true)
 
-    sweepStrayArenaProps(arenaKey, factor)
+    if not sweptAlready then sweepStrayArenaProps(arenaKey, factor) end
     builtArena = { key = arenaKey, factor = factor }
     spectatorBuilt = false
 

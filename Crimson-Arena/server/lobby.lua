@@ -724,6 +724,12 @@ local function snapshotMatches()
                 name = player.name,
                 team = player.team,
                 ready = player.ready == true,
+                -- NOT LIVE BETWEEN BROADCASTS. ArenaMatch.OnDeath does not
+                -- broadcast a death that leaves the fighter a life in a round
+                -- with no ladder that it does not decide, so mid-round these
+                -- two can trail the real count until the next broadcast of
+                -- any kind. Nothing reads them off this row today; a screen
+                -- that wants a live score reads the HUD, pushed every second.
                 kills = player.kills,
                 deaths = player.deaths,
                 alive = not isEliminated(match, player.src),

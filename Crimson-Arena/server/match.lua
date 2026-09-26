@@ -3892,7 +3892,53 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         end
     end
 
-    ArenaLobby.Broadcast()
+    -- THE ROOM IS TOLD ABOUT A DEATH THAT CHANGES SOMETHING IT CAN SEE, AND
+    -- ONLY THEN.
+    --
+    -- This was unconditional, so every death rebuilt the whole snapshot --
+    -- config block, every lobby, a row per head -- for every fighter,
+    -- watcher, open panel and fenced player on the server: tens of
+    -- kilobytes a death at twenty fighters, and a most_kills or score_limit
+    -- round is nothing BUT respawning deaths.
+    --
+    -- WHAT A RESPAWNING DEATH MOVES, MEASURED FOR EVERY KIND OF RECIPIENT IN
+    -- EVERY MODE AND WIN CONDITION: the killer row's `kills` and the victim
+    -- row's `deaths` in snapshotMatches, and nothing else. `alive` there is
+    -- "not eliminated", which a death with a life left does not change, and
+    -- no money moves on a death outside a ladder. Nothing reads those two
+    -- counts off a match row -- the panel draws kills and deaths from the
+    -- HUD, the results, the leaderboard and the admin screens;
+    -- client/spectate.lua reads a row's id and alive. They go out with the
+    -- next broadcast of any kind, and the HUD carries them every second.
+    -- Whatever else a broadcast happens to refresh -- a wallet changed
+    -- somewhere else, the leaderboard's thirty-second cache -- was never
+    -- tied to a death and still rides the next one.
+    --
+    -- THE THREE THAT STAY, and none of them may go:
+    --
+    --   NO LIVES LEFT. The note in ArenaLobby.AddSpectator names this as the
+    --   broadcast that tells the room a fighter is out: spectator target
+    --   lists, the "Out of the round" bet row, the chips betPickOptions
+    --   offers, the sent-home fighter's fence. Removing it passed every spec
+    --   there was when this was written; tests/deathbroadcast_spec.lua now
+    --   holds it.
+    --
+    --   A LADDER. A gun game death can move a tier either way, and
+    --   settleTier writes the fighter's loadout, which their own snapshot
+    --   carries. Kept for every ladder death and not only the ones that
+    --   moved a rung: sorting those out here would be a second copy of the
+    --   sparing rules above.
+    --
+    --   A DEATH THAT DECIDES THE ROUND. The snapshot's betsOpen reads
+    --   ArenaMatch.IsDecided, so a kill that reaches the score limit shuts
+    --   the watchers' book -- and every open panel must hear it NOW, not
+    --   when the sweep ends the round up to a second later, or the chip
+    --   stays live over a result that is already known. Asked last because
+    --   it is the only one of the three that costs anything: IsDecided runs
+    --   `evaluate`, which only reads.
+    if remaining <= 0 or playingLadder or ArenaMatch.IsDecided(match) then
+        ArenaLobby.Broadcast()
+    end
     return true
 end
 

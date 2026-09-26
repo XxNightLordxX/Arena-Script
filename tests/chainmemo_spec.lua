@@ -545,10 +545,13 @@ t.test('a camera build is still called off at a chain\'s first load, and leaves 
         t.isTrue(result == false, case[1] .. ': a camera whose watcher left still reported an arena')
         t.equals(#c.world.live(), 0, case[1] .. ': the abandoned camera build left pieces standing')
         t.isTrue(c.clock < 5000, case[1] .. ': the build waited out the model instead of being called off')
-        -- And every model it had loaded was let go.
+        -- And every model it had loaded was let go -- and the one it was
+        -- still waiting for when it was called off.
         local let = {}
         for _, name in ipairs(c.released) do let[name] = true end
         t.isTrue(let['stt_prop_stunt_bblock_huge_01'], case[1] .. ': the floor model was never released')
+        local waited = next(case[2])
+        t.isTrue(let[waited], case[1] .. ': THE DEFECT: the model the called-off build was waiting for stayed requested')
     end
 end)
 
@@ -568,6 +571,35 @@ t.test('and at a load forced by a remembered model that went away mid-build', fu
     t.equals(c.unloadedCreates, 0, 'a piece was created from a model the streamer had dropped')
     t.isTrue((c.calls['RequestModel:prop_container_01a'] or 0) >= 2,
         'the dropped container was never asked for again')
+end)
+
+t.test('THE BUILD WAITS IN ONE PLACE: nothing in layArenaProps yields, the memo\'s guard included', function()
+    -- The item this memo came with forbids adding a wait, and a Wait(0) in
+    -- the hit guard behaves almost the same -- the forced walk would have
+    -- waited that frame anyway -- so no behaviour test is sure to see it:
+    -- a camera watcher leaving on that very frame gets one yield more before
+    -- the build is called off. So the rule is read off the source: the only
+    -- yield on the build path is loadPropModel's, where stillWanted is asked.
+    local source = read('../Crimson-Arena/client/match.lua')
+    local function body(name)
+        local start = source:find('\nlocal function ' .. name .. '%(')
+        t.isNotNil(start, name .. ' is not where this test looks for it')
+        local stop = source:find('\nend\n', start or 1, true)
+        return source:sub(start or 1, stop or #source)
+    end
+    local function codeOnly(text)
+        local out = {}
+        for line in text:gmatch('[^\n]+') do out[#out + 1] = (line:gsub('%-%-.*$', '')) end
+        return table.concat(out, '\n')
+    end
+    local function yields(text)
+        local count = 0
+        for _ in codeOnly(text):gmatch('[^%w_]Wait%s*%(') do count = count + 1 end
+        for _ in codeOnly(text):gmatch('[^%w_]Citizen%.Wait%s*%(') do count = count + 1 end
+        return count
+    end
+    t.equals(yields(body('layArenaProps')), 0, 'layArenaProps yields, and the one-frame build can be called off late')
+    t.equals(yields(body('loadPropModel')), 1, 'loadPropModel no longer has exactly the one wait the build relies on')
 end)
 
 t.test('a remembered model is only trusted while the streamer still has it', function()
@@ -708,6 +740,11 @@ t.test('and two chains of the same models in a different order are two chains', 
         { 'prop_conc_blocks01a', 'prop_barrier_work05' },
         { 'prop_does_not_exist', 'prop_barrier_work05', 'prop_conc_blocks01a' },
         { 'prop_does_not_exist', 'prop_conc_blocks01a', 'prop_barrier_work05' },
+        -- AND TWO THAT DIFFER ONLY IN THEIR LAST NAME, behind two heads the
+        -- build does not have: a key built from the first names alone would
+        -- hand the second list the first one's prop.
+        { 'prop_does_not_exist', 'prop_not_here_either', 'prop_barrier_work05' },
+        { 'prop_does_not_exist', 'prop_not_here_either', 'prop_conc_blocks01a' },
     }
     local pieces = function(real)
         local out = {}
@@ -724,7 +761,7 @@ t.test('and two chains of the same models in a different order are two chains', 
     local want = {}
     for i = 1, 3 do
         for n, first in ipairs({ 'prop_barrier_work05', 'prop_conc_blocks01a', 'prop_barrier_work05',
-                                 'prop_conc_blocks01a' }) do
+                                 'prop_conc_blocks01a', 'prop_barrier_work05', 'prop_conc_blocks01a' }) do
             want[#want + 1] = ('%s@%d,%d'):format(first, i * 3, n * 10)
         end
     end
@@ -916,12 +953,11 @@ t.test('ON PURPOSE: a chain whose first model arrives late uses its fallback for
     for _, object in ipairs(ref.world.live()) do b[#b + 1] = ('%.2f %.2f'):format(object.x, object.y) end
     t.equals(table.concat(a, ' '), table.concat(b, ' '), 'the pieces are not where the old walk put them')
 
-    -- AND WHAT THE TEARDOWN LETS GO OF CHANGES WITH IT. The late container
-    -- is asked for once and never built from, so it is never held and the
-    -- teardown does not release it -- it stays requested for the session,
-    -- as one that never arrives always has. The old walk asked for it on
-    -- every container piece, built most of the wall from it, and released
-    -- it. Both sets are pinned, so a change to either is seen, not found.
+    -- AND THE TEARDOWN STILL LETS GO OF EVERY MODEL THE BUILD ASKED FOR.
+    -- The late container is asked for once and never built from. Held only
+    -- when a piece was built from it, it stayed requested for the session;
+    -- loadPropModel holds every model it asks for, so it is released with
+    -- the rest -- the same set the old walk released by building from it.
     local containers = 0
     for _, piece in ipairs(c.env.Arena.ArenaProps('skydome', { x = 40.0, y = 40.0, top = 10.0 }, 1.0)) do
         if (piece.models or {})[1] == 'prop_container_01a' then containers = containers + 1 end
@@ -932,19 +968,16 @@ t.test('ON PURPOSE: a chain whose first model arrives late uses its fallback for
         'the old walk did not ask for the late container on every container piece')
     c.exit()
     ref.exit()
-    t.equals(released(c), 'prop_container_01b prop_mp_barrier_02b stt_prop_stunt_bblock_huge_01',
-        'the teardown after the memo build released a different set')
+    t.equals(released(c), 'prop_container_01a prop_container_01b prop_mp_barrier_02b stt_prop_stunt_bblock_huge_01',
+        'THE DEFECT: the late container the memo build asked for was never released')
     t.equals(released(ref), 'prop_container_01a prop_container_01b prop_mp_barrier_02b stt_prop_stunt_bblock_huge_01',
         'the teardown after the old walk released a different set')
 end)
 
-t.test('ON PURPOSE: and the old walk too left a late model unreleased once no later piece asked for it', function()
-    -- WHY THE RELEASE DIFFERENCE ABOVE IS ONE THE FILE ALREADY HAD. A
-    -- held model is one a piece was BUILT from; a model asked for that did
-    -- not arrive in time is not held by either version. With one container
-    -- piece there is no later piece for the old walk to ask again, and the
-    -- two agree to the model: the late container is asked for once and
-    -- never released.
+t.test('a model asked for and never built from is released at teardown, late or never at all', function()
+    -- With one container piece there is no later piece to build from the
+    -- late model, so nothing but the request ever held it. It is released
+    -- with the rest all the same -- and so is one that never arrives.
     local pieces = function(real)
         local out = {}
         for _, piece in ipairs(real) do if piece.kind == 'floor' then out[#out + 1] = piece end end
@@ -952,14 +985,17 @@ t.test('ON PURPOSE: and the old walk too left a late model unreleased once no la
         out[#out + 1] = cover(0.0, 20.0, { 'prop_mp_barrier_02b' })
         return out
     end
-    local real, ref = sameAsReference({ pieces = pieces, arrive = { prop_container_01a = 12000 } }, function(c)
-        c.enter('skydome', 1.0)
-        c.exit()
-    end, 'one late container piece')
-    for _, c in ipairs({ real, ref }) do
-        t.equals(c.calls['RequestModel:prop_container_01a'], 1)
-        t.isTrue(released(c):find('prop_container_01a', 1, true) == nil, 'the late container was released')
-        t.isTrue(released(c):find('prop_container_01b', 1, true) ~= nil, 'the fallback it was built from was not')
+    for _, case in ipairs({ { 'late', 12000 }, { 'never', 1e12 } }) do
+        local real, ref = sameAsReference({ pieces = pieces, arrive = { prop_container_01a = case[2] } }, function(c)
+            c.enter('skydome', 1.0)
+            c.exit()
+        end, 'one ' .. case[1] .. ' container piece')
+        for _, c in ipairs({ real, ref }) do
+            t.equals(c.calls['RequestModel:prop_container_01a'], 1, case[1] .. ': the container was asked for more than once')
+            t.isTrue(released(c):find('prop_container_01a', 1, true) ~= nil,
+                case[1] .. ': THE DEFECT: a model the build asked for stayed requested after the teardown')
+            t.isTrue(released(c):find('prop_container_01b', 1, true) ~= nil, case[1] .. ': the fallback it was built from was not released')
+        end
     end
 end)
 

@@ -2324,7 +2324,7 @@ end
 ---     laid, and that load is not part of the memory, so the floor chain is
 ---     walked twice a build.
 --- That memory is sound only because heldModels keeps every model a build
---- loads held until the teardown -- nothing releases one mid-build -- and
+--- asks for held until the teardown -- nothing releases one mid-build -- and
 --- no wait was added for it: this is still the only place a build waits.
 --- @param models string|string[]
 --- @param stillWanted function|nil -- asked while waiting; false abandons the load
@@ -2338,6 +2338,16 @@ local function loadPropModel(models, stillWanted)
         local hash = joaat(model)
         if IsModelInCdimage(hash) and IsModelValid(hash) then
             RequestModel(hash)
+            -- HELD THE MOMENT IT IS ASKED FOR, not the moment it loads, so
+            -- the teardown releases every model a build requested -- which
+            -- is what the build's own notes have always said it does. Held
+            -- only on arrival, a model that came after its wait below, or
+            -- whose build was called off while waiting, stayed requested
+            -- for the rest of the session. That was rare while every piece
+            -- asked again and a later one usually held it; with each chain
+            -- asked once per build it is the ordinary result of a late
+            -- first model, so it is closed here for every caller at once.
+            heldModels[hash] = true
             -- Bounded, because a model that will never arrive must not hold
             -- the entry handler open for the whole round.
             local deadline = GetGameTimer() + 10000
@@ -2659,9 +2669,10 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     if platform then
         local hash, name, abandoned = loadPropModel(platform.models, stillWanted)
         if abandoned then return false end
-        -- HELD THE MOMENT IT LOADS, not at the end of the build, so a build
-        -- that is abandoned or raises part-way still has every model it
-        -- requested released by the teardown that follows it.
+        -- HELD, not at the end of the build, so a build that is abandoned or
+        -- raises part-way still has every model it requested released by
+        -- the teardown that follows it. loadPropModel already holds every
+        -- model it asks for; this says so where the platform is loaded.
         if hash then heldModels[hash] = true end
         if hash then
             local sizeX, sizeY, top = modelFootprint(hash)
@@ -2883,7 +2894,8 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
     -- HELD FOR THE LIFE OF THE ARENA, NOT RELEASED HERE. See `heldModels`:
     -- the repair has to be able to put a piece back in the frame it notices
     -- one gone, and a RequestModel at that moment would wait. Every model is
-    -- written into heldModels as it loads (above), and released only by
+    -- written into heldModels as it is requested (loadPropModel) and again as
+    -- it is built from (above), and released only by
     -- removeArenaProps, which is the only thing that takes the pieces down --
     -- so nothing is held longer than the arena it belongs to, including an
     -- arena whose build was abandoned or raised part-way.

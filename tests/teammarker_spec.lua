@@ -1025,6 +1025,11 @@ end)
 --- respawn, the floor check every 2 s, and the outline hold while an
 --- outline is up.
 ---
+--- The clock is read once a frame in every one of them: the vitals window
+--- and the floor check share that read (frameclock_spec says why that is
+--- safe). They each read it for themselves once, and the repair frame, the
+--- vitals window and every frame after it cost one more here.
+---
 --- THERE IS NO HEADROOM IN THESE, ON PURPOSE. A native legitimately added
 --- to this loop turns one of them red, and the fix is to change the number
 --- here in the same commit and say why -- which is the whole of what a
@@ -1041,8 +1046,8 @@ local FRAME_STATES = {
     },
     {
         name = 'the floor-repair frame, every two seconds',
-        want = 68,
-        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=2 '
+        want = 67,
+        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=1 '
             .. 'GetPedBoneCoords=4 GetPlayerFromServerId=4 GetPlayerPed=4 IsEntityDead=1 IsEntityOnScreen=4 '
             .. 'IsPauseMenuActive=1 NetworkIsPlayerActive=4 PlayerPedId=1 SetDrawOrigin=4 '
             .. 'SetEntityDrawOutlineColor=1 SetEntityDrawOutlineRenderTechnique=1 SetEntityDrawOutlineShader=1',
@@ -1050,8 +1055,8 @@ local FRAME_STATES = {
     },
     {
         name = 'inside the 1.5 s vitals window after a respawn',
-        want = 71,
-        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=2 '
+        want = 70,
+        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=1 '
             .. 'GetPedBoneCoords=4 GetPlayerFromServerId=4 GetPlayerPed=4 IsEntityDead=1 IsEntityOnScreen=4 '
             .. 'IsPauseMenuActive=1 NetworkIsPlayerActive=4 PlayerPedId=2 SetDrawOrigin=4 '
             .. 'SetEntityDrawOutlineColor=1 SetEntityDrawOutlineRenderTechnique=1 SetEntityDrawOutlineShader=1 '
@@ -1065,8 +1070,8 @@ local FRAME_STATES = {
     },
     {
         name = 'after a vitals window has run out, not a repair frame',
-        want = 68,
-        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=2 '
+        want = 67,
+        byName = 'ClearDrawOrigin=4 DisableControlAction=4 DoesEntityExist=4 DrawRect=24 GetGameTimer=1 '
             .. 'GetPedBoneCoords=4 GetPlayerFromServerId=4 GetPlayerPed=4 IsEntityDead=1 IsEntityOnScreen=4 '
             .. 'IsPauseMenuActive=1 NetworkIsPlayerActive=4 PlayerPedId=1 SetDrawOrigin=4 '
             .. 'SetEntityDrawOutlineColor=1 SetEntityDrawOutlineRenderTechnique=1 SetEntityDrawOutlineShader=1',

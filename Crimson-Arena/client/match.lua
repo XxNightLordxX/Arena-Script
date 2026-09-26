@@ -1258,6 +1258,24 @@ local function startArenaThread()
                 SetFrontendActive(false)
             end
 
+            -- THE FRAME'S CLOCK, READ ONCE, AND READ HERE.
+            --
+            -- The vitals window and the floor check below both ask it, and
+            -- they used to ask separately -- three reads on a floor-check
+            -- frame, and two on every frame for the rest of the session once
+            -- the first respawn had opened a window, because nothing ever
+            -- lowers `until_`. GET_GAME_TIMER is the frame's clock and
+            -- nothing between here and the floor check yields, so one read
+            -- answers all three the same.
+            --
+            -- INSIDE THE LOOP, NOT ABOVE THE `while`. Read once for the life
+            -- of the thread, the clock stands still: the vitals window never
+            -- closes and the floor is checked once and never again. Measured,
+            -- not supposed -- matchflow_spec's shot-armour test and eight of
+            -- floorrepair_spec's fail that way. frameclock_spec holds the
+            -- equivalence against the three reads this replaced.
+            local now = GetGameTimer()
+
             if deathReported or not matchLive then
                 DisablePlayerFiring(PlayerId(), true)
                 DisableControlAction(0, 24, true)       -- attack
@@ -1268,7 +1286,7 @@ local function startArenaThread()
 
             if not deathReported
                 and arenaVitals.until_ > 0
-                and GetGameTimer() < arenaVitals.until_
+                and now < arenaVitals.until_
             then
                 local ped = PlayerPedId()
                 if arenaVitals.health then SetEntityHealth(ped, arenaVitals.health) end
@@ -1281,16 +1299,17 @@ local function startArenaThread()
             -- THAT IS ALREADY RUNNING.
             --
             -- Not a thread of its own, deliberately: this loop is already
-            -- per-frame for the death backstop above, so the check costs one
-            -- clock read on the frames it does not run -- and a new thread
-            -- is the change this file has already measured as moving what
-            -- the blip loop's own timing tests see.
+            -- per-frame for the death backstop above, so on the frames it
+            -- does not run the check costs one comparison against the clock
+            -- the frame has already read -- and a new thread is the change
+            -- this file has already measured as moving what the blip loop's
+            -- own timing tests see.
             --
             -- GATED ON A CLOCK AND NOT ON A FRAME COUNT, because the thing
             -- being bounded is how long somebody stands on air, which is
             -- measured in seconds and not in frames.
-            if repairArenaProps and GetGameTimer() >= nextArenaRepairAt then
-                nextArenaRepairAt = GetGameTimer() + ARENA_REPAIR_MS
+            if repairArenaProps and now >= nextArenaRepairAt then
+                nextArenaRepairAt = now + ARENA_REPAIR_MS
                 repairArenaProps()
             end
 

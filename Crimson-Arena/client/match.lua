@@ -2364,7 +2364,24 @@ local function sweepStrayArenaProps(arenaKey, factor)
 
     local removed = 0
     for _, object in ipairs(GetGamePool('CObject') or {}) do
-        if DoesEntityExist(object) and wanted[GetEntityModel(object)] then
+        -- THE MODEL FIRST, EXISTENCE SECOND, AND DO NOT SWAP THEM BACK. This
+        -- walks every object the client is holding -- the map's and every
+        -- other resource's as well as ours -- to find the few that are this
+        -- arena's, and asking existence first spent a native on every one
+        -- of them for an answer only ours need. Two natives an object became
+        -- one, on a walk made in the same frame as the build it clears for.
+        --
+        -- DoesEntityExist STAYS, and still runs before anything reads or
+        -- deletes the object. Nothing yields in this loop, so a handle can
+        -- only die between the pool's snapshot and here if one of our own
+        -- deletes took it with it. GetEntityModel on a handle that has gone
+        -- answers 0 in the game -- ordinary client code leans on that
+        -- everywhere -- and no chain names 0, so it drops out at the first
+        -- test; were it to answer the old model instead, the existence check
+        -- still refuses it. Skipped either way, exactly as when existence
+        -- was asked first: sweeporder_spec runs the two orders side by side
+        -- over a few hundred pools to hold that.
+        if wanted[GetEntityModel(object)] and DoesEntityExist(object) then
             local at = GetEntityCoords(object)
             local dx = (at.x or 0.0) - sweep.x
             local dy = (at.y or 0.0) - sweep.y

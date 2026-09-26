@@ -568,7 +568,7 @@ listed; the source documents them where they are.
 | `ArenaNotifyKey(src, localeKey, notifyType, ...)` | The form almost every caller wants: Arena.* hands back locale KEYS, not sentences, and they go straight through here. |
 | `ArenaGetPlayer(src)` | The qbx_core player object for a server id, or nil. |
 | `ArenaCutText(value, limit)` | A player-supplied string cut to fit a database column without splitting a multi-byte character in half. `string.sub` counts bytes and the columns count characters, and a cut landing mid-character hands MySQL invalid UTF-8, which it refuses the whole row for. |
-| `ArenaPlayerName(src)` | Never nil. |
+| `ArenaPlayerName(src, known)` | Never nil. `known` is the framework player if the caller has already read it; nil reads it here. |
 | `ArenaIsAdmin(src)` | ACE check against Config.Permissions.adminGroups. |
 | `ArenaCanCreate(src)` | Whether this player may open a lobby, per Config.Permissions.createJobs. |
 | `ArenaCanJoin(src)` | The same question asked of somebody joining a match they did not open. |
@@ -659,7 +659,7 @@ listed; the source documents them where they are.
 | Function | What it does |
 |---|---|
 | `ArenaBetting.Accounts()` | The accounts a player may be asked to choose between, in the operator's own order. |
-| `ArenaBetting.Wallet(src)` | What one player holds in each of them, for the panel's own display. |
+| `ArenaBetting.Wallet(src, known)` | What one player holds in each of them, for the panel's own display. `known` as for ArenaPlayerName. |
 | `ArenaBetting.PendingUnpaidWrites()` | How many owed rows are queued but have not reached `crimson_arena_unpaid` yet. The Money owed report reads it so its durability line stops covering them over: the table being writable is not the same as every debt in the list having landed in it, and a restart forgets the ones that have not. |
 | `ArenaBetting.UnpaidIsSaved()` | Whether the money the arena still owes players is being written somewhere that survives a restart. False with `Config.Database.enabled` off, which is the shipped default -- the debt still holds for this run, but a restart forgets it, and the deferred-refund line says so. |
 | `ArenaBetting.BetsAreOpen(match)` | Whether the book is still taking side-bets on this match, for a WATCHER. |
@@ -679,10 +679,10 @@ listed; the source documents them where they are.
 | `ArenaBetting.Settle(matchId, context)` | Pays the pot out. |
 | `ArenaBetting.GetSideBetPool(matchId)` | Everything staked in side-bets that will be settled as a pool. |
 | `ArenaBetting.GetPrizePool(matchId)` | Everything a winner of this match stands to be paid from, as one figure. |
-| `ArenaBetting.GetSideBet(matchId, src)` | One player's own side-bet on a match, or nil. |
+| `ArenaBetting.GetSideBet(matchId, src, known)` | One player's own side-bet on a match, or nil. `known` as for ArenaPlayerName. |
 | `ArenaBetting.HoldsSideBet(matchId, src)` | Whether this player is holding an UNSETTLED side-bet on this match. |
-| `ArenaBetting.MatchesWalkedOutOf(src)` | Every round this player walked out of while it was being fought, so the panel stops offering them the watcher's grace on it. |
-| `ArenaBetting.MatchesBackedBy(src)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. |
+| `ArenaBetting.MatchesWalkedOutOf(src, known)` | Every round this player walked out of while it was being fought, so the panel stops offering them the watcher's grace on it. `known` as for ArenaPlayerName. |
+| `ArenaBetting.MatchesBackedBy(src, known)` | Every match this player currently has an unsettled side-bet on, so the panel can refuse a Join the server would refuse. `known` as for ArenaPlayerName. |
 | `ArenaBetting.HasSpectatorBet(matchId, src)` | Whether this player holds any side-bet on this match, settled or not. |
 | `ArenaBetting.SideBetTotals(matchId)` | The same money broken down as pool -> pick -> amount, so the Bets tab can show whether anybody is backing the other side. Keyed by SETTLEMENT pool (see poolKeyFor): with `betPayout.sharedPool` off the two kinds are paid out of separate pools, and a flat book would credit a bettor with money they cannot win. Built with GetSideBetPool's filter, so within one pool the parts add up. |
 | `ArenaBetting.PlaceSpectatorBet(src, matchId, pick, amount, account)` | Takes a spectator's side-bet on a team or a fighter. |

@@ -194,6 +194,15 @@ end
 --- A nil answer is what every caller already handles: they all read through
 --- `player and player.PlayerData`. Callers that need to tell "nobody there"
 --- from "the framework fell over" must NOT use this. DO NOT unwrap it.
+---
+--- AND DO NOT MEMO IT, however many times one state push asks. This is also
+--- the balance re-read that confirms a debit or a credit really moved money
+--- (see `moved` in server/betting.lua), and a remembered player read during
+--- a payment makes a real payment look failed -- the failure that file
+--- records as charging or paying people twice. The fixtures share one money
+--- table between reads, so no spec can see a stale balance. A caller that
+--- asks one player several questions reads once and hands the answer on:
+--- server/lobby.lua's snapshotPlayer does exactly that.
 function ArenaGetPlayer(src)
     local target = tonumber(src)
     if not target or target <= 0 then return nil end
@@ -249,9 +258,20 @@ function ArenaCutText(value, limit)
     return cut
 end
 
-function ArenaPlayerName(src)
+--- The character's name, then the connection's, then a placeholder. Never nil.
+---
+--- `known` is the framework player the caller has ALREADY read for this
+--- source, so a caller asking several questions of one player reads the
+--- framework once. Only nil sends this back to read it here, so every caller
+--- that passes one argument is answered exactly as before -- and so is a
+--- player whose earlier read came back empty.
+--- @param src any
+--- @param known table|nil -- the framework player, already read; nil reads it here
+--- @return string
+function ArenaPlayerName(src, known)
     local target = tonumber(src)
-    local player = ArenaGetPlayer(target)
+    local player = known
+    if player == nil then player = ArenaGetPlayer(target) end
     local data = player and player.PlayerData
 
     if data then

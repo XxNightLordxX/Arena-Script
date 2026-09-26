@@ -250,8 +250,16 @@ local function serverId(value)
     return id
 end
 
-local function citizenIdOf(src)
-    local player = ArenaGetPlayer(src)
+--- The character on a seat, read off the framework.
+---
+--- `known` is the framework player a caller has already read for this seat
+--- -- the panel snapshot reads each player once and hands that read to
+--- every question it asks. Only nil reads it here, which is what every
+--- one-argument caller gets, and what a snapshot gets for a player whose
+--- own read came back empty.
+local function citizenIdOf(src, known)
+    local player = known
+    if player == nil then player = ArenaGetPlayer(src) end
     return player and player.PlayerData and player.PlayerData.citizenid or nil
 end
 
@@ -280,10 +288,16 @@ end
 --- What one player holds in each of them, for the panel's own display. Read
 --- through the same balanceOf every debit uses, so the figure on screen and
 --- the figure the debit checks cannot disagree.
+---
+--- `known` is the framework player the snapshot has already read; see
+--- citizenIdOf. FOR DISPLAY ONLY: a debit or a credit re-reads the balance
+--- for itself, and must go on doing so.
 --- @param src any
+--- @param known table|nil -- the framework player, already read; nil reads it here
 --- @return table<string, integer>
-function ArenaBetting.Wallet(src)
-    local player = ArenaGetPlayer(serverId(src))
+function ArenaBetting.Wallet(src, known)
+    local player = known
+    if player == nil then player = ArenaGetPlayer(serverId(src)) end
     local out = {}
     for _, account in ipairs(debitAccounts()) do
         out[account] = balanceOf(player, account) or 0
@@ -2269,12 +2283,13 @@ end
 --- left nothing at all to change.
 --- @param matchId string
 --- @param src any
+--- @param known table|nil -- the framework player, already read; see citizenIdOf
 --- @return table|nil -- { amount, pick, kind, account }
-function ArenaBetting.GetSideBet(matchId, src)
+function ArenaBetting.GetSideBet(matchId, src, known)
     local id = serverId(src)
     if not id then return nil end
 
-    local citizenid = citizenIdOf(id)
+    local citizenid = citizenIdOf(id, known)
     for _, bet in ipairs(sideBets[matchId] or {}) do
         -- The one they CHOSE. An entry fee folded into the pool at settle
         -- time is not a bet they placed and must not be shown as one.
@@ -2334,8 +2349,9 @@ end
 --- because `snapshotMatches` is built once and sent to everybody -- the
 --- answer here is different for every viewer.
 --- @param src any
+--- @param known table|nil -- the framework player, already read; see citizenIdOf
 --- @return string[]
-function ArenaBetting.MatchesWalkedOutOf(src)
+function ArenaBetting.MatchesWalkedOutOf(src, known)
     local id = serverId(src)
     local out = {}
     if not id then return out end
@@ -2343,21 +2359,26 @@ function ArenaBetting.MatchesWalkedOutOf(src)
     -- READ ONCE, OUTSIDE THE LOOP. It reaches into the framework for the
     -- player, and this walks every match on the server -- the same reason
     -- MatchesBackedBy below hoists its own.
-    local citizenid = citizenIdOf(id)
+    local citizenid = citizenIdOf(id, known)
     for matchId in pairs(walkedOutOf) do
         if hasWalkedOut(matchId, id, citizenid) then out[#out + 1] = matchId end
     end
     return out
 end
 
-function ArenaBetting.MatchesBackedBy(src)
+--- Every match this player currently has an unsettled side-bet on. The note
+--- saying why the panel needs it sits above MatchesWalkedOutOf.
+--- @param src any
+--- @param known table|nil -- the framework player, already read; see citizenIdOf
+--- @return string[] matchIds
+function ArenaBetting.MatchesBackedBy(src, known)
     local id = serverId(src)
     local out = {}
     if not id then return out end
 
     -- READ ONCE, OUTSIDE BOTH LOOPS. It reaches into the framework for the
     -- player, and this walks every match on the server.
-    local citizenid = citizenIdOf(id)
+    local citizenid = citizenIdOf(id, known)
 
     for matchId, bets in pairs(sideBets) do
         for _, bet in ipairs(bets) do

@@ -576,6 +576,38 @@ local function snapshotPlayer(src)
     local match = ArenaLobby.GetByPlayer(src)
     local player = match and match.players[src] or nil
 
+    -- ONE FRAMEWORK READ FOR THE WHOLE SNAPSHOT, handed to every reader below.
+    --
+    -- This runs once per recipient on every Broadcast, and it used to ask
+    -- qbx_core for the same player six times -- seven for somebody backing a
+    -- lobby they are not in: the money line, then ArenaPlayerName, Wallet,
+    -- GetSideBet, MatchesBackedBy (twice) and MatchesWalkedOutOf, each a
+    -- cross-resource export marshalling the whole player object. One kill in
+    -- a thirty-two player round was 192 of them.
+    --
+    -- WHY ONE READ IS THE SAME ANSWER AS SIX. Nothing between here and the
+    -- return yields, sends an event or writes anything -- every reader below
+    -- is a read of the side-bet book or the walk-out list -- so six reads
+    -- could only ever have returned the same player. And each helper takes
+    -- this read only when it is not nil: a player the framework has not
+    -- loaded, has just dropped, or whose read raised comes back nil here,
+    -- and every helper then reads for itself exactly as before. That also
+    -- covers the one place the lookups were keyed differently: the betting
+    -- readers floor the source (serverId) where ArenaGetPlayer does not, so
+    -- a source that is not a whole number reads nil here and each helper
+    -- falls back to its own key.
+    --
+    -- `qbx`, NOT `player`: `player` is the ROSTER row, and handed to a
+    -- helper it raises nothing -- the name falls to the connection's, the
+    -- wallet to zero and the bets to nobody's. tests/snapshotlookup_spec.lua
+    -- pins every field against the framework record and every push against
+    -- the old code's.
+    --
+    -- `backing` is worked out once and used twice: for the single backed
+    -- round below and for the field itself.
+    local qbx = ArenaGetPlayer(src)
+    local backing = ArenaBetting.MatchesBackedBy(src, qbx)
+
     -- WHICH ROUND'S BET TO SHOW THEM, and there are THREE ways to have one,
     -- not two.
     --
@@ -598,12 +630,10 @@ local function snapshotPlayer(src)
     -- carries both, so this stays out of the way rather than guessing.
     local betOn = (match and match.id) or spectatorIndex[src] or nil
     if not betOn then
-        local backed = ArenaBetting.MatchesBackedBy(src)
-        if #backed == 1 then betOn = backed[1] end
+        if #backing == 1 then betOn = backing[1] end
     end
 
     local money = 0
-    local qbx = ArenaGetPlayer(src)
     local data = qbx and qbx.PlayerData
     if data and type(data.money) == 'table' then
         money = Arena.ToInt(data.money[Config.Betting.account]) or 0
@@ -611,9 +641,9 @@ local function snapshotPlayer(src)
 
     return {
         serverId = src,
-        name = ArenaPlayerName(src),
+        name = ArenaPlayerName(src, qbx),
         money = money,
-        wallet = ArenaBetting.Wallet(src),
+        wallet = ArenaBetting.Wallet(src, qbx),
         matchId = match and match.id or false,
         team = (player and Arena.IsKey(player.team)) and player.team or false,
         ready = player ~= nil and player.ready == true,
@@ -626,8 +656,8 @@ local function snapshotPlayer(src)
         -- for a side-bet, which left the screen with nothing at all to
         -- redraw. False rather than nil so the field is always on the
         -- wire and the panel can tell "no bet" from "not sent".
-        bet = (betOn and ArenaBetting.GetSideBet(betOn, src)) or false,
-        backing = ArenaBetting.MatchesBackedBy(src),
+        bet = (betOn and ArenaBetting.GetSideBet(betOn, src, qbx)) or false,
+        backing = backing,
         -- THE ROUNDS THEY WALKED OUT OF WHILE THEY WERE BEING FOUGHT.
         --
         -- The server judges a departed fighter's bet against the FIGHTERS'
@@ -636,7 +666,7 @@ local function snapshotPlayer(src)
         -- watcher's grace on the round they had just abandoned, wrote out the
         -- stake and the account, and the server refused it. Always an array,
         -- so the panel can tell "walked out of nothing" from "not sent".
-        walkedOut = ArenaBetting.MatchesWalkedOutOf(src),
+        walkedOut = ArenaBetting.MatchesWalkedOutOf(src, qbx),
         isHost = match ~= nil and match.hostSource == src,
         -- HOW MANY OF THEIR EDITS THIS SERVER HAS TURNED DOWN.
         --

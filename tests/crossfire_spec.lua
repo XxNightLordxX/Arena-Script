@@ -463,6 +463,27 @@ t.test('and a respawned ped is followed rather than cached', function()
 
 end)
 
+t.test('and an OUTSIDER still cannot reach a fighter who respawned after their last packet', function()
+    -- The same trap as the one above, from the other side of the line. The
+    -- tests above only shoot FROM a fighter, and a map of who owns which id
+    -- kept between an outsider's packets would pass every one of them: the
+    -- outsider's first packet names nothing and builds the map, the fighter
+    -- respawns onto a new id, and the second packet is answered from the
+    -- first packet's map -- "nobody" -- so the shot lands. It has to be
+    -- worked out again for every packet. Measured: that mutant passed every
+    -- spec in the suite before this test existed.
+    local f = newFixture()
+    f.enter(1, 'm1')
+    f.spawn(9)
+
+    t.isFalse(f.raw('9', { hitGlobalIds = { 987654 } }),
+        'an outsider was refused for hitting something that is not a player')
+
+    f.netIds[1] = 91234
+    t.isTrue(f.raw('9', { hitGlobalIds = { 91234 } }),
+        'an outsider shot a fighter who had respawned since their previous packet')
+end)
+
 t.test('and a network id that changes hands does not carry the old owner\'s rights', function()
     -- THE CASE THE VERIFICATION EXISTS FOR, and the reason a plain cache is
     -- not good enough.

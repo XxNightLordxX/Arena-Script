@@ -2935,6 +2935,14 @@ end
 --- server ids, and a store that outlives the round would let a fresh player
 --- inherit a dead one's witness. This one cannot outlive the match table it
 --- hangs off.
+---
+--- WHAT REACHES IT DEPENDS ON WHAT IT KEEPS. For an attacker who is in no
+--- round, server/dispatch.lua resolves only the players who ARE in one --
+--- see flaggedOwnerOfNetId there -- so a hit by such an attacker on anybody
+--- else never arrives here. Nothing is lost by that today, because this
+--- keeps a hit only on a fighter standing in a live round, and every one of
+--- them is flagged. Teach it to keep a hit it refuses below and read that
+--- function first.
 --- @param victimSrc any
 --- @param attackerSrc any
 --- @return boolean remembered

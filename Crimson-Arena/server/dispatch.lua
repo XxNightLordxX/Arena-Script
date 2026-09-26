@@ -2534,6 +2534,68 @@ local function ownerOfNetId(netId, packet)
     return netIdOwners[netId]
 end
 
+--- Who owns this network id, asked on behalf of an attacker who is in NO
+--- round: the verified cache, then the players who ARE in one, and nobody
+--- else on the server.
+---
+--- WHY THAT IS THE WHOLE ANSWER FOR SUCH AN ATTACKER. mayDamage refuses
+--- somebody in no round over exactly one kind of victim -- one who is in
+--- `active` -- and always as crossfire, which cancels the packet whatever
+--- else it hit. Every other victim they can name comes back "allowed" and
+--- changes nothing about the packet. So a victim outside `active` does not
+--- need to be found, and finding them was the expensive part: ownerOfNetId's
+--- miss walks EVERY player on the server, GetPlayers and two natives each,
+--- 129 natives at 64 players, and it is paid by every NPC or car the city
+--- shoots while any round is live. Walking `active` instead is two natives
+--- per flagged player: 16 with eight of them in a round.
+---
+--- THE MAP IS PER PACKET, ON THE PACKET TABLE, AND NEVER KEPT. A map of who
+--- owned which id kept between packets is the negative cache this file has
+--- already been burned by: an id that was nobody's becomes a fighter's ped
+--- the moment they respawn, and a kept "nobody" lets the next outsider's
+--- shot land on them. crossfire_spec pins that trap from this side as well
+--- as the fighter's. Built once per packet, as ownerOfNetId's rebuild is,
+--- because one engine event cannot yield and nothing can move inside it.
+---
+--- THE CACHE IS READ, NEVER WRITTEN, so an outsider's packet leaves nothing
+--- behind that a later packet reads, and the case for this path can be made
+--- one packet at a time. A hit on a player the cache already holds costs the
+--- two natives it always did, and the cache is still verified before it is
+--- believed, because ped network ids are recycled. What it costs: an
+--- outsider's hit on a city player the cache has not seen now pays two
+--- natives per flagged player on every such packet, until a fighter's own
+--- miss rebuilds the cache, where the full walk used to pay once and cache
+--- everybody. outsiderhits_spec counts that price as well as the saving.
+---
+--- THE KILL WITNESS LEANS ON THIS TOO. ArenaMatch.RememberDamage is handed
+--- every victim a packet lawfully hit, and it now never hears about a victim
+--- outside `active` from an attacker in no round. It keeps a hit only on a
+--- fighter standing in a live round, and every such fighter is flagged:
+--- server/match.lua flags each fighter as it places them, before the round
+--- goes live; server/lobby.lua refuses a join once the lobby stage is over;
+--- and every flag that comes down during a live round comes down after the
+--- row stops standing (eliminated or walked out) or after the round has
+--- ended. Change any of those, or teach the witness to keep a hit it does
+--- not keep today, and read this first.
+--- @param netId integer
+--- @param packet table -- this packet's state; the map of the flagged dies with it
+--- @return number|nil src
+local function flaggedOwnerOfNetId(netId, packet)
+    local cached = netIdOwners[netId]
+    if cached and netIdOf(cached) == netId then return cached end
+
+    local flagged = packet.flagged
+    if flagged == nil then
+        flagged = {}
+        for src in pairs(active) do
+            local owned = netIdOf(src)
+            if owned then flagged[owned] = src end
+        end
+        packet.flagged = flagged
+    end
+    return flagged[netId]
+end
+
 --- Whether these two may damage each other.
 ---
 --- SYMMETRIC ON PURPOSE, and it answers both halves of the request in one
@@ -2708,9 +2770,29 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- spot. See the witness block below the loop for why.
     local lawful = {}
 
+    -- AN ATTACKER IN NO ROUND IS WEIGHED AGAINST THE FLAGGED PLAYERS ONLY.
+    -- flaggedOwnerOfNetId says why that cannot change a cancel, and what the
+    -- kill witness leans on for it to change nothing there either.
+    --
+    -- ONLY for them. A fighter is refused over a victim who is in NO round
+    -- -- "a fighter cannot shoot out of it" -- so a fighter's packet has to
+    -- find everybody, and keeps the full walk.
+    --
+    -- AN if/else AND NOT `outsider and a() or b()`: an outsider's miss is a
+    -- nil, and in that shape a nil falls through to the full walk and quietly
+    -- pays the whole saving back.
+    local outsider = active[attacker] == nil
+
     for _, entry in ipairs(hits) do
         local netId = tonumber(entry)
-        local victim = netId and ownerOfNetId(netId, packet) or nil
+        local victim = nil
+        if netId then
+            if outsider then
+                victim = flaggedOwnerOfNetId(netId, packet)
+            else
+                victim = ownerOfNetId(netId, packet)
+            end
+        end
         if victim then
             local ok, reason, kind = mayDamage(attacker, victim)
             if ok then

@@ -2836,6 +2836,55 @@ local function positionOf(src)
     return coords
 end
 
+--- Whether this fighter is standing inside a blast, or false for anybody
+--- who cannot be placed at all.
+---
+--- MEASURED AS A SPHERE, NOT A CIRCLE ON THE MAP, and pointXY's own
+--- comment records this exact class of mistake being fixed one call away:
+--- "Z TOO, when the point has one. It was dropped here ... and that is how
+--- the arena became a circle on the map instead of the sphere every other
+--- check uses." The z was dropped again here, and both directions of the
+--- error are real on a map with rooftops and a skydome.
+---
+--- A TEAM-MATE THIRTY METRES STRAIGHT UP counted as caught, so a grenade
+--- thrown at street level was refused on their account although the blast
+--- could never reach them -- a refusal the file's own rule calls worse
+--- than a miss, because nothing tells the thrower why their launcher did
+--- nothing.
+---
+--- AND AN ENEMY THIRTY METRES STRAIGHT UP counted as lawful, which is the
+--- half that lets a team-mate be hurt: an enemy on a roof made every blast
+--- below them a legitimate one, and the team-mate standing in it went up
+--- with it.
+---
+--- FALLS BACK TO THE FLAT READING when either point has no z rather than
+--- refusing to measure: explosionEvent can arrive without a posZ, and a
+--- circle is a worse answer than a sphere but a much better one than none.
+---
+--- A FILE-LEVEL FUNCTION AND NOT A CLOSURE inside explosionRefusal, so a
+--- blast allocates nothing to ask it.
+--- @param src number
+--- @param px number
+--- @param py number
+--- @param pz number|nil
+--- @param reach number -- the blast radius, SQUARED
+--- @return boolean
+local function inBlast(src, px, py, pz, reach)
+    local at = positionOf(src)
+    if not at then return false end
+
+    local x, y, z = pointXY(at)
+    if not x then return false end
+
+    local dx, dy = x - px, y - py
+    local squared = dx * dx + dy * dy
+    if z and pz then
+        local dz = z - pz
+        squared = squared + dz * dz
+    end
+    return squared <= reach
+end
+
 --- Why this fighter may not set off this explosion, or nil for "they may".
 --- @param exploder number
 --- @param matchId string
@@ -2856,59 +2905,61 @@ local function explosionRefusal(exploder, matchId, px, py, pz)
     if Arena.IsEliminated(thrower) then return 'the thrower is out of the round' end
 
     local reach = BLAST_METRES * BLAST_METRES
-    local caught, lawful = false, false
 
-    -- MEASURED AS A SPHERE, NOT A CIRCLE ON THE MAP, and pointXY's own
-    -- comment records this exact class of mistake being fixed one call away:
-    -- "Z TOO, when the point has one. It was dropped here ... and that is how
-    -- the arena became a circle on the map instead of the sphere every other
-    -- check uses." The z was dropped again here, and both directions of the
-    -- error are real on a map with rooftops and a skydome.
+    -- TWO PASSES, AND THE ORDER OF THE TESTS INSIDE EACH ONE IS THE POINT.
     --
-    -- A TEAM-MATE THIRTY METRES STRAIGHT UP counted as caught, so a grenade
-    -- thrown at street level was refused on their account although the blast
-    -- could never reach them -- a refusal the file's own rule calls worse
-    -- than a miss, because nothing tells the thrower why their launcher did
-    -- nothing.
+    -- The rule is: refuse when the blast catches a team-mate AND no lawful
+    -- victim. It was one walk that placed EVERY other fighter first -- a
+    -- pcall'd GetPlayerPed and a pcall'd GetEntityCoords each, sixty-two
+    -- natives for one grenade in a thirty-two fighter round -- and asked
+    -- whose side they were on afterwards. In a free-for-all nobody is
+    -- anybody's team-mate, so that walk could never refuse a thing, and it
+    -- paid in full on every blast.
     --
-    -- AND AN ENEMY THIRTY METRES STRAIGHT UP counted as lawful, which is the
-    -- half that lets a team-mate be hurt: an enemy on a roof made every blast
-    -- below them a legitimate one, and the team-mate standing in it went up
-    -- with it.
+    -- So the side is asked FIRST, and a position is read only for a row the
+    -- side cannot settle alone. The first pass looks at team-mates only and
+    -- stops at the first one in the blast; with none there, the blast is
+    -- the thrower's and no enemy is placed at all. Only then does the second
+    -- look for one lawful victim in reach, which is the bend above. DO NOT
+    -- put inBlast in front of Arena.CanDamage in either condition: every
+    -- answer stays the same and the whole saving goes, which is why
+    -- blastreach_spec counts the natives.
     --
-    -- FALLS BACK TO THE FLAT READING when either point has no z rather than
-    -- refusing to measure: explosionEvent can arrive without a posZ, and a
-    -- circle is a worse answer than a sphere but a much better one than none.
+    -- WHY IT CANNOT CHANGE AN ANSWER. Arena.CanDamage is pure -- the mode,
+    -- the two teams and the friendlyFire switch, nothing else -- so every row
+    -- lands in exactly one of the two passes and is placed at most once. The
+    -- handler runs start to end with no yield, so nothing moves between the
+    -- passes. A row the one walk counted as caught is what the first pass
+    -- finds, one it counted as lawful is what the second finds, and one it
+    -- could not place is skipped by both, exactly as it was. Reading a row's
+    -- team before placing it is safe too: server/lobby.lua is the one writer
+    -- of a roster row, and it always writes a whole table.
+    -- blastreach_spec runs the old walk beside this one over thousands of
+    -- seeded blasts and holds every decision and every log line equal.
 
     -- `match.players` is keyed by SERVER ID, so this is pairs and not ipairs.
+    local caught = false
     for src, row in pairs(match.players) do
-        if src ~= exploder and not Arena.IsEliminated(row) then
-            local at = positionOf(src)
-            if at then
-                local x, y, z = pointXY(at)
-                if x then
-                    local dx, dy = x - px, y - py
-                    local squared = dx * dx + dy * dy
-                    if z and pz then
-                        local dz = z - pz
-                        squared = squared + dz * dz
-                    end
-                    if squared <= reach then
-                        if Arena.CanDamage(match.modeKey, thrower.team, row.team) then
-                            lawful = true
-                        else
-                            caught = true
-                        end
-                    end
-                end
-            end
+        if src ~= exploder and not Arena.IsEliminated(row)
+            and not Arena.CanDamage(match.modeKey, thrower.team, row.team)
+            and inBlast(src, px, py, pz, reach)
+        then
+            caught = true
+            break
+        end
+    end
+    if not caught then return nil end
+
+    for src, row in pairs(match.players) do
+        if src ~= exploder and not Arena.IsEliminated(row)
+            and Arena.CanDamage(match.modeKey, thrower.team, row.team)
+            and inBlast(src, px, py, pz, reach)
+        then
+            return nil
         end
     end
 
-    if caught and not lawful then
-        return 'it would land on their own team and friendly fire is off'
-    end
-    return nil
+    return 'it would land on their own team and friendly fire is off'
 end
 
 AddEventHandler('explosionEvent', function(sender, data)

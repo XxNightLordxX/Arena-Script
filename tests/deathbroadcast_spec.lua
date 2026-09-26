@@ -91,7 +91,14 @@ local function newServer(mutate)
     local env = Sandbox.newArenaEnv({
         exports = qbx.exports,
         lib = Sandbox.newOxLib(),
-        os = setmetatable({ time = function() return now end }, { __index = os }),
+        -- os.date TOO, not only os.time: the arena-hours block of a
+        -- snapshot reads the wall clock through os.date('*t'), so a run that
+        -- straddled a minute boundary saw .schedule.now move between the two
+        -- snapshots and blamed the death for it. Pinned to the same clock.
+        os = setmetatable({
+            time = function() return now end,
+            date = function(fmt, at) return os.date(fmt, at or now) end,
+        }, { __index = os }),
         CreateThread = threads.CreateThread,
         Wait = threads.Wait,
         SetTimeout = threads.SetTimeout,

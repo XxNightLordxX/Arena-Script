@@ -1283,9 +1283,48 @@ local function pushHud(match)
     end
 
     for _, player in ipairs(players) do
-        TriggerClientEvent('crimson_arena:client:matchHud', player.src,
-            hudFor(math.max(0, Arena.ToInt(player.kills) or 0),
-                math.max(0, Arena.ToInt(player.deaths) or 0), player.team))
+        -- NOT TO A FIGHTER WHO WAS SENT HOME AND IS NOT WATCHING.
+        --
+        -- An eliminated fighter keeps their row -- the results board ranks
+        -- off it and the payout reads it -- so with spectateOnElimination
+        -- off, or a watch that could not be registered, sendPlayerHome put
+        -- them back at the lobby and this loop went on sending them the
+        -- whole board once a second until the round ended. Their client had
+        -- already left: currentMatch is nil, nothing draws from the board,
+        -- and the overlay is told to stay hidden. Measured at twenty
+        -- fighters with ten of them out: half of every tick's HUD bytes,
+        -- all of it thrown away on arrival.
+        --
+        -- WHY IT IS SAFE TO SKIP THEM. `leftArena` is written true by
+        -- sendPlayerHome alone, and Start writes nil on every row of the
+        -- next round, so it means exactly "sent back to the lobby from THIS
+        -- round". Of sendPlayerHome's callers only elimination leaves the
+        -- round running -- End, Abort and RemovePlayer end it or take the
+        -- row away -- so that is the one fighter this reaches. Only who
+        -- RECEIVES the board changes: the scoreboard, `total` and
+        -- `remaining` above are still built off the whole roster.
+        --
+        -- THE SPECTATOR HALF IS NOT OPTIONAL. A fighter sent home can still
+        -- pick Watch on the same round -- AddSpectator lets an eliminated
+        -- fighter watch their own -- and the spectator loop below skips
+        -- anybody still on the roster. Without it the one person who asked
+        -- to see the round would be the one person sent nothing. A plain
+        -- `if` rather than a goto, so both halves read as one condition.
+        --
+        -- WHAT IT GIVES UP, which only shows after another failure: this
+        -- push used to re-hide a stale overlay within a second when the
+        -- client's leaveArena threw between clearing currentMatch and
+        -- hiding the HUD. That overlay now stays until the results hide it,
+        -- the exposure a walk-out and a round's end already had.
+        --
+        -- The shipped config watches on elimination, so there it skips
+        -- nobody. tests/hudsenthome_spec.lua pins both halves.
+        local sentHome = player.leftArena == true and not (match.spectators or {})[player.src]
+        if not sentHome then
+            TriggerClientEvent('crimson_arena:client:matchHud', player.src,
+                hudFor(math.max(0, Arena.ToInt(player.kills) or 0),
+                    math.max(0, Arena.ToInt(player.deaths) or 0), player.team))
+        end
     end
 
     for src in pairs(match.spectators or {}) do

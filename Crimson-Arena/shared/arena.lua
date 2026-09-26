@@ -328,12 +328,45 @@ function Arena.GetEnabledTeams()
     return out
 end
 
+--- One enabled team by key, or nil: the record GetEnabledTeams builds for
+--- that side, read off the one entry asked for.
+---
+--- IT USED TO BUILD AND SORT THE WHOLE LIST TO FIND ONE SIDE -- a record per
+--- team, a closure and a sort on every call, and the client asks this for
+--- every team-mate's dot, the outline and the marker on each blip pass. The
+--- answer never depended on the other sides or their order. Why the direct
+--- read is the same answer:
+---
+---   THE KEY IS CHECKED BEFORE THE LIST IS READ. An array-style list keeps
+---   its sides at 1, 2, 3; without that line this would answer for side 1,
+---   which the walk never did and Arena.CountTeams never counts.
+---
+---   ONLY A LITERAL `false` SWITCHES A SIDE OFF, as in GetEnabledTeams.
+---   Nothing guarded it until tests/teamlookup_spec.lua: with it deleted, a
+---   switched-off side could be picked, backed and fought on, suite green.
+---
+---   A FRESH TABLE EVERY CALL, READ LIVE, NO MEMO. Callers write into what
+---   they are handed and the config is edited on a running server. The five
+---   fields must stay the five GetEnabledTeams builds; teamlookup_spec holds
+---   the two to the same answers against a verbatim copy of the old walk.
+---
+--- The one difference is a list that was already broken. A number key tied
+--- on `order` with a named side, or an entry that is not a table, made the
+--- old walk raise on EVERY lookup -- on the client, inside the blip pass.
+--- Every other side now still answers.
+--- @param key any
+--- @return table|nil -- { key, label, color, blipColor, order }
 function Arena.GetTeamByKey(key)
     if not Arena.IsKey(key) then return nil end
-    for _, team in ipairs(Arena.GetEnabledTeams()) do
-        if team.key == key then return team end
-    end
-    return nil
+    local team = (Config.Teams.list or {})[key]
+    if team == nil or team.enabled == false then return nil end
+    return {
+        key = key,
+        label = team.label or key,
+        color = team.color,
+        blipColor = team.blipColor,
+        order = Arena.ToInt(team.order) or 999,
+    }
 end
 
 function Arena.GetEnabledArenas()

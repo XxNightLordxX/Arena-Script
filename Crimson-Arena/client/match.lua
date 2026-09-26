@@ -2685,6 +2685,18 @@ local function layArenaProps(arenaKey, factor, boundary, stillWanted)
 
     local wanted = Arena.ArenaProps(arenaKey, measured, factor)
     if #wanted == 0 then
+        -- NOTHING TO PLACE, AND THAT IS THE ANSWER, NOT A FAILURE. An arena
+        -- on the map with its cover switched off -- the trailer park as it
+        -- ships -- plans nothing at all, and arenaProps staying empty is
+        -- exactly what a finished build of it looks like. Marked on THIS
+        -- build's record so the spectator camera can tell "built, and there
+        -- is nothing" from "not built", which `#arenaProps` alone cannot;
+        -- see ArenaMatch.EnsureSpectatorScenery for the one reader.
+        --
+        -- ONLY HERE. The floor that could not be built below is a failure
+        -- the camera must go on retrying, and a plan whose pieces all failed
+        -- to load is not an empty arena either -- neither may carry this.
+        builtArena.empty = true
         return true
     end
 
@@ -3227,7 +3239,32 @@ function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
     -- takes it away and puts it back under them. On the sky arena that is a
     -- kilometre. A slightly wrong arena size is worth living with; dropping
     -- somebody through the floor is not.
-    if builtArena and builtArena.key == arenaKey and #arenaProps > 0 then
+    --
+    -- AN ARENA WITH NOTHING TO BUILD IS "STANDING" TOO -- BUT ONLY WHILE THIS
+    -- CAMERA'S OWN WATCH IS UP. `#arenaProps > 0` is never true for one, so
+    -- the camera re-planned it on every frame it ran: a teardown, two
+    -- sweeps and an empty plan, sixty times a second, for a watcher of the
+    -- trailer park. The build marks such an arena `empty` on the record it
+    -- writes, and that mark is the whole of what this clause trusts.
+    --
+    -- GATED ON spectatorBuilt, AND THE GATE IS WHAT KEEPS THE TRAP ABOVE
+    -- SHUT. builtArena outlives every teardown -- that is the defect this
+    -- comment opens with -- so `empty` alone would outlive them too. But
+    -- spectatorBuilt is raised only at the end of a watch that got its
+    -- answer, and lowered by every way the scenery comes down:
+    -- clearArenaScenery, the opening of every build, and
+    -- DropSpectatorScenery. So after any teardown this clause cannot answer
+    -- "standing"; the next watch plans once, raises it again, and holds.
+    -- DO NOT drop the gate to save the one plan per watch that it costs.
+    --
+    -- AND IT SKIPS THE CAMERA CHECK BELOW SAFELY FOR THE SAME REASON. The
+    -- flag is only ever up while the camera runs: ArenaSpectate.Stop drops
+    -- it in the same call that stops the camera, and a stopped camera has no
+    -- arena left to ask about. So this clause is never reached for a camera
+    -- that has gone.
+    if builtArena and builtArena.key == arenaKey
+        and (#arenaProps > 0 or (spectatorBuilt and builtArena.empty == true))
+    then
         return true
     end
 

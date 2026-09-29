@@ -162,8 +162,16 @@ files['client/'] = {
         'cache',
         'QBX',
 
-        -- Resource exports: ox_target for the lobby ped, qbx_core elsewhere.
+        -- Resource exports: ox_target for the lobby ped, qbx_core elsewhere,
+        -- and ox_inventory's getCurrentWeapon / GetPlayerItems for the
+        -- item-less weapon watch in client/match.lua.
         'exports',
+
+        -- ox_inventory's `inventory:ignoreweapons` convar, read the way ox
+        -- reads it -- a replicated JSON list -- so the exit leaves alone the
+        -- native weapons ox itself says are legitimate.
+        'GetConvar',
+        'json',
 
         -- CitizenFX runtime types.
         'vector3',
@@ -262,6 +270,9 @@ files['client/'] = {
         'GiveWeaponToPed',
         'HasPedGotWeapon',
         'RemoveAllPedWeapons',
+        -- With ox_inventory running, the exit takes off only the arena's own
+        -- guns, one by one, rather than wiping the ped.
+        'RemoveWeaponFromPed',
         'SetCurrentPedWeapon',
         'SetPedAmmo',
         'SetPedArmour',

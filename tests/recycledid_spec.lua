@@ -41,6 +41,7 @@ local function newServer(mutate)
     -- which is the shape ox_inventory really answers in.
     local bags = {}
     local console = {}
+    local sent = {}
     local identity = {}
     local serials = 0
 
@@ -175,7 +176,9 @@ local function newServer(mutate)
         AddEventHandler = function() end,
         CreateThread = function(fn) fn() end,
         GetPlayers = function() return {} end,
-        TriggerClientEvent = function() end,
+        -- RECORDED: a chase that takes a weapon back tells that client to
+        -- watch for a gun ox finished drawing after its item went.
+        TriggerClientEvent = function(event, target) sent[#sent + 1] = { event = event, target = target } end,
         print = function(line) console[#console + 1] = line end,
         lib = Sandbox.newOxLib(),
     })
@@ -250,6 +253,14 @@ local function newServer(mutate)
             return #rows == 0 and 'nobody' or table.concat(rows, ' | ')
         end,
         log = function() return table.concat(console, '\n') end,
+        --- How many times one client event went to one player.
+        sentTo = function(src, event)
+            local n = 0
+            for _, row in ipairs(sent) do
+                if row.target == src and row.event == event then n = n + 1 end
+            end
+            return n
+        end,
     }
 end
 
@@ -473,6 +484,56 @@ t.test('DEFECT: the arena takes back ITS gun, not the fighter\'s own copy of the
     t.equals(s.serialsOf(1, 'WEAPON_PISTOL'), 'none',
         'THE ARENA TOOK THE FIGHTER\'S OWN PISTOL AND LEFT ITS OWN IN THEIR POCKETS')
     t.equals(s.slate(), 'nobody', 'and nothing is owed, because the arena has its weapon back')
+end)
+
+-- ========================================================================
+-- THE GUN THAT OUTLIVES ITS ITEM
+-- ========================================================================
+
+t.test('a weapon chased back outside a round tells that client to watch for a drawn gun with no item', function()
+    -- ox_inventory finishes a draw after the item is gone and never checks
+    -- again -- the owner's "a gun you can use until you refreshSkin". At an
+    -- exit the exit starts the client's watch; the owed-kit chase is the one
+    -- removal of an arena gun with no exit behind it.
+    local s = newServer(function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.identify(1, 'CID_FIGHTER')
+    s.ammo.Issue(1, 'm1', { weapons = { { weapon = 'WEAPON_PISTOL', key = 'pistol', ammo = 30 } }, supplies = {} })
+
+    -- They drop out holding it, and come back later on another id, still
+    -- carrying the arena's pistol.
+    s.recycleId(1, 'CID_STRANGER', {})
+    s.ammo.Reclaim(1, 'disconnected')
+    t.equals(s.slate(), 'CID_FIGHTER owes WEAPON_PISTOL', 'nothing is owed, so nothing below is a chase')
+    s.identify(2, 'CID_FIGHTER')
+    s.give(2, 'WEAPON_PISTOL', 1, { serial = 'SER1' })
+
+    s.ammo.Issue(2, 'm2', { weapons = {}, supplies = {} })
+
+    t.equals(s.countOf(2, 'WEAPON_PISTOL'), 0, 'the chase did not take the pistol back, so it proves nothing')
+    t.equals(s.sentTo(2, 'crimson_arena:client:watchWeapons'), 1,
+        'the pistol was taken out of their pockets and their client was never told to look for it in their hands')
+end)
+
+t.test('and a chase that finds the owed gun NOT in their pockets says nothing to the client', function()
+    -- The chase runs and reaches the end -- the debt is real and is looked at
+    -- -- but the pistol is somewhere else, nothing is taken, and there is no
+    -- removal for a draw to have raced.
+    local s = newServer(function(config)
+        config.Loadouts.inventory.stripOnEntry = false
+    end)
+    s.identify(1, 'CID_FIGHTER')
+    s.ammo.Issue(1, 'm1', { weapons = { { weapon = 'WEAPON_PISTOL', key = 'pistol', ammo = 30 } }, supplies = {} })
+    s.recycleId(1, 'CID_STRANGER', {})
+    s.ammo.Reclaim(1, 'disconnected')
+    s.identify(2, 'CID_FIGHTER')
+
+    s.ammo.Issue(2, 'm2', { weapons = {}, supplies = {} })
+
+    t.equals(s.slate(), 'CID_FIGHTER owes WEAPON_PISTOL', 'the debt was settled, so the chase took something after all')
+    t.equals(s.sentTo(2, 'crimson_arena:client:watchWeapons'), 0,
+        'the client was told a weapon was taken back when nothing was')
 end)
 
 os.exit(t.summary())

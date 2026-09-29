@@ -5039,6 +5039,7 @@ local function chaseOwedKit(src, citizenid)
     end
 
     local left, taken = {}, 0
+    local tookWeapon = false
     for _, row in ipairs(rows) do
         -- GONE IS AN ANSWER AND NOT A FAILURE, on purpose. A weapon can stop
         -- existing -- destroyed on death, dropped and despawned -- and a
@@ -5090,6 +5091,7 @@ local function chaseOwedKit(src, citizenid)
         elseif takeWeaponBack(ox, src, row) then
             dropOwedWeapon(citizenid, row.serial)
             taken = taken + 1
+            tookWeapon = true
             ArenaLog('weapons: took the arena\'s %s (%s) back off %s.',
                 row.name, tostring(row.serial or 'no serial'), tostring(citizenid))
         else
@@ -5194,6 +5196,18 @@ local function chaseOwedKit(src, citizenid)
     -- ordinary notify. DO NOT quieten this.
     if taken > 0 then
         ArenaToastKey(src, 'notify.kit_reclaimed', 'info')
+    end
+
+    -- AND THEIR CLIENT IS TOLD TO LOOK FOR A GUN WITH NO ITEM BEHIND IT.
+    --
+    -- A weapon taken back here was in their pockets a moment ago, outside any
+    -- round, and they may have been drawing it. ox_inventory finishes a draw
+    -- after its item is gone and never checks again -- the owner's "a gun you
+    -- can use until you refreshSkin" -- and at an exit the exit itself starts
+    -- the client's watch. This is the one removal with no exit behind it.
+    -- See watchItemlessWeapons in client/match.lua.
+    if tookWeapon then
+        TriggerClientEvent('crimson_arena:client:watchWeapons', src)
     end
 
     return taken

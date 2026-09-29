@@ -15,8 +15,12 @@
     made: it applies the vitals the server resolved, it reports a death as a
     HINT and lets the server decide whether it scored, and its match-only
     threads all die the moment the match does. It never hands the ped a
-    weapon -- ox_inventory owns those, and server/ammo.lua issues them as
-    items.
+    weapon ox_inventory owns -- server/ammo.lua issues those as items, and
+    the one native give in this file, restoreOwnLoadout, hands back only
+    what the player walked in with that is neither a catalogue weapon nor a
+    weapon ox had drawn (everything, on a server without ox). Two threads
+    outlive a round on purpose -- leaveArena's visibility watch and the
+    item-less weapon watch beside it -- and both end on their own.
 ]]
 
 local UNARMED = joaat('WEAPON_UNARMED')
@@ -270,6 +274,36 @@ local function notify(key, notifyType, ...)
     })
 end
 
+--- WHETHER ox_inventory IS WHAT OWNS WEAPONS ON THIS SERVER.
+---
+--- It decides what the door does with the ped's weapons, because the two
+--- arrangements want opposite things. Without ox the ped IS the inventory:
+--- a gun the player walked in with exists nowhere else, so it is wiped and
+--- handed back natively. With ox the ITEM is the weapon: the door hands the
+--- item back, ox puts the gun in their hands when they draw it, and a gun
+--- given to the ped natively is a second, item-less copy -- usable, owned by
+--- nothing, and kept until the ped is rebuilt. That is the owner's report
+--- word for word: "you still have a gun you can use until you refreshSkin".
+--- @return boolean
+local function oxInventoryRunning()
+    return type(GetResourceState) == 'function' and GetResourceState('ox_inventory') == 'started'
+end
+
+--- Whether ox_inventory has `hash` drawn right now.
+---
+--- A weapon ox has drawn has an item behind it, so it is ox's whether or not
+--- it is in the arena's catalogue -- one of the owner's addon katanas, a stock
+--- stun gun -- and the capture must not record it as a native to hand back at
+--- the exit. Handing it back would be the item-less copy all over again, for a
+--- weapon the catalogue test further down cannot recognise.
+--- @param hash any
+--- @return boolean
+local function oxHasDrawn(hash)
+    if not oxInventoryRunning() then return false end
+    local ok, weapon = pcall(function() return exports.ox_inventory:getCurrentWeapon() end)
+    return ok and type(weapon) == 'table' and weapon.hash == hash
+end
+
 local function captureOwnLoadout()
     local ped = PlayerPedId()
     local weapons, seen = {}, {}
@@ -281,6 +315,7 @@ local function captureOwnLoadout()
     end
 
     local selected = GetSelectedPedWeapon(ped)
+    if oxHasDrawn(selected) then selected = UNARMED end
     remember(selected)
     for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
         remember(joaat(weapon.weapon))
@@ -293,7 +328,83 @@ local function captureOwnLoadout()
     }
 end
 
+--- ox_inventory's OWN list of weapons it lets live on the ped without an
+--- item -- `setr inventory:ignoreweapons '["WEAPON_STUNGUN", ...]'`.
+---
+--- READ FROM ox's CONVAR RATHER THAN GUESSED, because it is the one place
+--- ox says "a native one of these is legitimate": a job script handing out a
+--- stun gun or a pepper spray natively lists it there, or ox would strip it
+--- on the first draw. The exit leaves those on the ped and hands them back
+--- natively as it always did; they are the only CATALOGUE weapons it does
+--- that for. Parsed the way ox parses it: a number is a hash, a string is a
+--- name. Unreadable reads as empty, which is ox's own default.
+--- @return table<any, boolean>
+local function oxIgnoredWeapons()
+    local set = {}
+    if type(GetConvar) ~= 'function' or type(json) ~= 'table' or type(json.decode) ~= 'function' then
+        return set
+    end
+    local ok, list = pcall(json.decode, GetConvar('inventory:ignoreweapons', '[]'))
+    if not ok or type(list) ~= 'table' then return set end
+    for _, entry in ipairs(list) do
+        local hash = tonumber(entry) or (type(entry) == 'string' and joaat(entry)) or nil
+        if hash ~= nil then set[hash] = true end
+    end
+    return set
+end
+
+--- Every catalogue weapon ox_inventory owns on this server, by hash. EMPTY
+--- when ox is not running, which is what keeps every non-ox server on the
+--- behaviour it has always had.
+---
+--- THE WHOLE CATALOGUE, SWITCHED OFF OR NOT. config.weapons.lua is generated
+--- from this server's own ox_inventory weapons.lua and a weapon ox has no
+--- item for is withdrawn at boot, so every name in it is an ox item by
+--- construction -- and `enabled = false` stops the arena ISSUING one, not
+--- the player owning one. Minus anything ox itself ignores (above).
+--- @return table<any, boolean>
+local function oxOwnedWeapons()
+    local owned = {}
+    if not oxInventoryRunning() then return owned end
+
+    local ignored = oxIgnoredWeapons()
+    for _, weapon in ipairs(Config.Loadouts.weapons or {}) do
+        if type(weapon) == 'table' and Arena.IsKey(weapon.weapon) then
+            local hash = joaat(weapon.weapon)
+            if not ignored[hash] then owned[hash] = true end
+        end
+    end
+    return owned
+end
+
 local function stripIssuedWeapons(ped)
+    -- WITH ox_inventory RUNNING, ONLY THE ARENA'S OWN GUNS COME OFF, and they
+    -- come off whatever the restore setting says.
+    --
+    -- Every catalogue weapon on the ped at this point is either the arena's
+    -- kit or an item-less copy of an ox weapon -- when the door took them,
+    -- the player's OWN guns spent the round in its stash and are items again
+    -- by now, not guns in hand -- so taking these off costs nobody anything
+    -- they own, and
+    -- restoreLoadoutOnExit (which is about handing things BACK) has no say
+    -- over it.
+    --
+    -- NOT RemoveAllPedWeapons, which is what this did on every server. On an
+    -- ox server that also deleted things ox does not own that the capture
+    -- never recorded, so nothing gave them back: the parachute ox keeps as a
+    -- bare gadget, and a job weapon a script hands out natively and ox
+    -- ignores. Leaving those alone is what "leave the ped as it was found"
+    -- means when the inventory is ox's.
+    if oxInventoryRunning() then
+        local owned = oxOwnedWeapons()
+        local selected = GetSelectedPedWeapon(ped)
+        for hash in pairs(owned) do
+            if HasPedGotWeapon(ped, hash, false) then RemoveWeaponFromPed(ped, hash) end
+        end
+        if owned[selected] then SetCurrentPedWeapon(ped, UNARMED, true) end
+        return
+    end
+
     -- GUARDED ON BOTH THE CAPTURE AND THE RESTORE SETTING, because the wipe
     -- and the restore are one decision and were once being made separately.
     --
@@ -304,9 +415,10 @@ local function stripIssuedWeapons(ped)
     -- they walked in with", not "confiscate them". The resource's headline
     -- promise is that a match cannot cost anyone anything.
     --
-    -- ox_inventory re-equips the ped from the inventory afterwards, so the
-    -- wipe costs a player nothing they still own an item for -- and the door
-    -- has already handed their own kit back by the time this runs.
+    -- WITHOUT ox_inventory, which is the only way to reach this line, the
+    -- ped IS the inventory: this wipe takes off whatever was picked up in
+    -- the arena, and restoreOwnLoadout puts back exactly what the capture
+    -- recorded on the way in.
     if carried and Config.Match.restoreLoadoutOnExit == true then
         RemoveAllPedWeapons(ped, true)
     end
@@ -418,11 +530,37 @@ local function restoreOwnLoadout(ped)
     SetPedArmour(ped, carried.armor)
 
     if Config.Match.restoreLoadoutOnExit == true then
+        -- NO CATALOGUE WEAPON ox_inventory OWNS IS HANDED BACK NATIVELY, and
+        -- neither is anything ox had drawn at entry (the capture drops that
+        -- one -- see oxHasDrawn). DO NOT drop the `owned` test to "give
+        -- everything back like it used to".
+        --
+        -- THE OWNER'S REPORT: "sometimes when you leave arena you still have
+        -- a gun you can use until you refreshSkin". A gun given with
+        -- GiveWeaponToPed on an ox server has no item behind it: it fires,
+        -- it survives the door, and only rebuilding the ped takes it away.
+        -- The capture above cannot tell such a gun from one of the player's
+        -- own -- HasPedGotWeapon answers the same for both -- and on an ox
+        -- server the player's own come back as ITEMS through the door
+        -- anyway, so the only thing this loop could ever add for an ox
+        -- weapon is that item-less copy. Worse, a copy handed back here is on
+        -- the ped when the next round starts, so the capture records it
+        -- again and it rides every exit after.
+        --
+        -- `owned` is empty without ox, so every other server gets exactly
+        -- what it always got. With ox, what is left -- a native weapon listed
+        -- in inventory:ignoreweapons, or one outside the catalogue that ox
+        -- did not have drawn -- still comes back; the strip above left those
+        -- on the ped, and SetPedAmmo puts the count back to what it was
+        -- rather than adding to it.
+        local owned = oxOwnedWeapons()
         for _, weapon in ipairs(carried.weapons) do
-            GiveWeaponToPed(ped, weapon.hash, weapon.ammo, false, false)
-            SetPedAmmo(ped, weapon.hash, weapon.ammo)
+            if not owned[weapon.hash] then
+                GiveWeaponToPed(ped, weapon.hash, weapon.ammo, false, false)
+                SetPedAmmo(ped, weapon.hash, weapon.ammo)
+            end
         end
-        if carried.selected ~= UNARMED then
+        if carried.selected ~= UNARMED and not owned[carried.selected] then
             SetCurrentPedWeapon(ped, carried.selected, true)
         end
     end
@@ -3103,6 +3241,169 @@ local function buildArenaProps(arenaKey, factor, boundary, stillWanted)
     return built == true
 end
 
+--- THE ITEM-LESS WEAPON WATCH.
+---
+--- THE OWNER'S REPORT: "sometimes when you leave arena you still have a gun
+--- you can use until you refreshSkin". Traced through ox_inventory's own
+--- client, and it is a race the arena's door starts and ox finishes:
+---
+---   1. A fighter presses a weapon key. ox_inventory asks its server, and
+---      then plays the draw -- a 1200 ms Wait for every firearm -- BEFORE it
+---      puts the gun in their hands. Its current weapon is nil throughout.
+---   2. The round ends inside that window. The door takes the arena's kit
+---      back and sends the exit in the same tick. ox's client is told the
+---      slot is empty, and because nothing is drawn yet it has nothing to
+---      holster; leaveArena's strip finds empty hands.
+---   3. The draw finishes. ox hands the ped the gun, records it as drawn,
+---      and never looks at the slot again. Its own 200 ms check only asks
+---      whether the ped is holding the drawn gun -- which it is.
+---
+--- The player is home with a loaded gun and no item. It goes only when ox
+--- holsters it, and a new ped -- refreshskin -- is what finally makes ox do
+--- that. Intermittent because it needs a draw in flight at the exact moment
+--- of the exit, and seen with rifles because rifles are what the survivors
+--- of a round are holding. ox reads nothing crimson-backweapons does: that
+--- resource only draws props on backs and never touches the ped's weapons.
+---
+--- THE FIX CANNOT BE IN THE DOOR: the door is done, and correct, before the
+--- draw lands. So this watches for the one state ox itself treats as
+--- impossible -- a DRAWN weapon with no item of it in the player's pockets
+--- -- and holsters it through ox's own event, which also clears the server's
+--- note of which slot is drawn. It runs for the whole of a round and for
+--- ITEMLESS_AFTER_MS after it, and on resource start (a restart reclaims
+--- everybody while they may be mid-draw), and whenever the server tells it
+--- a weapon has been taken back outside a round.
+---
+--- WHAT IT WILL NEVER TOUCH: a weapon whose item the player holds. A draw
+--- in flight (ox's current weapon is nil until the gun is in hand), ox in
+--- the middle of holstering (timer nil), and the moment ox is part-way
+--- through a drag inside the pockets are all left alone -- the last because
+--- the item is matched by name and serial in ANY slot, never by slot alone,
+--- and because the same weapon has to look item-less on two polls running.
+---
+--- FORTY SECONDS, NOT TEN. Every draw loads its animation dictionary and ox
+--- lets that load take up to thirty seconds before it gives up, and the
+--- exit's teleport is the busiest streaming moment a client has.
+local ITEMLESS_AFTER_MS = 40000
+local ITEMLESS_POLL_MS = 250
+local itemlessUntil = 0
+local itemlessRunning = false
+
+--- ox_inventory's drawn weapon, when no item in the player's pockets is it.
+---
+--- THE SERIAL SETTLES IT: the arena's carbine drawn over the player's OWN
+--- carbine is still a gun with no item, and ox would go on writing its shots
+--- into the player's weapon. ox copies an item's metadata onto the weapon it
+--- draws, so a real draw ALWAYS carries its item's serial, and no serial on
+--- either side matches no serial on the other -- melee and anything ox never
+--- registered. A serialled gun over a serial-less item of the same name is
+--- NOT its item: letting that pass was a way to keep the arena's gun by
+--- owning a serial-less copy of it.
+---
+--- EVERY EXPORT IN A pcall. ox restarting while this runs raises "No such
+--- export", and a raise would end the watch.
+--- @return table|nil
+local function itemlessOxWeapon()
+    local okDrawn, weapon = pcall(function() return exports.ox_inventory:getCurrentWeapon() end)
+    if not okDrawn or type(weapon) ~= 'table' or weapon.timer == nil or not Arena.IsKey(weapon.name) then
+        return nil
+    end
+
+    local okItems, items = pcall(function() return exports.ox_inventory:GetPlayerItems() end)
+    if not okItems or type(items) ~= 'table' then return nil end
+
+    local drawn = type(weapon.metadata) == 'table' and weapon.metadata.serial or nil
+    for _, item in pairs(items) do
+        if type(item) == 'table' and item.name == weapon.name then
+            local mine = type(item.metadata) == 'table' and item.metadata.serial or nil
+            if mine == drawn then return nil end
+        end
+    end
+    return weapon
+end
+
+--- Starts the watch, or keeps the running one going for at least `forMs`.
+---
+--- ONE THREAD, HOWEVER MANY TIMES IT IS ASKED FOR: the round, the exit and
+--- the server can all ask inside the same few seconds, and each only moves
+--- the deadline. It keeps going while this client is in a round, so a gun
+--- whose item a gun-game promotion took mid-draw is holstered in the arena
+--- rather than fought with.
+---
+--- NOTHING AT ALL WITHOUT ox_inventory: there is no drawn weapon to ask about
+--- and the export would not exist.
+--- @param forMs number
+local function watchItemlessWeapons(forMs)
+    if not oxInventoryRunning() then return end
+
+    local until_ = GetGameTimer() + forMs
+    if until_ > itemlessUntil then itemlessUntil = until_ end
+    if itemlessRunning then return end
+    itemlessRunning = true
+
+    CreateThread(function()
+        local suspect
+
+        -- ONE POLL, INSIDE A pcall. A raise anywhere in here would end this
+        -- thread with `itemlessRunning` still set, and every later request
+        -- would then see a watch "already running" that is not -- the fix
+        -- switched off for the rest of the session by one bad poll.
+        local function poll()
+            local ghost = itemlessOxWeapon()
+            local key = ghost and ('%s|%s|%s'):format(tostring(ghost.name), tostring(ghost.slot),
+                tostring(type(ghost.metadata) == 'table' and ghost.metadata.serial or '')) or nil
+
+            if key ~= nil and key == suspect then
+                suspect = nil
+                -- ox's OWN holster, with no animation. It resets ox's drawn
+                -- weapon, takes the gun off the ped and tells ox's server
+                -- nothing is drawn, all in one step. A bare removal would get
+                -- there too -- ox's own tick notices the ped is no longer
+                -- holding what it has drawn and holsters it -- but a moment
+                -- later, and only by ox tidying up after us.
+                --
+                -- Like every ox holster it clears the ped, so the parachute
+                -- and any ignored native go with it. It only runs when a gun
+                -- with no item was found.
+                TriggerEvent('ox_inventory:disarm', true)
+
+                -- AND IF THAT DID NOT TAKE -- a build of ox that does not
+                -- answer this event from another resource -- the gun itself
+                -- comes off, and ox's tick does the rest. Asked again at once
+                -- because a local event handler runs before TriggerEvent
+                -- returns.
+                local still = itemlessOxWeapon()
+                if still and still.name == ghost.name then
+                    local ped = PlayerPedId()
+                    local hash = ghost.hash or joaat(ghost.name)
+                    if HasPedGotWeapon(ped, hash, false) then RemoveWeaponFromPed(ped, hash) end
+                    SetCurrentPedWeapon(ped, UNARMED, true)
+                end
+
+                ArenaLogOnce('itemless:' .. tostring(ghost.name),
+                    'put away %s: ox_inventory had it drawn but there is no item for it in your inventory '
+                        .. '(a draw that finished after its item had been taken). Your inventory is untouched.',
+                    tostring(ghost.name))
+                ArenaDebugPrint('itemless weapon: ox_inventory had %s drawn (slot %s) with no item behind it -- '
+                    .. 'holstered it', tostring(ghost.name), tostring(ghost.slot))
+            else
+                suspect = key
+            end
+        end
+
+        while currentMatch ~= nil or GetGameTimer() < itemlessUntil do
+            local ok, err = pcall(poll)
+            if not ok then
+                suspect = nil
+                ArenaLogOnce('itemless-poll-error',
+                    'the item-less weapon watch hit an error and carried on: %s', tostring(err))
+            end
+            Wait(ITEMLESS_POLL_MS)
+        end
+        itemlessRunning = false
+    end)
+end
+
 --- Puts the world back the way we found it. Synchronous on purpose: it is
 --- also the resource-stop path, and a stop handler that yields is a stop
 --- handler that does not finish.
@@ -3418,6 +3719,13 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- away costs them nothing and takes nothing.
     SetCurrentPedWeapon(ped, UNARMED, true)
 
+    -- AND WATCHED FOR THE MIRROR OF THE EXIT RACE. A player who pressed a
+    -- weapon key as they were called in has their OWN gun finish drawing
+    -- after the door stashed its item -- so they would fight with a gun they
+    -- are not carrying. The watch runs for the whole round; see
+    -- watchItemlessWeapons.
+    watchItemlessWeapons(ITEMLESS_AFTER_MS)
+
     ArenaDispatch.Enter(data.matchId)
 
     local sx, sy, sz, sheading = scatter(data.spawn,
@@ -3586,8 +3894,33 @@ RegisterNetEvent('crimson_arena:client:eliminated', function(data)
 end)
 
 RegisterNetEvent('crimson_arena:client:exitArena', function(data)
+    -- FIRST, so nothing leaveArena does -- including a raise out of another
+    -- module it calls -- can stop the watch starting.
+    --
+    -- IN THE HANDLER, NOT IN leaveArena. Every exit the server sends comes
+    -- through here -- including one leaveArena returns from early, because
+    -- this client never saw the round start -- and leaveArena is also the
+    -- resource-stop path, where a new thread would die with the resource.
+    -- The draw that makes the item-less gun lands after this handler; that
+    -- is the whole reason the watch exists.
+    watchItemlessWeapons(ITEMLESS_AFTER_MS)
+
     leaveArena(type(data) == 'table' and data.returnCoords or nil)
 end)
+
+--- THE SERVER TOOK A WEAPON BACK OUTSIDE A ROUND -- the owed-kit chase,
+--- collecting an arena gun from somebody who disconnected with it. The same
+--- race as the exit if they were drawing it at that moment, with no exit to
+--- start the watch. Carries nothing and needs nothing: all it can do is
+--- look, for a while, for a drawn gun with no item behind it.
+RegisterNetEvent('crimson_arena:client:watchWeapons', function()
+    watchItemlessWeapons(ITEMLESS_AFTER_MS)
+end)
+
+-- AND ONCE AT START. A restart takes everybody's arena kit back while some of
+-- them may be mid-draw, and the threads that would have watched died with the
+-- old copy of this resource.
+watchItemlessWeapons(ITEMLESS_AFTER_MS)
 
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
     -- A BOARD FROM SOMEBODY ELSE'S ROUND IS NOT DRAWN, which used to rest

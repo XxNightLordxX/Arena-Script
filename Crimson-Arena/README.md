@@ -94,6 +94,8 @@ Everything below is in the shipped code. Where something is off by default, or i
   would hand their stake back unjudged.
 - Eliminated players get an orbiting spectator camera and can cycle between the fighters (`spectateOnElimination`).
 - Players get back the weapons, ammo, armour and health they walked in with (`Config.Match.restoreLoadoutOnExit`, on by default) on every path out of the arena — round end, an aborted match, leaving or disconnecting mid-round, and a resource restart. Health comes back whatever that setting says: nobody leaves the arena as a corpse.
+- **With ox_inventory, the arena's guns come back as items, not as natives.** The exit takes the catalogue's guns off the ped one at a time and never hands back, with `GiveWeaponToPed`, a catalogue weapon or any weapon ox had drawn at entry — a gun given that way has no item behind it and stays usable until the ped is rebuilt. Natives ox tolerates (the parachute, anything listed in `inventory:ignoreweapons`) are left on the ped by the exit. Without ox_inventory the ped is the inventory, and it is wiped and handed back as before.
+- **A gun ox_inventory finishes drawing after its item has gone is put away.** Pressing a weapon key just as a round ends lets ox finish the draw after the door has already taken the item back, leaving a loaded gun with no item that only `/refreshskin` used to clear. The arena watches for exactly that — a drawn weapon with no item of that name and serial in the player's pockets, seen twice running — for the whole round and 40 seconds after it, and holsters it through ox's own disarm. A weapon the player holds the item for is never touched. Like every ox holster, that one clears the ped, parachute included.
 
 **Betting**
 
@@ -1253,6 +1255,12 @@ are client-side because only a client can ask the game what models it has.
 - What will not come back is the player's OWN kit, and it is named: `door: <n> item(s) of <src>'s own kit could not be returned -- they stay in stash <id>.` The stash keeps it and the retry sweep hands it over when it can.
 - **Check the door.** `Config.Loadouts.inventory.stripOnEntry` is what decides whether a player's own kit is taken and given back. With it off, players keep everything they walked in with *and* everything the arena issued — that is the switch that makes the arena a source of free ammunition, and it exists only for servers that want that.
 - `door: refusing to drop match <id> -- <src>'s kit is still stashed at <stash>.` means a match record was asked to close while somebody's own belongings were still in the stash, and refused. The refusal is the safe outcome — the record stays reachable so a later return can still find it — but it is worth reading as a sign that an exit path did not run.
+
+### A player still has a gun after leaving, until they /refreshskin
+
+- **This was an ox_inventory draw finishing after the arena took the item back**, and the arena now puts that gun away on its own. The player's F8 console says `put away WEAPON_...: ox_inventory had it drawn but there is no item for it in your inventory`, and with `Config.Debug` on the server console says `itemless weapon: ox_inventory had WEAPON_... drawn (slot n) with no item behind it -- holstered it`.
+- **It is not caused by a back-weapons or sling script.** Those draw props on a player's back and never give, take or select a ped weapon. It showed up with rifles because rifles are what the survivors of a round are holding when it ends.
+- If a gun with no item outlives a round by more than a few seconds and neither of those lines appeared, ox did not have it drawn — something gave it to the ped natively. Check that `inventory:weaponmismatch` is not `0`: that convar is what lets ox strip a native gun it does not own.
 
 ### A player's own inventory did not come back
 

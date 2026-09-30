@@ -3554,6 +3554,10 @@ end)
 local function leaveArena(returnCoords)
     clearArenaScenery()
 
+    -- ox's item cards back BEFORE the early return: an exit this client
+    -- never saw start still must not leave them switched off.
+    if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(false) end
+
     if not currentMatch then return end
 
     currentMatch = nil
@@ -3943,6 +3947,9 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     -- watchItemlessWeapons.
     watchItemlessWeapons(ITEMLESS_AFTER_MS)
 
+    -- ITEM CARDS OFF THE CROSSHAIR for the round: see ArenaUI.ItemRow.
+    if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(true) end
+
     ArenaDispatch.Enter(data.matchId)
 
     local sx, sy, sz, sheading = scatter(data.spawn,
@@ -4104,7 +4111,7 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
 
     holdVitals()
 
-    drawSpawnWeapon()
+    if (Config.Match or {}).drawWeaponOnRespawn ~= false then drawSpawnWeapon() end
 end)
 
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)

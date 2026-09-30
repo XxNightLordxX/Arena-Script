@@ -158,6 +158,60 @@ function ArenaUI.UpdateHud(data)
     ArenaUI.Send('hud', payload)
 end
 
+-- ======================================================================
+-- THE ITEM ROW (Config.UI.itemRow)
+-- ======================================================================
+
+local ITEM_ROW_TEXT = { ui_added = '+', ui_removed = '-' }
+
+local itemRowOn = false
+
+--- Swaps ox_inventory's item cards for the arena's bottom-left row, or back.
+--- ON ONLY WHEN ox TOOK THE SWITCH: an ox without the export keeps showing
+--- its own cards, and the row stays silent so nothing is shown twice.
+--- @param on boolean
+function ArenaUI.ItemRow(on)
+    on = on == true and (Config.UI or {}).itemRow ~= false
+    if not on and not itemRowOn then return end
+
+    local ok = GetResourceState('ox_inventory') == 'started'
+        and pcall(function() exports.ox_inventory:suppressItemNotifications(on) end)
+    itemRowOn = on and ok == true
+    if not itemRowOn then ArenaUI.Send('itemRow', { clear = true }) end
+end
+
+--- ox's own card event, heard by this resource too. Only what the row
+--- draws is passed on, as plain values: the page sets them as text, and an
+--- image path is built here from the item NAME only if it is a plain name.
+local function onItemNotify(data)
+    if not itemRowOn or type(data) ~= 'table' then return end
+    local item, text, count = data[1], data[2], tonumber(data[3])
+    if type(item) ~= 'table' or type(item.name) ~= 'string' then return end
+    local sign = ITEM_ROW_TEXT[text]
+    if not sign then return end
+
+    local metadata = type(item.metadata) == 'table' and item.metadata or {}
+    local label = metadata.label or item.label or item.name
+    local imageName = type(metadata.image) == 'string' and metadata.image or item.name
+    local image
+    if imageName:match('^[%w_%-]+$') then
+        image = ('%s/%s.png'):format(GetConvar('inventory:imagepath', 'nui://ox_inventory/web/images'), imageName)
+    end
+
+    ArenaUI.Send('itemRow', {
+        label = tostring(label):sub(1, 40),
+        sign = sign,
+        count = count and math.floor(count) or nil,
+        image = image,
+    })
+end
+
+RegisterNetEvent('ox_inventory:itemNotify', onItemNotify)
+
+AddEventHandler('onResourceStop', function(name)
+    if name == GetCurrentResourceName() then ArenaUI.ItemRow(false) end
+end)
+
 function ArenaUI.Countdown(seconds, label)
     ArenaUI.Send('countdown', { seconds = seconds, label = label })
 end

@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      538   Teams         The sides, and whether they may be uneven
-      708   Modes         Free-for-all, team deathmatch and gun game
-     1100   DefaultMode   Which of them a new lobby opens on
-     1119   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1363   UI            Panel colours, logo and title
-     1421   Permissions   Who may open a match, who may force-stop one
-     1507   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1941   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2539   Database      Optional: four tables the arena owns. Ships OFF
-     2570   Leaderboard   Which matches count towards the board, and which do not
-     2636   Webhook       Optional: a Discord line per finished match
-     2668   Dispatch      Optional: keeping police and EMS out of the arena
+      540   Teams         The sides, and whether they may be uneven
+      710   Modes         Free-for-all, team deathmatch and gun game
+     1102   DefaultMode   Which of them a new lobby opens on
+     1121   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1365   UI            Panel colours, logo and title
+     1433   Permissions   Who may open a match, who may force-stop one
+     1519   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1953   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2551   Database      Optional: four tables the arena owns. Ships OFF
+     2582   Leaderboard   Which matches count towards the board, and which do not
+     2648   Webhook       Optional: a Discord line per finished match
+     2680   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -332,12 +332,14 @@ Config.Match = {
     -- more players than spawn points never stack inside each other.
     spawnScatterRadius = 2.5,
 
-    -- WEAPON OUT ON SPAWN. At the start of a round and on every respawn the
-    -- fighter's arena gun is drawn for them through ox_inventory, instantly,
-    -- so nobody spends the first second of a life reaching for a hotkey. A
-    -- firearm is preferred over a blade. Needs ox_inventory; off = hands
-    -- empty on spawn, as before.
+    -- WEAPON IN HAND AT MATCH START. As the start countdown ends the
+    -- fighter's arena weapon is drawn for them through ox_inventory,
+    -- instantly: a gun if they have one, otherwise a knife or other melee
+    -- weapon. Needs ox_inventory; false = empty hands at the start.
     drawWeaponOnSpawn = true,
+
+    -- AND AFTER EVERY REVIVE, the same way. false = empty hands on a revive.
+    drawWeaponOnRespawn = true,
 
     -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS HELD, in metres, while the
     -- world streams in around them.
@@ -1402,6 +1404,16 @@ Config.UI = {
 
     -- Show the live scoreboard overlay during a match.
     showMatchHud = true,
+
+    -- ITEM POP-UPS IN A ROUND. ox_inventory stacks its "Received 30x" cards
+    -- up the middle of the screen, over the crosshair, and a kill reward
+    -- sends several at once. While a player is in a round the arena switches
+    -- ox's cards off and shows its own small row along the bottom-left
+    -- instead, newest on the right, each gone after a few seconds. Outside a
+    -- round ox's cards are untouched. Needs an ox_inventory with the
+    -- suppressItemNotifications export; an older one keeps its own cards and
+    -- the arena adds nothing. false = leave ox's cards alone in rounds too.
+    itemRow = true,
 }
 
 -- ======================================================================

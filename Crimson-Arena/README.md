@@ -886,7 +886,8 @@ come back looking for it before concluding a setting is broken.
 ### Kit a mode hands out, and the weapon on spawn
 
 - **Team deathmatch gives every fighter a `radio`**, from `extraItems` on the mode in `Config.Modes`. It is the ox_inventory item only — no channel is set; the team agrees one. It is taken back at the exit like the rest of the kit. Any mode can list items there by ox item name; delete the list to hand out nothing. An item your server does not have is skipped and logged.
-- **The arena gun is drawn for the fighter** as the start countdown ends and on every respawn (`Config.Match.drawWeaponOnSpawn`). It goes through ox_inventory, instantly, and prefers a firearm over a blade. Anybody who already has something in hand keeps it. Set it to `false` for empty hands.
+- **The arena weapon is in hand at match start and after every revive** (`Config.Match.drawWeaponOnSpawn`, `Config.Match.drawWeaponOnRespawn`): drawn through ox_inventory, instantly — a gun if they have one, otherwise a knife or other melee weapon. Anybody who already has something in hand keeps it.
+- **Item pop-ups stay off the crosshair in a round** (`Config.UI.itemRow`): ox_inventory's own cards are switched off while a player is in a round, and the arena shows a small row along the bottom-left instead, newest on the right. Needs an ox_inventory with the `suppressItemNotifications` export; with an older one ox keeps its own cards.
 
 ### Getting back up after a death
 

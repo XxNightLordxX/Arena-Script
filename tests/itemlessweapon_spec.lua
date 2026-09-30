@@ -1045,7 +1045,19 @@ t.test('a draw ox refuses is retried at a settle, never hammered, and gives up',
     t.equals(useCount(c), n, 'the draw kept trying after its window')
 end)
 
-t.test('a respawn comes back with the gun out', function()
+t.test('switched off, a respawn leaves the hands empty', function()
+    local c = newClient({ mutate = function(Config) Config.Match.drawWeaponOnRespawn = false end })
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter()
+    drawWindow(c)
+    c.ox.current = nil; c.ped.selected = UNARMED
+    c.fire('respawn', { spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 }, scatterRadius = 0.0, loadout = {} })
+    drawWindow(c)
+    t.equals(useCount(c), 1, 'the gun was drawn again on a revive')
+    t.equals(c.ped.selected, UNARMED)
+end)
+
+t.test('THE ASK: a revive comes back with the gun out', function()
     local c = newClient()
     c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
     c.enter()
@@ -1073,6 +1085,17 @@ t.test('a weapon outside the arena catalogue is never drawn', function()
     c.enter()
     drawWindow(c)
     t.equals(useCount(c), 0)
+end)
+
+t.test('a revive with only a knife comes back with the knife out', function()
+    local c = newClient()
+    c.ox.items[2] = item(2, 'WEAPON_KNIFE')
+    c.enter()
+    drawWindow(c)
+    c.ox.current = nil; c.ped.selected = UNARMED
+    c.fire('respawn', { spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 }, scatterRadius = 0.0, loadout = {} })
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_KNIFE')
 end)
 
 t.test('switched off, the hands stay empty', function()

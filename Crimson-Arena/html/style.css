@@ -2327,3 +2327,39 @@ option {
     opacity: 1;
     border-style: solid;
 }
+
+/* THE ITEM ROW: the arena's own item pop-ups during a round, along the
+   bottom-left, newest on the right -- clear of the crosshair. */
+#arena-item-row {
+    position: fixed;
+    left: 1.5rem;
+    bottom: 1.5rem;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 0.4rem;
+    max-width: 45vw;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 40;
+}
+
+.item-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom: 2px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 1;
+    transition: opacity 0.3s ease;
+}
+
+.item-chip.removed { border-bottom-color: var(--muted, #888); }
+.item-chip.fading { opacity: 0; }
+.item-chip img { width: 1.6rem; height: 1.6rem; object-fit: contain; }
+.item-chip .item-count { font-weight: 700; }

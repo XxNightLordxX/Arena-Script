@@ -744,7 +744,7 @@ listed; the source documents them where they are.
 | `ArenaMatch.IsLive(matchId)` | Whether a match is in its live phase. |
 | `ArenaMatch.IsDecided(match)` | Whether a live round's result is already fixed -- the next sweep would end it -- although it has not been ended yet. Asks the same `evaluate` the sweep ends a round on, and only reads. The spectator betting grace closes on it, so nobody can back the certain winner in the second between the deciding death or walk-out and the sweep -- and `ArenaMatch.OnDeath` asks it too, so the death that decides a round is broadcast at once and every open panel sees that book shut. |
 
-#### `client/ui.lua` — 9 functions
+#### `client/ui.lua` — 10 functions
 
 | Function | What it does |
 |---|---|
@@ -755,6 +755,7 @@ listed; the source documents them where they are.
 | `ArenaUI.Open()` | Fetches the snapshot first and only then takes focus: a panel that opens before it has anything to render shows an empty frame with the mouse already captured, and a failed fetch would leave that frame permanent. |
 | `ArenaUI.Close()` | Safe to call when already closed; the release is unconditional because releasing focus we do not hold costs nothing and failing to release focus we do hold costs the player their character. |
 | `ArenaUI.UpdateHud(data)` | Pushes the in-match scoreboard numbers into the HUD. |
+| `ArenaUI.ItemRow(on)` | In a round, swaps ox_inventory's item cards for the arena's bottom-left row; off again at the exit. Only when ox has the suppressItemNotifications export. |
 | `ArenaUI.Countdown(seconds, label)` | The big centred number before a round goes live. |
 | `ArenaUI.Results(results)` | End-of-match scoreboard. |
 

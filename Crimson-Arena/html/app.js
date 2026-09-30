@@ -4712,6 +4712,50 @@
         show(byId('arena-countdown'), false);
     }
 
+    // THE ITEM ROW. Text only through textContent, and an image only from
+    // an nui:// or https:// path, so nothing an item carries can become markup.
+    const ITEM_ROW_MAX = 6;
+    const ITEM_ROW_MS = 2500;
+
+    function showItemChip(data) {
+        const row = document.getElementById('arena-item-row');
+        if (!row || !data || typeof data !== 'object') return;
+        if (data.clear === true) {
+            row.textContent = '';
+            return;
+        }
+        if (typeof data.label !== 'string' || data.label === '') return;
+
+        const chip = document.createElement('div');
+        chip.className = 'item-chip' + (data.sign === '-' ? ' removed' : '');
+
+        if (typeof data.image === 'string' && /^(nui|https):\/\//.test(data.image)) {
+            const img = document.createElement('img');
+            img.alt = '';
+            img.src = data.image;
+            img.onerror = () => img.remove();
+            chip.appendChild(img);
+        }
+
+        const count = document.createElement('span');
+        count.className = 'item-count';
+        const n = Number.isFinite(data.count) ? Math.floor(data.count) : null;
+        count.textContent = (data.sign === '-' ? '-' : '+') + (n !== null ? n + 'x' : '');
+        chip.appendChild(count);
+
+        const label = document.createElement('span');
+        label.textContent = data.label;
+        chip.appendChild(label);
+
+        row.appendChild(chip);
+        while (row.children.length > ITEM_ROW_MAX) row.removeChild(row.firstChild);
+
+        setTimeout(() => {
+            chip.classList.add('fading');
+            setTimeout(() => chip.remove(), 350);
+        }, ITEM_ROW_MS);
+    }
+
     function renderCountdown(seconds, label) {
         var root = byId('arena-countdown');
         if (!has(root)) return;
@@ -5568,6 +5612,10 @@
                     else if (data.scoreboard !== undefined || data.remaining !== undefined) state.hud = data;
                     if (!state.hudVisible) state.hud = null;
                     renderHud();
+                    break;
+
+                case 'itemRow':
+                    showItemChip(data);
                     break;
 
                 case 'countdown':

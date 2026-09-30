@@ -26,12 +26,11 @@ Config.Loadouts.weapons = {
     -- have and says so in the console, so a mistake costs an attachment
     -- rather than the weapon -- but it is still a mistake.
     --
-    -- EIGHTY-FIVE OF THE 92 ENTRIES BELOW ARE `enabled = true`. SWITCHED OFF
-    -- AT THE OWNER'S INSTRUCTION: the Navy Revolver, and seven heavy weapons
-    -- -- the RPG, the homing and grenade launchers, the minigun, the railgun,
-    -- the Unholy Hellbringer and the Widowmaker. The rest of the heavy
-    -- category (EMP, compact and firework launchers, the XM3 railgun and the
-    -- flamethrower) stays on. The musket, the double-barrel shotgun and the
+    -- EIGHTY-ONE OF THE 92 ENTRIES BELOW ARE `enabled = true`. SWITCHED OFF
+    -- AT THE OWNER'S INSTRUCTION: the Navy Revolver, and ten heavy weapons
+    -- -- the RPG, the homing, grenade, EMP and compact launchers, the minigun,
+    -- both railguns, the Unholy Hellbringer and the Widowmaker. The firework
+    -- launcher and the flamethrower stay on. The musket, the double-barrel shotgun and the
     -- marksman rifles are no longer in the catalogue at all.
     --
     -- WHY THE MUSKET, DOUBLE-BARREL AND MARKSMAN RIFLE WENT, because it matters to anyone running
@@ -761,7 +760,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_EMPLAUNCHER',
         label = 'Compact EMP Launcher',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'EMP round', item = 'ammo-emp' } },
         components = {},
@@ -772,7 +771,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_COMPACTLAUNCHER',
         label = 'Compact Grenade Launcher',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = '40mm Explosive', item = 'ammo-grenade' } },
         components = {},
@@ -871,7 +870,7 @@ Config.Loadouts.weapons = {
         weapon = 'WEAPON_RAILGUNXM3',
         label = 'Railgun XM3',
         category = 'heavy',
-        enabled = true,
+        enabled = false, -- SWITCHED OFF BY THE OWNER
         ammo = { default = 8, options = { 4, 8, 16, 500 }, max = 500 },
         ammoTypes = { { key = 'standard', label = 'Railgun charge', item = 'ammo-railgun' } },
         components = {},

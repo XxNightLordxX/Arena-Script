@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      562   Teams         The sides, and whether they may be uneven
-      732   Modes         Free-for-all, team deathmatch and gun game
-     1124   DefaultMode   Which of them a new lobby opens on
-     1143   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1387   UI            Panel colours, logo and title
-     1455   Permissions   Who may open a match, who may force-stop one
-     1541   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1975   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2573   Database      Optional: four tables the arena owns. Ships OFF
-     2604   Leaderboard   Which matches count towards the board, and which do not
-     2670   Webhook       Optional: a Discord line per finished match
-     2702   Dispatch      Optional: keeping police and EMS out of the arena
+      563   Teams         The sides, and whether they may be uneven
+      733   Modes         Free-for-all, team deathmatch and gun game
+     1125   DefaultMode   Which of them a new lobby opens on
+     1144   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1388   UI            Panel colours, logo and title
+     1456   Permissions   Who may open a match, who may force-stop one
+     1542   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1976   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2574   Database      Optional: four tables the arena owns. Ships OFF
+     2605   Leaderboard   Which matches count towards the board, and which do not
+     2671   Webhook       Optional: a Discord line per finished match
+     2703   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -360,7 +360,8 @@ Config.Match = {
         -- exact names your FiniAC build reports. finiHook = false: no hook.
         finiHook = true,
         finiGraceSeconds = 2,
-        finiDetections = { 'godmode', 'god_mode', 'invincib', 'invulnerab' },
+        -- FiniAC's own names: GodModePed, GodModeV2, GodModeV3.
+        finiDetections = { 'godmode' },
     },
 
     -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS HELD, in metres, while the

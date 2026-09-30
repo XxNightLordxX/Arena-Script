@@ -3427,7 +3427,9 @@ end
 --- redraw on its next refresh, never the gun.
 local SWEEP_AFTER_EXIT_MS = 60000
 local SWEEP_EVERY_MS = 5000
-local sweepToken = 0
+local sweepUntil = 0
+local sweepPed = nil
+local sweepRunning = false
 
 --- world model hash -> weapon name, for every catalogue weapon. Built when
 --- first needed: GetWeapontypeModel answers nothing for a weapon this build
@@ -3518,17 +3520,22 @@ end
 --- schedule rather than adding a second one.
 local function scheduleOrphanSweeps(forMs)
     if not oxInventoryRunning() then return end
-    sweepToken = sweepToken + 1
-    local token = sweepToken
-    local ped = PlayerPedId()
-    local until_ = GetGameTimer() + forMs
+    -- EXTENDS, NEVER SHORTENS. The exit asks for a minute; the reclaim that
+    -- follows empties the arena guns, and each one reaching zero asks for
+    -- 15 s. Replacing the schedule cut the minute to 15 s and swapped the
+    -- ped the exit saw for whatever PlayerPedId answered later.
+    sweepUntil = math.max(sweepUntil, GetGameTimer() + forMs)
+    sweepPed = sweepPed or PlayerPedId()
+    if sweepRunning then return end
+    sweepRunning = true
     CreateThread(function()
-        while sweepToken == token and GetGameTimer() < until_ do
+        while GetGameTimer() < sweepUntil do
             Wait(SWEEP_EVERY_MS)
-            if sweepToken ~= token then return end
-            local ok, err = pcall(sweepOrphanWeaponProps, ped)
+            local ok, err = pcall(sweepOrphanWeaponProps, sweepPed)
             if not ok then ArenaLogOnce('backprop-sweep-error', 'the back prop sweep hit an error: %s', tostring(err)) end
         end
+        sweepRunning = false
+        sweepPed = nil
     end)
 end
 

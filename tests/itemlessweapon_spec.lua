@@ -1234,4 +1234,17 @@ t.test('leaving the round ends the protection at once, not on the next poll', fu
     t.equals(c.world.invincible, false)
 end)
 
+t.test('THE REVIEW: the reclaim emptying a gun does not cut the minute-long exit sweep short', function()
+    local c = newClient()
+    c.enter()
+    c.exit()
+    -- The door takes the arena carbine back: ox reports its count at zero.
+    c.itemCount('WEAPON_CARBINERIFLE', 0)
+    -- Well past 15 s, well inside the minute, the back-weapons redraw lands.
+    for _ = 1, 6 do c.poll(1, 5000) end
+    local prop = c.prop('WEAPON_CARBINERIFLE')
+    for _ = 1, 3 do c.poll(1, 5000) end
+    t.equals(c.world.objects[prop], nil, 'the sweep had already stopped at 15 s')
+end)
+
 os.exit(t.summary())

@@ -68,9 +68,14 @@ end
 -- FiniAC (Config.Match.spawnProtection.finiHook)
 -- ----------------------------------------------------------------------
 
---- FiniAC's hook contract (docs.fini.ac/resource-api): return false to
---- cancel, the detection (or nil) to let it through. Cancels ONLY a listed
---- god-mode-type detection on a player inside a server-opened window.
+--- FiniAC's hook contract (docs.fini.ac/resource-api): called with
+--- player { source, name, identifiers } and detection { type, data };
+--- return false to cancel, the detection (or nil) to let it through. It
+--- runs synchronously and must not yield -- nothing here does. Cancels ONLY
+--- a listed god-mode-type detection on a player inside a server-opened
+--- window. FiniAC's documented god-mode names are GodModePed, GodModeV2 and
+--- GodModeV3 (docs.fini.ac/admin-whitelist-detections); 'godmode' covers
+--- all three.
 function ArenaSpawnProtection.FiniDetectionHook(player, detection)
     if type(player) ~= 'table' or type(detection) ~= 'table' then return detection end
     local src = tonumber(player.source)
@@ -90,9 +95,12 @@ end
 
 local finiHooked = false
 
+--- Registers the hook. Called on FiniAC's own `FiniAC:Started` event, and
+--- at this resource's start only if FiniAC's `FiniAC:Started` convar is 1 --
+--- both exactly as its Resource API page says: the resource being
+--- 'started' is NOT enough, its export is not ready for a moment after.
 local function hookFini()
     if finiHooked or config().finiHook == false or windowSeconds() <= 0 then return end
-    if GetResourceState('FiniAC') ~= 'started' then return end
     local ok, why = pcall(function() exports.FiniAC:AddDetectionHook(ArenaSpawnProtection.FiniDetectionHook) end)
     if ok then
         finiHooked = true
@@ -109,7 +117,8 @@ AddEventHandler('FiniAC:Started', function()
     hookFini()
 end)
 
-CreateThread(hookFini)
+-- FiniAC was already running when this resource started.
+if GetConvarInt('FiniAC:Started', 0) == 1 then hookFini() end
 
 AddEventHandler('playerDropped', function()
     protectedUntil[source] = nil

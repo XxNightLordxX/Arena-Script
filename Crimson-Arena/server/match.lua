@@ -44,6 +44,24 @@ ArenaMatch = {}
 
 local SWEEP_INTERVAL_MS = 1000
 
+--- THE MODE'S OWN KIT -- the team radio -- riding along with the supplies,
+--- on a COPY, so the player's saved pick never grows a radio. Used by BOTH
+--- the entry issue and the respawn top-up: ox drops a dead fighter's whole
+--- inventory, and a radio only the entry handed out was gone for the round
+--- at the first death, then owed at the exit as if it had been kept.
+--- @return table|nil
+local function withModeExtras(match, loadout)
+    local extra = Arena.ModeExtraItems(match and match.modeKey)
+    if #extra == 0 or type(loadout) ~= 'table' then return loadout end
+    local copy = {}
+    for k, v in pairs(loadout) do copy[k] = v end
+    local supplies = {}
+    for _, entry in ipairs(loadout.supplies or {}) do supplies[#supplies + 1] = entry end
+    for _, entry in ipairs(extra) do supplies[#supplies + 1] = entry end
+    copy.supplies = supplies
+    return copy
+end
+
 local function toPoint(value)
     -- Arena.IsPoint RATHER THAN A LIST OF ITS OWN. Elsewhere in this file the
     -- rule is written down as "Arena.IsPoint is the one place that knows the
@@ -1414,20 +1432,7 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
 
     ArenaDispatch.Revive(player.src)
 
-    -- THE MODE'S OWN KIT -- the team radio -- rides along with the supplies,
-    -- on a copy, so the player's saved pick never grows a radio.
-    local issueLoadout = player.loadout
-    local extra = Arena.ModeExtraItems(match.modeKey)
-    if #extra > 0 and type(player.loadout) == 'table' then
-        issueLoadout = {}
-        for k, v in pairs(player.loadout) do issueLoadout[k] = v end
-        local supplies = {}
-        for _, entry in ipairs(player.loadout.supplies or {}) do supplies[#supplies + 1] = entry end
-        for _, entry in ipairs(extra) do supplies[#supplies + 1] = entry end
-        issueLoadout.supplies = supplies
-    end
-
-    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, issueLoadout)
+    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, withModeExtras(match, player.loadout))
     if #missingAmmo > 0 then
         ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))
     end
@@ -2073,7 +2078,9 @@ local function scheduleRespawn(match, player, unwitnessed)
         -- witness for -- see the note on scheduleRespawn -- and that never
         -- applies in a ladder, where the same death has already cost a tier.
         if not unwitnessed then
-            ArenaAmmo.Refresh(src, current.id, loadout)
+            -- WITH THE MODE'S OWN KIT: a death drops the team radio with
+            -- everything else, and it must come back like the rest.
+            ArenaAmmo.Refresh(src, current.id, withModeExtras(current, loadout))
         end
 
         local team = teamOf(current, entry)

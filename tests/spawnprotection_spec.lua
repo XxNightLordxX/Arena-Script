@@ -18,7 +18,14 @@ local function load(mutate, opts)
     local env = Sandbox.newArenaEnv({
         ArenaLog = function(fmt, ...) logged[#logged + 1] = fmt:format(...) end,
         GetGameTimer = function() return clock.now end,
-        GetResourceState = function(name) return name == 'FiniAC' and (opts.fini or 'started') or 'missing' end,
+        GetConvarInt = function(name, default)
+            if name == 'FiniAC:Started' then return opts.fini == 'missing' and 0 or 1 end
+            return default
+        end,
+        -- NOT what decides: FiniAC's docs say the export is not ready the
+        -- moment the resource is 'started'. Always answers started here so a
+        -- regression back to reading it is caught by the convar-0 case.
+        GetResourceState = function() return 'started' end,
         exports = setmetatable({ FiniAC = fini }, { __call = function() end }),
         AddEventHandler = function(name, fn) handlers[name] = fn end,
         CreateThread = function(fn) threads[#threads + 1] = fn end,
@@ -113,12 +120,29 @@ t.test('protection off (seconds = 0) registers nothing', function()
     t.equals(#f.hooks, 0)
 end)
 
-t.test('no FiniAC: nothing registered, nothing raised; it hooks when FiniAC starts later', function()
+t.test('DOCS: FiniAC not yet running (convar 0) -- nothing at start; hooks on FiniAC:Started', function()
     local f = load(nil, { fini = 'missing' })
-    t.equals(#f.hooks, 0)
-    f.env.GetResourceState = function() return 'started' end
+    t.equals(#f.hooks, 0, 'the export was called before FiniAC said it had started')
     f.handlers['FiniAC:Started']()
     t.equals(#f.hooks, 1)
+end)
+
+t.test('DOCS: a FiniAC restart re-registers the hook', function()
+    local f = load()
+    t.equals(#f.hooks, 1)
+    f.handlers['FiniAC:Started']()
+    t.equals(#f.hooks, 2)
+end)
+
+t.test('DOCS: FiniAC\'s own god-mode names are all cancelled in the window; others are not', function()
+    local f = load()
+    f.SP.Revived(7)
+    for _, kind in ipairs({ 'GodModePed', 'GodModeV2', 'GodModeV3' }) do
+        t.equals(f.detect(7, kind), false, kind .. ' was not cancelled')
+    end
+    for _, kind in ipairs({ 'NoclipV2', 'InvisiblePed', 'SpeedHack', 'BlacklistedWeapon', 'Teleport' }) do
+        t.equals(f.detect(7, kind).type, kind, kind .. ' was cancelled')
+    end
 end)
 
 t.test('an export that fails is logged, never thrown', function()

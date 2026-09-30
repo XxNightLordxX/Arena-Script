@@ -35,7 +35,7 @@ local function newServer(wallets, mutate)
     end
 
     local qbx = Sandbox.newQbxCore(players)
-    local issued = {}
+    local issued, refreshed = {}, {}
     local threads = Sandbox.newThreadRunner()
     local netEvents, console = {}, {}
     -- Who has actually been teleported into the arena, which is a different
@@ -96,7 +96,7 @@ local function newServer(wallets, mutate)
             -- THE RESPAWN REFRESH. A stub missing it does not fail a test, it
             -- THROWS inside the respawn thread -- so leaving it out here
             -- breaks every spec that lets a fighter come back to life.
-            Refresh = function() return true end,
+            Refresh = function(src, matchId, loadout) refreshed[#refreshed + 1] = { src = src, loadout = loadout }; return true end,
             ReclaimAll = function() return 0 end, Clear = function() return true end,
             OnLoan = function() return 0 end,
         },
@@ -126,7 +126,7 @@ local function newServer(wallets, mutate)
         Sandbox.loadInto('../Crimson-Arena/server/' .. file .. '.lua', env)
     end
 
-    local server = { issued = issued, env = env, qbx = qbx, config = env.Config,
+    local server = { issued = issued, refreshed = refreshed, env = env, qbx = qbx, config = env.Config,
         betting = env.ArenaBetting, lobby = env.ArenaLobby,
         match = env.ArenaMatch, dispatch = env.ArenaDispatch }
 
@@ -278,6 +278,27 @@ t.test('removing extraItems from the mode removes the radio', function()
     local server = twoPlayers(function(config) config.Modes.tdm.extraItems = nil end)
     runMatch(server, 'trailerpark', { 1, 2 }, 'tdm')
     t.equals((radiosFor(server, 1)), 0)
+end)
+
+t.test('THE REVIEW: a death drops the radio, and the respawn top-up hands it back', function()
+    local server = twoPlayers(function(config)
+        config.Modes.tdm.lives = 3
+        config.Match.lives = 3
+    end)
+    runMatch(server, 'trailerpark', { 1, 2 }, 'tdm')
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.step(10)
+    local tops, radio = 0, 0
+    for _, call in ipairs(server.refreshed) do
+        if call.src == 2 then
+            tops = tops + 1
+            for _, entry in ipairs((call.loadout or {}).supplies or {}) do
+                if entry.item == 'radio' then radio = radio + 1 end
+            end
+        end
+    end
+    t.isTrue(tops > 0, 'no respawn top-up ran, so this proves nothing')
+    t.isTrue(radio > 0, 'the respawn top-up left the radio out: lost for the round, owed at the exit')
 end)
 
 os.exit(t.summary())

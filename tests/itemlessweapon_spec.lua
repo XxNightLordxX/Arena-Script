@@ -102,6 +102,21 @@ local function newClient(opts)
             if ox.throw then error('No such export GetPlayerItems in resource ox_inventory', 0) end
             return copy(ox.items)
         end,
+        -- ox's useSlot for a weapon: the slot already drawn is HOLSTERED,
+        -- any other is drawn. `deafDraw` models a draw ox refuses.
+        useSlot = function(_self, slot, noAnim)
+            ox.used = ox.used or {}
+            ox.used[#ox.used + 1] = { slot = slot, noAnim = noAnim }
+            if ox.deafDraw then return end
+            local it = ox.items[slot]
+            if not it then return end
+            if ox.current and ox.current.slot == slot then
+                ox.current = nil; ped.selected = UNARMED; return
+            end
+            ox.current = { slot = slot, name = it.name, hash = it.name, timer = 0, metadata = it.metadata }
+            ped.weapons[it.name] = 30
+            ped.selected = it.name
+        end,
     }
 
     local exportsTable
@@ -255,6 +270,7 @@ local function newClient(opts)
         DisableControlAction = function() end,
         IsPauseMenuActive = function() return false end,
         GetPlayerServerId = function() return 1 end,
+        GetWeaponDamageType = function(hash) return (hash == 'WEAPON_KNIFE') and 2 or 3 end,
     })
 
     -- newArenaEnv has already loaded config.lua, config.weapons.lua and
@@ -276,13 +292,13 @@ local function newClient(opts)
         handler(payload)
     end
 
-    function c.enter()
+    function c.enter(freeze)
         c.fire('enterArena', {
             matchId = 'm1', arenaKey = 'trailerpark', modeKey = 'ffa',
             spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 },
             scatterRadius = 0.0, sizeFactor = 1.0, radar = false, loadout = {},
             boundary = { enabled = true, center = { x = 2344.4, y = 2565.0, z = 46.7 }, radius = 100.0 },
-            freezeSeconds = 0,
+            freezeSeconds = freeze or 0,
         })
         c.fire('matchLive', {})
     end
@@ -951,6 +967,127 @@ t.test('without ox the sweep does nothing at all', function()
     c.exit()
     sweepWindow(c)
     t.isTrue(c.world.objects[prop] ~= nil, 'a prop was removed on a server with no ox to ask')
+end)
+
+-- ======================================================================
+-- WEAPON OUT ON SPAWN
+--
+-- "on match start or revive start with the weapon out". Drawn through ox's
+-- own useSlot, never natively -- a native give is the item-less gun above.
+-- ======================================================================
+
+local function drawWindow(c) for _ = 1, 40 do c.poll(1, 250) end end
+local function useCount(c) return #(c.ox.used or {}) end
+
+t.test('THE ASK: the round goes live with the arena gun already in hand', function()
+    local c = newClient()
+    c.ox.items[1] = item(1, 'WEAPON_KNIFE')
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter()
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE', 'the fighter did not start with the gun out')
+    t.equals(useCount(c), 1, 'the draw was asked for more than once -- a second useSlot holsters it')
+    t.equals(c.ox.used[1].slot, 4, 'the blade in a lower slot was drawn over the gun')
+    t.isTrue(c.ox.used[1].noAnim == true, 'the draw played the slow animation')
+    t.isTrue(not c.gaveNatively('WEAPON_CARBINERIFLE'), 'the gun was given natively, with no item behind it')
+end)
+
+t.test('with only a blade issued, the blade comes out', function()
+    local c = newClient()
+    c.ox.items[2] = item(2, 'WEAPON_KNIFE')
+    c.enter()
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_KNIFE')
+end)
+
+t.test('during the start countdown the hands stay empty; the gun comes out as it ends', function()
+    local c = newClient()
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter(3)
+    c.poll(2, 250)
+    t.equals(useCount(c), 0, 'the gun was drawn during the frozen countdown')
+    for _ = 1, 8 do c.poll(1, 1000) end
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE', 'the gun never came out once the round went live')
+end)
+
+t.test('kit that lands late is still drawn once it arrives', function()
+    local c = newClient()
+    c.enter()
+    c.poll(6, 250)
+    t.equals(useCount(c), 0)
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE')
+    t.equals(useCount(c), 1)
+end)
+
+t.test('a fighter who already has something in hand keeps it', function()
+    local c = newClient()
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.ox.items[5] = item(5, 'WEAPON_PISTOL', 'ARENA-2')
+    c.enter()
+    c.draw({ slot = 5, name = 'WEAPON_PISTOL', hash = 'WEAPON_PISTOL', timer = 0, metadata = { serial = 'ARENA-2' } })
+    drawWindow(c)
+    t.equals(useCount(c), 0, 'the pistol they had drawn was swapped out')
+    t.equals(c.ped.selected, 'WEAPON_PISTOL')
+end)
+
+t.test('a draw ox refuses is retried at a settle, never hammered, and gives up', function()
+    local c = newClient()
+    c.ox.deafDraw = true
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter()
+    for _ = 1, 80 do c.poll(1, 250) end
+    local n = useCount(c)
+    t.isTrue(n >= 2 and n <= 9, 'retries were ' .. n .. ' -- expected a handful across the window')
+    for _ = 1, 40 do c.poll(1, 250) end
+    t.equals(useCount(c), n, 'the draw kept trying after its window')
+end)
+
+t.test('a respawn comes back with the gun out', function()
+    local c = newClient()
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter()
+    drawWindow(c)
+    c.ox.current = nil; c.ped.selected = UNARMED
+    c.fire('respawn', { spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 }, scatterRadius = 0.0, loadout = {} })
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE', 'the revived fighter came back empty-handed')
+    t.equals(useCount(c), 2)
+end)
+
+t.test('leaving before the kit lands draws nothing', function()
+    local c = newClient()
+    c.enter()
+    c.poll(2, 250)
+    c.exit()
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    drawWindow(c)
+    t.equals(useCount(c), 0, 'a gun was drawn after the fighter had left the round')
+end)
+
+t.test('a weapon outside the arena catalogue is never drawn', function()
+    local c = newClient()
+    c.ox.items[1] = item(1, 'WEAPON_NOT_IN_CATALOGUE')
+    c.enter()
+    drawWindow(c)
+    t.equals(useCount(c), 0)
+end)
+
+t.test('switched off, the hands stay empty', function()
+    local c = newClient({ mutate = function(Config) Config.Match.drawWeaponOnSpawn = false end })
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.enter()
+    drawWindow(c)
+    t.equals(useCount(c), 0)
+end)
+
+t.test('without ox nothing is drawn and nothing raises', function()
+    local c = newClient({ ox = 'missing' })
+    c.enter()
+    drawWindow(c)
+    t.isTrue(not c.world.exportsTouched, 'ox exports were read with ox not running')
 end)
 
 os.exit(t.summary())

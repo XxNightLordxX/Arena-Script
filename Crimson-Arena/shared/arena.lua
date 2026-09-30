@@ -991,7 +991,37 @@ function Arena.AllIssuedItems()
         end
     end
 
+    -- EVERY MODE'S extraItems, switched off or not, for the same reason as
+    -- the raw weapon list above.
+    for _, mode in pairs(type(Config.Modes) == 'table' and Config.Modes or {}) do
+        local extra = type(mode) == 'table' and mode.extraItems or nil
+        for _, entry in ipairs(type(extra) == 'table' and extra or {}) do
+            if type(entry) == 'table' and Arena.IsKey(entry.item) then
+                items[entry.item] = true
+            end
+        end
+    end
+
     return items
+end
+
+--- WHAT A MODE HANDS EVERY FIGHTER ON TOP OF THEIR PICK -- the team radio in
+--- team deathmatch. Shaped like a resolved supply ({ item, count }) so the
+--- supply issue and the exit's reclaim carry it with no new path. Counts are
+--- clamped to 1..10: this is kit, not a stockpile.
+--- @param modeKey string|nil
+--- @return table[]
+function Arena.ModeExtraItems(modeKey)
+    local mode = Arena.GetModeByKey(modeKey)
+    local extra = mode and mode.extraItems or nil
+    local out = {}
+    for _, entry in ipairs(type(extra) == 'table' and extra or {}) do
+        local count = type(entry) == 'table' and Arena.ToInt(entry.count) or nil
+        if type(entry) == 'table' and Arena.IsKey(entry.item) and count and count > 0 then
+            out[#out + 1] = { item = entry.item, count = math.min(count, 10) }
+        end
+    end
+    return out
 end
 
 function Arena.ResolveAmmoType(weapon, requested)

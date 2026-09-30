@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      531   Teams         The sides, and whether they may be uneven
-      701   Modes         Free-for-all, team deathmatch and gun game
-     1083   DefaultMode   Which of them a new lobby opens on
-     1102   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1346   UI            Panel colours, logo and title
-     1404   Permissions   Who may open a match, who may force-stop one
-     1490   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1924   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2522   Database      Optional: four tables the arena owns. Ships OFF
-     2553   Leaderboard   Which matches count towards the board, and which do not
-     2619   Webhook       Optional: a Discord line per finished match
-     2651   Dispatch      Optional: keeping police and EMS out of the arena
+      538   Teams         The sides, and whether they may be uneven
+      708   Modes         Free-for-all, team deathmatch and gun game
+     1100   DefaultMode   Which of them a new lobby opens on
+     1119   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1363   UI            Panel colours, logo and title
+     1421   Permissions   Who may open a match, who may force-stop one
+     1507   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1941   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2539   Database      Optional: four tables the arena owns. Ships OFF
+     2570   Leaderboard   Which matches count towards the board, and which do not
+     2636   Webhook       Optional: a Discord line per finished match
+     2668   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -331,6 +331,13 @@ Config.Match = {
     -- Metres a player may be scattered from the spawn point they drew, so
     -- more players than spawn points never stack inside each other.
     spawnScatterRadius = 2.5,
+
+    -- WEAPON OUT ON SPAWN. At the start of a round and on every respawn the
+    -- fighter's arena gun is drawn for them through ox_inventory, instantly,
+    -- so nobody spends the first second of a life reaching for a hotkey. A
+    -- firearm is preferred over a blade. Needs ox_inventory; off = hands
+    -- empty on spawn, as before.
+    drawWeaponOnSpawn = true,
 
     -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS HELD, in metres, while the
     -- world streams in around them.
@@ -735,6 +742,16 @@ Config.Modes = {
         teams = true,
         icon = 'fas fa-users',
         killAmmo = 100,
+
+        -- HANDED TO EVERY FIGHTER IN THIS MODE, on top of whatever they
+        -- picked, and taken back at the exit like the rest of the kit. By
+        -- ox_inventory ITEM NAME, not supply key: these are not supplies and
+        -- are never offered on the loadout screen. Only the item is given --
+        -- no channel is set, the team agrees one. An item this server does
+        -- not have is skipped and named once in the console.
+        extraItems = {
+            { item = 'radio', count = 1 },
+        },
     },
 
     -- ==================================================================

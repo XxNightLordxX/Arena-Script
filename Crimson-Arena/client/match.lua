@@ -3759,6 +3759,80 @@ function ArenaMatch.DropSpectatorScenery()
     clearArenaScenery()
 end
 
+local DRAW_WAIT_MS = 8000
+local DRAW_POLL_MS = 250
+local DRAW_SETTLE_MS = 1000
+local MELEE_DAMAGE = 2
+local drawToken = 0
+
+--- The inventory slot of the arena weapon to draw: the lowest-numbered
+--- catalogue firearm, or the lowest catalogue blade when there is no gun.
+--- nil when ox cannot be read or holds none yet.
+--- @return integer|nil
+local function spawnWeaponSlot()
+    local ok, items = pcall(function() return exports.ox_inventory:GetPlayerItems() end)
+    if not ok or type(items) ~= 'table' then return nil end
+
+    local owned = oxOwnedWeapons()
+    local gun, blade
+    for slot, item in pairs(items) do
+        local n = tonumber(slot)
+        if n and type(item) == 'table' and Arena.IsKey(item.name) then
+            local hash = joaat(item.name)
+            if owned[hash] then
+                local melee = type(GetWeaponDamageType) == 'function' and GetWeaponDamageType(hash) == MELEE_DAMAGE
+                if melee then
+                    if not blade or n < blade then blade = n end
+                elseif not gun or n < gun then
+                    gun = n
+                end
+            end
+        end
+    end
+    return gun or blade
+end
+
+--- WEAPON OUT ON SPAWN (Config.Match.drawWeaponOnSpawn).
+---
+--- THROUGH OX, NEVER GiveWeaponToPed: the item is the weapon, and a native
+--- give is the item-less gun this file spends a watch hunting down. The kit
+--- lands a moment after the teleport, so this waits for it.
+---
+--- ONE useSlot PER ATTEMPT, then a settle: useSlot on the slot already drawn
+--- HOLSTERS it, so calling it on every poll would flick the gun in and out.
+--- Stops the moment the fighter has anything in hand -- a player who drew
+--- their own choice first keeps it.
+local function drawSpawnWeapon()
+    if (Config.Match or {}).drawWeaponOnSpawn == false then return end
+    if not oxInventoryRunning() then return end
+
+    drawToken = drawToken + 1
+    local mine, token = drawToken, matchToken
+
+    CreateThread(function()
+        local deadline = GetGameTimer() + DRAW_WAIT_MS
+        local nextTry = 0
+        while GetGameTimer() < deadline do
+            if drawToken ~= mine or matchToken ~= token or not currentMatch then return end
+
+            local ped = PlayerPedId()
+            if GetSelectedPedWeapon(ped) ~= UNARMED then return end
+
+            -- BY THE CLOCK, not by the loop: a hitch that stretches one Wait
+            -- must not let a second useSlot in before the first has landed.
+            local tick = GetGameTimer()
+            if tick >= nextTry then
+                local slot = not IsEntityDead(ped) and spawnWeaponSlot() or nil
+                if slot then
+                    pcall(function() exports.ox_inventory:useSlot(slot, true) end)
+                    nextTry = tick + DRAW_SETTLE_MS
+                end
+            end
+            Wait(DRAW_POLL_MS)
+        end
+    end)
+end
+
 RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     if type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
 
@@ -3955,6 +4029,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     local freezeSeconds = math.floor(tonumber(data.freezeSeconds) or 0)
     if freezeSeconds <= 0 then
         FreezeEntityPosition(ped, false)
+        drawSpawnWeapon()
     else
         CreateThread(function()
             local remaining = freezeSeconds
@@ -3967,6 +4042,8 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
             if matchToken == token and currentMatch then
                 FreezeEntityPosition(PlayerPedId(), false)
+                -- WEAPON OUT AS THE ROUND GOES LIVE, not during the count.
+                drawSpawnWeapon()
             end
         end)
     end
@@ -4026,6 +4103,8 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     applyLoadout(ped, data.loadout)
 
     holdVitals()
+
+    drawSpawnWeapon()
 end)
 
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)

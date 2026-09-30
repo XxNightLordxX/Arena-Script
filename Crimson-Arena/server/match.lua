@@ -1414,7 +1414,20 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
 
     ArenaDispatch.Revive(player.src)
 
-    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, player.loadout)
+    -- THE MODE'S OWN KIT -- the team radio -- rides along with the supplies,
+    -- on a copy, so the player's saved pick never grows a radio.
+    local issueLoadout = player.loadout
+    local extra = Arena.ModeExtraItems(match.modeKey)
+    if #extra > 0 and type(player.loadout) == 'table' then
+        issueLoadout = {}
+        for k, v in pairs(player.loadout) do issueLoadout[k] = v end
+        local supplies = {}
+        for _, entry in ipairs(player.loadout.supplies or {}) do supplies[#supplies + 1] = entry end
+        for _, entry in ipairs(extra) do supplies[#supplies + 1] = entry end
+        issueLoadout.supplies = supplies
+    end
+
+    local missingAmmo = ArenaAmmo.Issue(player.src, match.id, issueLoadout)
     if #missingAmmo > 0 then
         ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))
     end

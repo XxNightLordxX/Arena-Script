@@ -431,7 +431,7 @@ line-number map that is regenerated whenever the file changes.
 Every function each file exposes, in the order it is defined. Local helpers are not
 listed; the source documents them where they are.
 
-#### `shared/arena.lua` — 107 functions
+#### `shared/arena.lua` — 108 functions
 
 | Function | What it does |
 |---|---|
@@ -482,6 +482,7 @@ listed; the source documents them where they are.
 | `Arena.GetAmmoTypes(weapon)` | The ammo types on offer for one weapon: its own list, or the shared default, or none. |
 | `Arena.AllAmmoItems()` | Every item name any ammo type in the catalogue can hand out, deduplicated. |
 | `Arena.AllIssuedItems()` | Every item name the arena can put in somebody's hands: weapons, ammunition and supplies. |
+| `Arena.ModeExtraItems(modeKey)` | Items a mode hands every fighter on top of their pick -- the team radio in team deathmatch -- shaped like resolved supplies, counts clamped to 1..10. |
 | `Arena.ResolveAmmoType(weapon, requested)` | Turns whatever ammo type a client asked for into one this server is willing to load. |
 | `Arena.MagazineFor(weapon, rounds)` | What a weapon starts LOADED with, when the rest of the rounds a player picked are handed over as inventory items instead. |
 | `Arena.StartingVitals()` | The health and armour every fighter starts every life on — a rule, not a setting. |

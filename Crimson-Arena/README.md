@@ -883,6 +883,11 @@ This section is kept whether or not it has anything in it: it is the right
 place to record the next one, and an operator who has read this file once will
 come back looking for it before concluding a setting is broken.
 
+### Kit a mode hands out, and the weapon on spawn
+
+- **Team deathmatch gives every fighter a `radio`**, from `extraItems` on the mode in `Config.Modes`. It is the ox_inventory item only — no channel is set; the team agrees one. It is taken back at the exit like the rest of the kit. Any mode can list items there by ox item name; delete the list to hand out nothing. An item your server does not have is skipped and logged.
+- **The arena gun is drawn for the fighter** as the start countdown ends and on every respawn (`Config.Match.drawWeaponOnSpawn`). It goes through ox_inventory, instantly, and prefers a firearm over a blade. Anybody who already has something in hand keeps it. Set it to `false` for empty hands.
+
 ### Getting back up after a death
 
 **There is nothing to configure for this, and nothing to grant.** The arena
@@ -1260,6 +1265,7 @@ are client-side because only a client can ask the game what models it has.
 
 - **This was an ox_inventory draw finishing after the arena took the item back**, and the arena now puts that gun away on its own. The player's F8 console says `put away WEAPON_...: ox_inventory had it drawn but there is no item for it in your inventory`, and with `Config.Debug` on the server console says `itemless weapon: ox_inventory had WEAPON_... drawn (slot n) with no item behind it -- holstered it`.
 - **It is not caused by a back-weapons or sling script.** Those draw props on a player's back and never give, take or select a ped weapon. It showed up with rifles because rifles are what the survivors of a round are holding when it ends.
+- **The same gun still showing on their back** after the round, with no item to draw, was the back-weapons script making two props for one refresh. For a minute after the exit the arena deletes any gun prop on the player's own ped beyond the one item they actually hold; nothing on anyone else is touched.
 - If a gun with no item outlives a round by more than a few seconds and neither of those lines appeared, ox did not have it drawn — something gave it to the ped natively. Check that `inventory:weaponmismatch` is not `0`: that convar is what lets ox strip a native gun it does not own.
 
 ### A player's own inventory did not come back

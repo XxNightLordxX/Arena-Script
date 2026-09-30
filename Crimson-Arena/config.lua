@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      563   Teams         The sides, and whether they may be uneven
-      733   Modes         Free-for-all, team deathmatch and gun game
-     1125   DefaultMode   Which of them a new lobby opens on
-     1144   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1388   UI            Panel colours, logo and title
-     1456   Permissions   Who may open a match, who may force-stop one
-     1542   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1976   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2574   Database      Optional: four tables the arena owns. Ships OFF
-     2605   Leaderboard   Which matches count towards the board, and which do not
-     2671   Webhook       Optional: a Discord line per finished match
-     2703   Dispatch      Optional: keeping police and EMS out of the arena
+      564   Teams         The sides, and whether they may be uneven
+      734   Modes         Free-for-all, team deathmatch and gun game
+     1126   DefaultMode   Which of them a new lobby opens on
+     1145   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1389   UI            Panel colours, logo and title
+     1457   Permissions   Who may open a match, who may force-stop one
+     1543   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1977   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2575   Database      Optional: four tables the arena owns. Ships OFF
+     2606   Leaderboard   Which matches count towards the board, and which do not
+     2672   Webhook       Optional: a Discord line per finished match
+     2704   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -343,8 +343,8 @@ Config.Match = {
 
     -- INVULNERABLE FOR A MOMENT AFTER A REVIVE, so nobody is killed again
     -- while the world is still loading in around them. `seconds`: how long;
-    -- 0 switches it off. It ends early the moment the revived fighter fires
-    -- -- protection is for arriving, not attacking.
+    -- 0 switches it off. It ends early the moment the revived fighter
+    -- attacks (gun, melee or an attack key) -- protection is for arriving.
     spawnProtection = {
         seconds = 5,
 
@@ -352,7 +352,8 @@ Config.Match = {
         -- running, server/spawnprotection.lua registers a detection hook
         -- through FiniAC's documented AddDetectionHook export. It cancels a
         -- detection ONLY while the player is inside a revive window the
-        -- SERVER opened (the seconds above plus `finiGraceSeconds` for
+        -- SERVER opened (the seconds above, plus the up-to-5 s the revive
+        -- may wait for the ground to load, plus `finiGraceSeconds` for
         -- network delay) AND the detection type contains one of
         -- `finiDetections` (case-insensitive). Everything else FiniAC sees
         -- goes through untouched, and every cancel is written to the server

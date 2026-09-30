@@ -301,4 +301,15 @@ t.test('THE REVIEW: a death drops the radio, and the respawn top-up hands it bac
     t.isTrue(radio > 0, 'the respawn top-up left the radio out: lost for the round, owed at the exit')
 end)
 
+t.test('THE REVIEW: a server with no radio item hands none out and says so ONCE', function()
+    local server = twoPlayers(function(config) config.Match.lives = 3; config.Modes.tdm.lives = 3 end)
+    server.env.ArenaAmmo.HasItem = function(name) return name ~= 'radio' end
+    runMatch(server, 'trailerpark', { 1, 2 }, 'tdm')
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.step(10)
+    t.equals((radiosFor(server, 1)), 0, 'a radio was issued that ox does not have')
+    local _, lines = server.log():gsub('no item called "radio"', '')
+    t.equals(lines, 1, 'the missing item was named ' .. lines .. ' times, not once')
+end)
+
 os.exit(t.summary())

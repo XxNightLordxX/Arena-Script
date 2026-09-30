@@ -34,6 +34,11 @@ local function windowSeconds()
     return math.max(0, math.min(30, tonumber(config().seconds) or 0))
 end
 
+--- How long the client's respawn may hold the fighter while the world
+--- streams in before it places them -- placeAt's deadline in
+--- client/match.lua. Protection starts only after that.
+local PLACE_WAIT_SECONDS = 5
+
 --- [src] = GetGameTimer() at which the window, plus grace, closes. Opened
 --- only here, by the server's own revive -- a client cannot open one.
 local protectedUntil = {}
@@ -44,11 +49,22 @@ function ArenaSpawnProtection.Revived(src)
     local seconds = windowSeconds()
     if seconds <= 0 then protectedUntil[src] = nil return end
 
+    -- THE CLIENT'S WINDOW STARTS LATER THAN THIS ONE: the respawn waits up
+    -- to PLACE_WAIT_SECONDS for the ground to stream in before it makes the
+    -- fighter invulnerable, on top of the trip across the network. The
+    -- server window covers that whole wait, so it can never close while an
+    -- honest client is still protected.
     local grace = math.max(0, math.min(10, tonumber(config().finiGraceSeconds) or 0))
-    protectedUntil[src] = GetGameTimer() + (seconds + grace) * 1000
+    protectedUntil[src] = GetGameTimer() + (seconds + PLACE_WAIT_SECONDS + grace) * 1000
 
     local ok, why = pcall(ArenaSpawnProtection.OnStart, src, seconds)
     if not ok then ArenaLog('spawn protection: the OnStart hook raised -- %s', tostring(why)) end
+end
+
+--- Closes a player's window now -- they left the round or were eliminated.
+--- @param src integer
+function ArenaSpawnProtection.Clear(src)
+    protectedUntil[src] = nil
 end
 
 --- Whether `src` is inside a revive window the server opened.

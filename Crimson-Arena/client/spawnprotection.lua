@@ -35,7 +35,8 @@ end
 -- Nothing below needs editing.
 -- ======================================================================
 
-local POLL_MS = 100
+-- The attack keys: attack, attack 2, and the three melee attacks.
+local ATTACK_CONTROLS = { 24, 257, 140, 141, 142 }
 local token = 0
 
 --- The ped the open window made invincible, or nil when none is open.
@@ -44,6 +45,17 @@ local activePed = nil
 local function hook(fn, ...)
     local ok, why = pcall(fn, ...)
     if not ok then print(('[crimson_arena] spawn protection hook raised: %s'):format(tostring(why))) end
+end
+
+--- Whether the fighter is attacking this frame: firing, in melee, or
+--- pressing an attack key (which also covers a swing that has not landed).
+local function attacking()
+    local ped = PlayerPedId()
+    if IsPedShooting(ped) or IsPedInMeleeCombat(ped) then return true end
+    for _, control in ipairs(ATTACK_CONTROLS) do
+        if IsControlJustPressed(0, control) or IsDisabledControlJustPressed(0, control) then return true end
+    end
+    return false
 end
 
 --- Closes the open window now, if there is one. Idempotent.
@@ -84,9 +96,12 @@ function ArenaSpawnProtection.Start(stillWanted)
         local ends = GetGameTimer() + seconds * 1000
         while GetGameTimer() < ends do
             if token ~= mine or not stillWanted() then break end
-            -- PROTECTION IS FOR ARRIVING, NOT ATTACKING.
-            if IsPedShooting(PlayerPedId()) then break end
-            Wait(POLL_MS)
+            -- PROTECTION IS FOR ARRIVING, NOT ATTACKING -- any attack, gun
+            -- or melee, ends it. EVERY FRAME, because a shot is one frame
+            -- long: polled every 100 ms, five single shots in six went by
+            -- unseen.
+            if attacking() then break end
+            Wait(0)
         end
         if token == mine then ArenaSpawnProtection.Stop() end
     end)

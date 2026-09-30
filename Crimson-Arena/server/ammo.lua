@@ -2754,6 +2754,14 @@ local function inventoryHasItem(name)
     return true, true
 end
 
+--- Whether ox_inventory knows an item by this name. True when it cannot be
+--- asked -- the let-it-through case, like inventoryHasItem above.
+--- @param name string
+--- @return boolean
+function ArenaAmmo.HasItem(name)
+    return (inventoryHasItem(name))
+end
+
 local function inventoryKnowsItem(name)
     local ox = inventory()
     if ox == nil then return true end

@@ -611,11 +611,12 @@ listed; the source documents them where they are.
 | `ArenaDispatch.WithdrawFiledCall(data)` | Withdraws one dispatch call by the id the dispatch script itself announced, the instant it is filed. sc-dispatch broadcasts every alert on a plain server event before it writes a row; this reads that, checks the call is about somebody in a match, and clears the exact id — no guessing at id shapes, and it covers routes this resource has never heard of. |
 | `ArenaDispatch.RetractCallsFor(src)` | Withdraws every dispatch call this player is the subject of, by their server id, so an alert raised by a path the arena never saw does not sit on the responders' screens after the revive. |
 
-#### `server/ammo.lua` — 28 functions
+#### `server/ammo.lua` — 29 functions
 
 | Function | What it does |
 |---|---|
 | `ArenaAmmo.IsEnabled()` | Whether ammunition ITEMS are being handed out. |
+| `ArenaAmmo.HasItem(name)` | Whether ox_inventory knows an item by this name; true when it cannot be asked. |
 | `ArenaAmmo.SwapWeapon(src, matchId, removeWeapon, entry, alsoClear)` | Swaps one issued tier weapon for another, for a gun-game promotion or demotion. |
 | `ArenaAmmo.Refresh(src, matchId, loadout)` | Puts a respawning fighter back on a full magazine, full rounds and their picked supplies -- or takes the weapon away, where `allowWeaponWithoutAmmoItem` is off and its rounds could not be issued. |
 | `ArenaAmmo.GrantRounds(src, matchId, item, count)` | A flat grant of ammunition onto the arena's ledger, for a kill reward. Hands over nothing where `Config.Loadouts.ammoItems.enabled` is off, like every other issue path. |

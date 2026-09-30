@@ -1785,6 +1785,7 @@ function ArenaLobby.Destroy(matchId, reasonKey)
 
             ArenaDispatch.Clear(src)
             ArenaDispatch.ExitBucket(src)
+            if ArenaSpawnProtection and ArenaSpawnProtection.Clear then ArenaSpawnProtection.Clear(src) end
             TriggerClientEvent('crimson_arena:client:exitArena', src, {})
         end
 
@@ -1840,7 +1841,8 @@ function ArenaLobby.Destroy(matchId, reasonKey)
             end
 
             if match.state ~= 'ended' then
-                TriggerClientEvent('crimson_arena:client:exitArena', src, {})
+                if ArenaSpawnProtection and ArenaSpawnProtection.Clear then ArenaSpawnProtection.Clear(src) end
+            TriggerClientEvent('crimson_arena:client:exitArena', src, {})
             end
         end
     end

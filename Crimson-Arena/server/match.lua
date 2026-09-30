@@ -50,8 +50,25 @@ local SWEEP_INTERVAL_MS = 1000
 --- inventory, and a radio only the entry handed out was gone for the round
 --- at the first death, then owed at the exit as if it had been kept.
 --- @return table|nil
+local warnedExtraItem = {}
+
 local function withModeExtras(match, loadout)
-    local extra = Arena.ModeExtraItems(match and match.modeKey)
+    local extra = {}
+    for _, entry in ipairs(Arena.ModeExtraItems(match and match.modeKey)) do
+        -- AN ITEM THIS SERVER DOES NOT HAVE IS SKIPPED AND NAMED ONCE, as the
+        -- config promises -- not a failed AddItem and a console line on
+        -- every entry and every respawn of every fighter.
+        local known = type(ArenaAmmo) ~= 'table' or type(ArenaAmmo.HasItem) ~= 'function'
+            or ArenaAmmo.HasItem(entry.item)
+        if known then
+            extra[#extra + 1] = entry
+        elseif not warnedExtraItem[entry.item] then
+            warnedExtraItem[entry.item] = true
+            ArenaLog('mode kit: ox_inventory has no item called "%s", so the %s mode hands none out. '
+                .. 'Add the item to ox_inventory or remove it from extraItems.',
+                tostring(entry.item), tostring(match and match.modeKey))
+        end
+    end
     if #extra == 0 or type(loadout) ~= 'table' then return loadout end
     local copy = {}
     for k, v in pairs(loadout) do copy[k] = v end
@@ -1136,6 +1153,10 @@ local function sendExitArena(src, payload)
     instanced[src] = nil
 
     ArenaDispatch.Revive(src)
+
+    -- The FiniAC window closes with the round: back in the open world, a
+    -- god-mode detection on them is FiniAC's to see.
+    if ArenaSpawnProtection and ArenaSpawnProtection.Clear then ArenaSpawnProtection.Clear(src) end
 
     TriggerClientEvent('crimson_arena:client:exitArena', src, payload)
 
@@ -3892,6 +3913,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         -- leaveArena is the only thing that ever does.
         ArenaDispatch.Revive(id)
 
+        if ArenaSpawnProtection and ArenaSpawnProtection.Clear then ArenaSpawnProtection.Clear(id) end
         TriggerClientEvent('crimson_arena:client:eliminated', id, { matchId = match.id, spectate = spectate })
         ArenaNotifyKey(id, 'notify.eliminated', 'error')
 

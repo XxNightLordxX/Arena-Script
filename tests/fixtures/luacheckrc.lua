@@ -269,6 +269,8 @@ files['client/'] = {
         'GetSelectedPedWeapon',
         'GetWeaponDamageType',
         'IsPedShooting',
+        'IsPedInMeleeCombat',
+        'IsControlJustPressed',
         'GiveWeaponToPed',
         'HasPedGotWeapon',
         'RemoveAllPedWeapons',

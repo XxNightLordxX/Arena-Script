@@ -219,6 +219,9 @@ local function newClient(opts)
         SetEntityCollision = function() end,
         SetEntityInvincible = function(_p, on) world.invincible = on; world.invincibleWrites = (world.invincibleWrites or 0) + 1 end,
         IsPedShooting = function() return world.shooting == true end,
+        IsPedInMeleeCombat = function() return world.melee == true end,
+        IsControlJustPressed = function(_g, control) return world.pressed == control end,
+        IsDisabledControlJustPressed = function(_g, control) return world.disabledPressed == control end,
         SetEntityHeading = function() end,
         RequestCollisionAtCoord = function() end,
         HasCollisionLoadedAroundEntity = function() return true end,
@@ -1245,6 +1248,38 @@ t.test('THE REVIEW: the reclaim emptying a gun does not cut the minute-long exit
     local prop = c.prop('WEAPON_CARBINERIFLE')
     for _ = 1, 3 do c.poll(1, 5000) end
     t.equals(c.world.objects[prop], nil, 'the sweep had already stopped at 15 s')
+end)
+
+t.test('THE REVIEW: a melee attack ends the protection too', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(2, 100)
+    c.world.melee = true
+    c.poll(1, 16)
+    t.equals(c.world.invincible, false, 'a knife fighter stayed untouchable while swinging')
+end)
+
+t.test('THE REVIEW: pressing attack ends it, even on a disabled control', function()
+    for _, key in ipairs({ 'pressed', 'disabledPressed' }) do
+        local c = newClient()
+        c.enter()
+        revive(c)
+        c.poll(1, 16)
+        c.world[key] = 24
+        c.poll(1, 16)
+        t.equals(c.world.invincible, false, key .. ' attack did not end protection')
+    end
+end)
+
+t.test('THE REVIEW: a one-frame shot is seen -- the check runs every frame', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(3, 16)
+    c.world.shooting = true
+    c.poll(1, 16)
+    t.equals(c.world.invincible, false)
 end)
 
 os.exit(t.summary())

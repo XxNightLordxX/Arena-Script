@@ -93,13 +93,20 @@ t.test('the same detection on a player with no window goes through', function()
     t.equals(f.detect(8, 'GodMode').type, 'GodMode')
 end)
 
-t.test('the window closes after seconds + grace (5 + 2)', function()
+t.test('THE REVIEW: the window covers the client\'s placement wait -- 5 + 5 + 2 = 12 s', function()
     local f = load()
     f.SP.Revived(7)
-    f.clock.now = f.clock.now + 6900
-    t.equals(f.detect(7, 'GodMode'), false)
+    f.clock.now = f.clock.now + 11900
+    t.equals(f.detect(7, 'GodMode'), false, 'the window closed while an honest client could still be protected')
     f.clock.now = f.clock.now + 200
-    t.equals(f.detect(7, 'GodMode').type, 'GodMode', 'the window stayed open past 7 seconds')
+    t.equals(f.detect(7, 'GodMode').type, 'GodMode', 'the window stayed open past 12 seconds')
+end)
+
+t.test('THE REVIEW: leaving the round closes the window at once', function()
+    local f = load()
+    f.SP.Revived(7)
+    f.SP.Clear(7)
+    t.equals(f.detect(7, 'GodMode').type, 'GodMode')
 end)
 
 t.test('a player leaving closes their window', function()

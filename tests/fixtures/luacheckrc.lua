@@ -273,6 +273,15 @@ files['client/'] = {
         -- With ox_inventory running, the exit takes off only the arena's own
         -- guns, one by one, rather than wiping the ped.
         'RemoveWeaponFromPed',
+        -- The back prop sweep (sweepOrphanWeaponProps in client/match.lua):
+        -- finding a gun prop left attached to the player's ped, and removing it.
+        'GetCurrentPedWeaponEntityIndex',
+        'GetWeapontypeModel',
+        'IsEntityAttachedToEntity',
+        'NetworkGetEntityIsNetworked',
+        'NetworkGetEntityOwner',
+        'NetworkRequestControlOfEntity',
+        'DetachEntity',
         'SetCurrentPedWeapon',
         'SetPedAmmo',
         'SetPedArmour',

@@ -3404,6 +3404,149 @@ local function watchItemlessWeapons(forMs)
     end)
 end
 
+--- THE GUN ON THE BACK THAT IS NOT IN THE INVENTORY.
+---
+--- THE OWNER'S REPORT: "sometimes it shows up on the back also ... but i
+--- cant pull the weapon out etc as its not in my inventory". Traced through
+--- crimson-backweapons' own client (which this resource must not edit): it
+--- refreshes a player's back from three threads at once, and building a
+--- prop checks "have I made this one?", then may wait up to three seconds
+--- for the model, and only then writes the answer down. Two refreshes inside
+--- that wait both build the prop, the second overwrites the first's handle,
+--- and the first stays glued to the ped with nothing holding it -- so when
+--- the arena takes the gun back, back-weapons removes the copy it knows about
+--- and the orphan stays. The arena's teleports are exactly when the model is
+--- cold and three refreshes land together.
+---
+--- THE SWEEP removes a gun prop from this player's ped when they hold no item
+--- of that gun, or more props of it than they hold items. What it never
+--- touches: the gun in their hands, a prop of a gun they own (up to one per
+--- gun, which is what back-weapons draws), anything not attached to their
+--- ped, anything another player's game owns, and anything that is not one of
+--- the arena's own guns. Deleting a prop back-weapons DOES track costs one
+--- redraw on its next refresh, never the gun.
+local SWEEP_AFTER_EXIT_MS = 60000
+local SWEEP_EVERY_MS = 5000
+local sweepToken = 0
+
+--- world model hash -> weapon name, for every catalogue weapon. Built when
+--- first needed: GetWeapontypeModel answers nothing for a weapon this build
+--- has not got, and such a weapon is simply not in the map.
+local weaponByModel
+
+local function catalogueWeaponModels()
+    if weaponByModel then return weaponByModel end
+    local map = {}
+    if type(GetWeapontypeModel) == 'function' then
+        for _, weapon in ipairs(Config.Loadouts.weapons or {}) do
+            if type(weapon) == 'table' and Arena.IsKey(weapon.weapon) then
+                local ok, model = pcall(GetWeapontypeModel, joaat(weapon.weapon))
+                if ok and model ~= nil and model ~= 0 then map[model] = weapon.weapon end
+            end
+        end
+    end
+    weaponByModel = map
+    return map
+end
+
+--- How many of `name` the player holds, or nil when ox cannot say. nil means
+--- do not touch -- an unreadable inventory is not an empty one.
+local function heldCount(name)
+    local ok, count = pcall(function() return exports.ox_inventory:GetItemCount(name) end)
+    if not ok then return nil end
+    return tonumber(count) or 0
+end
+
+local function deleteOrphanProp(object)
+    if NetworkGetEntityIsNetworked(object) then NetworkRequestControlOfEntity(object) end
+    SetEntityAsMissionEntity(object, true, true)
+    DetachEntity(object, true, true)
+    DeleteEntity(object)
+    if DoesEntityExist(object) then DeleteObject(object) end
+end
+
+--- One pass. Never yields.
+--- @param extraPed any -- the ped at the last transition, when it has since been replaced
+--- @return integer removed
+local function sweepOrphanWeaponProps(extraPed)
+    if not oxInventoryRunning() or type(GetGamePool) ~= 'function' then return 0 end
+    local models = catalogueWeaponModels()
+    if next(models) == nil then return 0 end
+
+    local peds, held = { PlayerPedId() }, {}
+    if extraPed and extraPed ~= peds[1] and DoesEntityExist(extraPed) then peds[2] = extraPed end
+    for _, ped in ipairs(peds) do
+        local inHand = GetCurrentPedWeaponEntityIndex(ped)
+        if inHand and inHand ~= 0 then held[inHand] = true end
+    end
+
+    local me = PlayerId()
+    local found = {}
+    for _, object in ipairs(GetGamePool('CObject') or {}) do
+        local name = models[GetEntityModel(object)]
+        if name and not held[object] then
+            local onUs = false
+            for _, ped in ipairs(peds) do
+                if IsEntityAttachedToEntity(object, ped) then onUs = true break end
+            end
+            if onUs and not (NetworkGetEntityIsNetworked(object) and NetworkGetEntityOwner(object) ~= me) then
+                found[name] = found[name] or {}
+                found[name][#found[name] + 1] = object
+            end
+        end
+    end
+
+    local removed = 0
+    for name, objects in pairs(found) do
+        local count = heldCount(name)
+        if count ~= nil then
+            local keep = count > 0 and 1 or 0
+            for i = keep + 1, #objects do
+                deleteOrphanProp(objects[i])
+                removed = removed + 1
+            end
+            if #objects > keep then
+                ArenaDebugPrint('back prop: removed %d %s prop(s) from the ped -- the player holds %d of that item',
+                    #objects - keep, name, count)
+            end
+        end
+    end
+    return removed
+end
+
+--- Sweeps every SWEEP_EVERY_MS for `forMs`. A new request replaces the old
+--- schedule rather than adding a second one.
+local function scheduleOrphanSweeps(forMs)
+    if not oxInventoryRunning() then return end
+    sweepToken = sweepToken + 1
+    local token = sweepToken
+    local ped = PlayerPedId()
+    local until_ = GetGameTimer() + forMs
+    CreateThread(function()
+        while sweepToken == token and GetGameTimer() < until_ do
+            Wait(SWEEP_EVERY_MS)
+            if sweepToken ~= token then return end
+            local ok, err = pcall(sweepOrphanWeaponProps, ped)
+            if not ok then ArenaLogOnce('backprop-sweep-error', 'the back prop sweep hit an error: %s', tostring(err)) end
+        end
+    end)
+end
+
+-- AND WHENEVER ONE OF THE ARENA'S GUNS LEAVES THE INVENTORY, whenever that
+-- is. ox fires this locally with the new count for every item that changed.
+-- It covers a reclaim that reaches this client late, and a player who later
+-- drops or sells a gun an orphan was left of. Cheap: nothing happens unless a
+-- catalogue weapon has just gone to zero.
+AddEventHandler('ox_inventory:itemCount', function(name, count)
+    if tonumber(count) ~= 0 or type(name) ~= 'string' then return end
+    for _, weapon in pairs(catalogueWeaponModels()) do
+        if weapon == name then
+            scheduleOrphanSweeps(15000)
+            return
+        end
+    end
+end)
+
 --- Puts the world back the way we found it. Synchronous on purpose: it is
 --- also the resource-stop path, and a stop handler that yields is a stop
 --- handler that does not finish.
@@ -3906,6 +4049,9 @@ RegisterNetEvent('crimson_arena:client:exitArena', function(data)
     watchItemlessWeapons(ITEMLESS_AFTER_MS)
 
     leaveArena(type(data) == 'table' and data.returnCoords or nil)
+
+    -- AND THE BACK, for a minute: see sweepOrphanWeaponProps.
+    scheduleOrphanSweeps(SWEEP_AFTER_EXIT_MS)
 end)
 
 --- THE SERVER TOOK A WEAPON BACK OUTSIDE A ROUND -- the owed-kit chase,

@@ -79,6 +79,10 @@ local function newClient(opts)
         events = {},
         serverEvents = {},
         printed = {},
+        objects = {},
+        deleted = {},
+        inHand = {},
+        attachChecks = 0,
     }
     local ox = { current = nil, items = {}, throw = false }
     local ped = { weapons = {}, selected = UNARMED, given = {}, removed = {}, selections = {}, wipes = 0 }
@@ -87,6 +91,12 @@ local function newClient(opts)
         getCurrentWeapon = function(_self)
             if ox.throw then error('No such export getCurrentWeapon in resource ox_inventory', 0) end
             return copy(ox.current)
+        end,
+        GetItemCount = function(_self, name)
+            if ox.throw then error('No such export GetItemCount in resource ox_inventory', 0) end
+            local n = 0
+            for _, it in pairs(ox.items) do if it.name == name then n = n + (it.count or 1) end end
+            return n
         end,
         GetPlayerItems = function(_self)
             if ox.throw then error('No such export GetPlayerItems in resource ox_inventory', 0) end
@@ -110,7 +120,7 @@ local function newClient(opts)
     local env = Sandbox.newArenaEnv({
         CreateThread = runner.CreateThread, Wait = runner.Wait, SetTimeout = runner.SetTimeout,
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
-        AddEventHandler = function() end,
+        AddEventHandler = function(name, fn) handlers[name] = fn end,
         RegisterCommand = function() end,
         TriggerServerEvent = function(name, payload)
             world.serverEvents[#world.serverEvents + 1] = { name = name, payload = payload }
@@ -207,7 +217,37 @@ local function newClient(opts)
         SetWeatherTypeNowPersist = function() end,
         NetworkOverrideClockTime = function() end,
         RemoveBlip = function() end,
-        DoesEntityExist = function() return true end,
+        -- THE WORLD'S OBJECTS, for the back prop sweep: [handle] = { model,
+        -- attachedTo, networked, owner }. Peds are always there.
+        DoesEntityExist = function(h)
+            if world.objects[h] then return true end
+            return h == 11 or h == world.oldPed
+        end,
+        GetGamePool = function(pool)
+            local out = {}
+            if pool == 'CObject' then for h in pairs(world.objects) do out[#out + 1] = h end end
+            table.sort(out)
+            return out
+        end,
+        GetEntityModel = function(h) return world.objects[h] and world.objects[h].model or 0 end,
+        IsEntityAttachedToEntity = function(h, to)
+            world.attachChecks = world.attachChecks + 1
+            return world.objects[h] ~= nil and world.objects[h].attachedTo == to
+        end,
+        GetCurrentPedWeaponEntityIndex = function(p) return world.inHand[p] or 0 end,
+        GetWeapontypeModel = function(hash) return 'w_' .. tostring(hash) end,
+        NetworkGetEntityIsNetworked = function(h) return world.objects[h] ~= nil and world.objects[h].networked == true end,
+        NetworkGetEntityOwner = function(h) return world.objects[h] and world.objects[h].owner or 1 end,
+        NetworkRequestControlOfEntity = function() end,
+        SetEntityAsMissionEntity = function() end,
+        DetachEntity = function() end,
+        DeleteEntity = function(h)
+            if world.objects[h] then
+                world.objects[h] = nil
+                world.deleted[#world.deleted + 1] = h
+            end
+        end,
+        DeleteObject = function(h) world.objects[h] = nil end,
         SetEntityDrawOutline = function() end,
         ResetEntityDrawOutlineRenderTechnique = function() end,
         -- What the round's own per-frame loops call while a test stands in a
@@ -248,6 +288,21 @@ local function newClient(opts)
     end
 
     function c.exit() c.fire('exitArena', {}) end
+
+    --- A gun prop on a ped: `name` is the weapon, `on` the ped it hangs from.
+    local nextHandle = 5000
+    function c.prop(name, on, extra)
+        nextHandle = nextHandle + 1
+        local object = { model = 'w_' .. name, attachedTo = on or 11 }
+        for k, v in pairs(extra or {}) do object[k] = v end
+        world.objects[nextHandle] = object
+        return nextHandle
+    end
+
+    function c.itemCount(name, count)
+        local handler = handlers['ox_inventory:itemCount']
+        if handler then handler(name, count) end
+    end
 
     --- Advances the clock and runs every captured thread once, `times` times.
     function c.poll(times, everyMs)
@@ -772,6 +827,130 @@ t.test('a hash in the ignore list is honoured the way ox honours it', function()
     c.enter()
     c.exit()
     t.equals(c.ped.weapons[12345], 5, 'an ignored weapon listed by hash was taken off the ped')
+end)
+
+-- ======================================================================
+-- THE GUN ON THE BACK THAT IS NOT IN THE INVENTORY
+--
+-- crimson-backweapons can build the same back prop twice and lose one copy.
+-- The copy it lost is never removed, and outlives the arena taking the gun
+-- back. The sweep takes gun props off the player's ped that they hold no
+-- item for -- and nothing else.
+-- ======================================================================
+
+local function sweepWindow(c) for _ = 1, 3 do c.poll(1, 5000) end end
+
+t.test('THE REPORT: the arena carbine left on the back after the exit is removed', function()
+    local c = newClient()
+    c.enter()
+    local orphan = c.prop('WEAPON_CARBINERIFLE')
+    c.ox.items = {}
+    c.exit()
+    sweepWindow(c)
+    t.equals(c.world.objects[orphan], nil, 'the carbine prop is still on their back with no carbine in the inventory')
+end)
+
+t.test('a prop of a gun they DO hold is never touched', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = { [5] = item(5, 'WEAPON_CARBINERIFLE', 'OWN-5') }
+    local mine = c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[mine] ~= nil, 'the prop of the carbine they own was removed')
+end)
+
+t.test('two props of a gun they hold one of: the extra goes, one stays', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = { [5] = item(5, 'WEAPON_CARBINERIFLE', 'OWN-5') }
+    local a, b = c.prop('WEAPON_CARBINERIFLE'), c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    sweepWindow(c)
+    local left = (c.world.objects[a] and 1 or 0) + (c.world.objects[b] and 1 or 0)
+    t.equals(left, 1, 'the duplicate was left, or both went')
+end)
+
+t.test('the gun in their hands is never touched, even with no item behind it', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = {}
+    local inHand = c.prop('WEAPON_CARBINERIFLE')
+    c.world.inHand[11] = inHand
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[inHand] ~= nil, 'the weapon object in their hand was deleted')
+end)
+
+t.test('another player\'s networked prop is skipped; a networked one this game owns is removed', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = {}
+    local theirs = c.prop('WEAPON_CARBINERIFLE', 11, { networked = true, owner = 7 })
+    local ours = c.prop('WEAPON_SPECIALCARBINE', 11, { networked = true, owner = 1 })
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[theirs] ~= nil, 'a prop another player\'s game owns was deleted')
+    t.equals(c.world.objects[ours], nil, 'a networked prop this game owns was left -- the carbine may well be one')
+end)
+
+t.test('a gun prop not on this player, and anything that is not a gun, is left alone', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = {}
+    local loose = c.prop('WEAPON_CARBINERIFLE', 0)
+    local other = c.prop('WEAPON_CARBINERIFLE', 99)
+    c.world.objects[6001] = { model = 'prop_cs_hat', attachedTo = 11 }
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[loose] ~= nil and c.world.objects[other] ~= nil, 'a prop not on this player was deleted')
+    t.isTrue(c.world.objects[6001] ~= nil, 'a hat was deleted')
+end)
+
+t.test('an inventory that cannot be read is not read as empty', function()
+    local c = newClient()
+    c.enter()
+    local prop = c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    c.ox.throw = true
+    local ok = pcall(sweepWindow, c)
+    t.isTrue(ok, 'an unreadable inventory raised out of the sweep')
+    t.isTrue(c.world.objects[prop] ~= nil, 'the prop was deleted on an inventory nobody could read')
+end)
+
+t.test('a reclaim that reaches the client late is still cleaned up, whenever it lands', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = { [1] = item(1, 'WEAPON_CARBINERIFLE', 'ARENA-1') }
+    local orphan = c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    for _ = 1, 14 do c.poll(1, 5000) end         -- the exit's minute runs out, item still held
+    t.isTrue(c.world.objects[orphan] ~= nil, 'the fixture is wrong: the item was still held')
+    c.ox.items = {}
+    c.itemCount('WEAPON_CARBINERIFLE', 0)          -- ox says the carbine just went to zero
+    sweepWindow(c)
+    t.equals(c.world.objects[orphan], nil, 'the late reclaim left the prop on their back for good')
+end)
+
+t.test('after a ped swap the prop left on the old ped is found too', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = {}
+    c.world.oldPed = 11
+    local orphan = c.prop('WEAPON_CARBINERIFLE', 11)
+    c.exit()
+    c.env.PlayerPedId = function() return 12 end
+    sweepWindow(c)
+    t.equals(c.world.objects[orphan], nil, 'the orphan on the ped the player had at the exit was never looked at')
+end)
+
+t.test('without ox the sweep does nothing at all', function()
+    local c = newClient({ ox = 'missing' })
+    c.enter()
+    local prop = c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[prop] ~= nil, 'a prop was removed on a server with no ox to ask')
 end)
 
 os.exit(t.summary())

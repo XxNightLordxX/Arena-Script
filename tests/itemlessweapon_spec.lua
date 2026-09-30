@@ -210,7 +210,8 @@ local function newClient(opts)
         FreezeEntityPosition = function() end,
         SetEntityVisible = function() end,
         SetEntityCollision = function() end,
-        SetEntityInvincible = function() end,
+        SetEntityInvincible = function(_p, on) world.invincible = on; world.invincibleWrites = (world.invincibleWrites or 0) + 1 end,
+        IsPedShooting = function() return world.shooting == true end,
         SetEntityHeading = function() end,
         RequestCollisionAtCoord = function() end,
         HasCollisionLoadedAroundEntity = function() return true end,
@@ -282,6 +283,7 @@ local function newClient(opts)
     env.Arena.GetCover = function() return {} end
     if opts.mutate then opts.mutate(env.Config) end
     Sandbox.loadInto('../Crimson-Arena/client/dispatch.lua', env)
+    Sandbox.loadInto('../Crimson-Arena/client/spawnprotection.lua', env)
     Sandbox.loadInto('../Crimson-Arena/client/match.lua', env)
 
     local c = { env = env, world = world, ox = ox, ped = ped, runner = runner }
@@ -1111,6 +1113,92 @@ t.test('without ox nothing is drawn and nothing raises', function()
     c.enter()
     drawWindow(c)
     t.isTrue(not c.world.exportsTouched, 'ox exports were read with ox not running')
+end)
+
+-- ======================================================================
+-- FIVE SECONDS OF INVULNERABILITY AFTER A REVIVE
+-- ======================================================================
+
+local function revive(c)
+    c.fire('respawn', { spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 }, scatterRadius = 0.0, loadout = {} })
+end
+
+t.test('THE ASK: a revived fighter is invulnerable for 5 seconds, then not', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    t.equals(c.world.invincible, true, 'the revive was not protected')
+    for _ = 1, 45 do c.poll(1, 100) end
+    t.equals(c.world.invincible, true, 'protection ended before 5 seconds')
+    for _ = 1, 10 do c.poll(1, 100) end
+    t.equals(c.world.invincible, false, 'protection never ended')
+end)
+
+t.test('firing ends the protection at once', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(2, 100)
+    c.world.shooting = true
+    c.poll(1, 100)
+    t.equals(c.world.invincible, false, 'a protected fighter could shoot while untouchable')
+end)
+
+t.test('a second revive inside the window restarts it, and the first never switches it off', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    for _ = 1, 30 do c.poll(1, 100) end
+    revive(c)
+    for _ = 1, 30 do c.poll(1, 100) end
+    t.equals(c.world.invincible, true, 'the first revive\'s timer cut the second one short')
+    for _ = 1, 25 do c.poll(1, 100) end
+    t.equals(c.world.invincible, false)
+end)
+
+t.test('leaving the round ends the protection', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.exit()
+    c.poll(2, 100)
+    t.equals(c.world.invincible, false, 'a fighter walked out of the round still invulnerable')
+end)
+
+t.test('round start is not a revive: nobody starts the round invulnerable', function()
+    local c = newClient()
+    c.enter()
+    c.poll(2, 100)
+    t.isTrue(c.world.invincible ~= true)
+end)
+
+t.test('seconds = 0 switches it off', function()
+    local c = newClient({ mutate = function(Config) Config.Match.spawnProtection.seconds = 0 end })
+    c.enter()
+    revive(c)
+    t.isTrue(c.world.invincible ~= true)
+end)
+
+t.test('the anticheat hooks are called at the start and the end of the window', function()
+    local c = newClient()
+    local calls = {}
+    c.env.ArenaSpawnProtection.OnStart = function(_ped, seconds) calls[#calls + 1] = 'start:' .. seconds end
+    c.env.ArenaSpawnProtection.OnEnd = function() calls[#calls + 1] = 'end' end
+    c.enter()
+    revive(c)
+    for _ = 1, 60 do c.poll(1, 100) end
+    t.equals(table.concat(calls, ','), 'start:5,end')
+end)
+
+t.test('a hook that raises cannot keep a fighter invulnerable', function()
+    local c = newClient()
+    c.env.ArenaSpawnProtection.OnStart = function() error('anticheat blew up') end
+    c.env.ArenaSpawnProtection.OnEnd = function() error('anticheat blew up') end
+    c.enter()
+    revive(c)
+    t.equals(c.world.invincible, true)
+    for _ = 1, 60 do c.poll(1, 100) end
+    t.equals(c.world.invincible, false)
 end)
 
 os.exit(t.summary())

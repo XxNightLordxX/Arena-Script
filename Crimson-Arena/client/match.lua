@@ -4112,6 +4112,11 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     holdVitals()
 
     if (Config.Match or {}).drawWeaponOnRespawn ~= false then drawSpawnWeapon() end
+
+    -- INVULNERABLE FOR A MOMENT: client/spawnprotection.lua.
+    if ArenaSpawnProtection and ArenaSpawnProtection.Start then
+        ArenaSpawnProtection.Start(function() return matchToken == token and currentMatch ~= nil end)
+    end
 end)
 
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)

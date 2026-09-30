@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      540   Teams         The sides, and whether they may be uneven
-      710   Modes         Free-for-all, team deathmatch and gun game
-     1102   DefaultMode   Which of them a new lobby opens on
-     1121   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1365   UI            Panel colours, logo and title
-     1433   Permissions   Who may open a match, who may force-stop one
-     1519   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1953   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2551   Database      Optional: four tables the arena owns. Ships OFF
-     2582   Leaderboard   Which matches count towards the board, and which do not
-     2648   Webhook       Optional: a Discord line per finished match
-     2680   Dispatch      Optional: keeping police and EMS out of the arena
+      548   Teams         The sides, and whether they may be uneven
+      718   Modes         Free-for-all, team deathmatch and gun game
+     1110   DefaultMode   Which of them a new lobby opens on
+     1129   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1373   UI            Panel colours, logo and title
+     1441   Permissions   Who may open a match, who may force-stop one
+     1527   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1961   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2559   Database      Optional: four tables the arena owns. Ships OFF
+     2590   Leaderboard   Which matches count towards the board, and which do not
+     2656   Webhook       Optional: a Discord line per finished match
+     2688   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -340,6 +340,14 @@ Config.Match = {
 
     -- AND AFTER EVERY REVIVE, the same way. false = empty hands on a revive.
     drawWeaponOnRespawn = true,
+
+    -- INVULNERABLE FOR A MOMENT AFTER A REVIVE, so nobody is killed again
+    -- while the world is still loading in around them. `seconds`: how long;
+    -- 0 switches it off. It ends early the moment the revived fighter fires
+    -- -- protection is for arriving, not attacking.
+    spawnProtection = {
+        seconds = 5,
+    },
 
     -- HOW FAR ABOVE THE SPAWN POINT A PLAYER IS HELD, in metres, while the
     -- world streams in around them.

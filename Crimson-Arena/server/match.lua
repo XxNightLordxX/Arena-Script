@@ -2136,6 +2136,9 @@ local function scheduleRespawn(match, player, unwitnessed)
             }
         end
 
+        -- The anticheat hook for the revive window: server/spawnprotection.lua.
+        if ArenaSpawnProtection and ArenaSpawnProtection.Revived then ArenaSpawnProtection.Revived(src) end
+
         TriggerClientEvent('crimson_arena:client:respawn', src, {
             spawn = toPoint(point),
             scatterRadius = planned and 0.0 or scatterRadius(),

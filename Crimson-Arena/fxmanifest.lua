@@ -43,6 +43,7 @@ client_scripts {
     '@qbx_core/modules/playerdata.lua',
     'client/ui.lua',
     'client/dispatch.lua',
+    'client/spawnprotection.lua',
     'client/main.lua',
     'client/match.lua',
     'client/spectate.lua',
@@ -64,6 +65,7 @@ server_scripts {
     'server/stats.lua',
     'server/betting.lua',
     'server/lobby.lua',
+    'server/spawnprotection.lua',
     'server/match.lua',
     'server/main.lua',
     -- LAST, AND THAT IS LOAD-BEARING. Every export in it asks another module

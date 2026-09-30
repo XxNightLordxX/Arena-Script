@@ -1,0 +1,365 @@
+-- crimson_arena/sql/install.sql
+--
+-- YOU DO NOT NORMALLY NEED TO RUN THIS.
+--
+-- The resource creates all four of its tables itself on first start, from the
+-- matching CREATE TABLE statements in server/stats.lua (ArenaStats.EnsureSchema),
+-- server/ammo.lua (ArenaAmmo.LoadOwedKit and ArenaAmmo.LoadJams) and
+-- server/betting.lua. This file exists for the two cases where that is not
+-- good enough:
+--
+--   1. Your database user cannot CREATE TABLE at runtime, which is a sensible
+--      way to run a production server. Import this once as an admin, then let
+--      the resource run with a user that has SELECT, INSERT, UPDATE and
+--      DELETE on EVERY TABLE IN THIS FILE.
+--
+--      DELETE IS NOT OPTIONAL, AND IT IS NOT ONLY THE KIT SLATE. This said
+--      "both tables" while the file grew to four, and three of the four
+--      issue DELETE. Each one costs something different when the grant is
+--      missing, and none of the failures is visible from inside the game --
+--      the error goes to oxmysql's console, not this one:
+--
+--        crimson_arena_owed_kit      deletes a row the moment the debt it
+--                                    records is settled; that is how a
+--                                    weapon handed back stops being chased.
+--                                    Without DELETE the row survives the
+--                                    collection, the next restart reads the
+--                                    settled debt back, and the player is
+--                                    chased for ever for something they
+--                                    already returned.
+--        crimson_arena_unpaid        deletes a row the moment the money is
+--                                    paid. Without DELETE the row survives
+--                                    the payment, the next restart reads it
+--                                    back as still owed, AND THE PLAYER IS
+--                                    PAID AGAIN -- out of the owner's
+--                                    pocket, once per restart, for ever.
+--                                    This is the one that costs real money.
+--        crimson_arena_jammed_stash  deletes a row when an admin presses
+--                                    Clear the hold on the tablet, after
+--                                    settling that stash by hand. Without
+--                                    DELETE the button reports success, the
+--                                    next restart holds the same stash back
+--                                    again, and the operator repeats the
+--                                    work every boot.
+--
+--      crimson_arena_stats is the only one that never deletes: it upserts
+--      and nothing else, which is why SELECT/INSERT/UPDATE was enough back
+--      when it was the only table here.
+--   2. You want the table to exist before the first match, so an operator
+--      looking at the schema does not see it appear out of nowhere.
+--
+-- EACH STATEMENT BELOW HAS A COPY IN THE LUA, and there are FOUR of them:
+--
+--   crimson_arena_stats         server/stats.lua    SCHEMA_SQL
+--   crimson_arena_owed_kit      server/ammo.lua     SQL.KIT_SCHEMA
+--   crimson_arena_jammed_stash  server/ammo.lua     SQL.JAM_SCHEMA
+--   crimson_arena_unpaid        server/betting.lua  UNPAID_SCHEMA_SQL
+--
+-- Edit one and you must edit the other, or first start after an import will
+-- quietly do nothing (IF NOT EXISTS) and leave you on whichever shape got
+-- there first.
+--
+-- THEY ARE NOT CURRENTLY IDENTICAL, AND THIS FILE USED TO CLAIM THEY WERE.
+-- It said "character for character" and "exactly two copies"; both were
+-- false. The columns, types, widths, defaults and primary keys DO agree
+-- exactly -- that part was checked column by column. What the Lua copies
+-- leave out is the envelope: the CHARACTER SET and COLLATE on the key
+-- columns, and the ENGINE, ROW_FORMAT and DEFAULT CHARSET on the table.
+--
+-- WHICH MATTERS, AND IS THE HALF MOST LIKELY TO BE FORGOTTEN. A table
+-- created without a charset takes the DATABASE's default, so the same
+-- resource on two servers ends up with two different tables. Read the note
+-- below on what a _ci collation does to a key column: on a database whose
+-- default collation is case-insensitive, the runtime path gives you keys
+-- where `char:abc` and `char:ABC` are ONE ROW, which is two debts merged.
+-- On a database defaulting to latin1, a player name with an accent is
+-- refused outright.
+--
+-- SO IMPORTING THIS FILE IS NOT MERELY CONVENIENT: on those servers it is
+-- the difference between a correct table and a broken one. If your database
+-- default is already utf8mb4 with a binary-safe collation, the two paths
+-- agree and it does not matter.
+--
+-- WHAT HAPPENS IF YOU NEVER IMPORT IT AND NEVER GRANT CREATE: nothing breaks.
+-- Config.Database.enabled = false, or a failed create, leaves the resource in
+-- memory-only mode: matches, betting, payouts and the panel all work exactly
+-- the same.
+--
+-- WHAT YOU LOSE IS FOUR THINGS, in rising order of how much they matter:
+-- the all-time leaderboard stops surviving a restart; the arena stops
+-- remembering which stashes it had held back; it stops remembering what
+-- players still owe IT; and it stops remembering what it owes THEM. The last
+-- one is money and is the reason this file is worth reading.
+
+-- ----------------------------------------------------------------------
+-- WHY EVERY TABLE HERE NAMES ITS OWN CHARSET.
+--
+-- Neither table used to say, so both took whatever the database default was.
+-- On a server whose default is latin1 -- still the shipped default on plenty
+-- of MySQL 5.7 installs, and what an older my.cnf leaves you with -- a player
+-- name with an accent or an emoji in it is not merely mangled. It is REFUSED:
+-- MySQL answers "Incorrect string value: '\xF0\x9F...'" and the row is never
+-- written. On a utf8mb3 default the accents get through and the emoji do not,
+-- because utf8mb3 stops at three bytes and every emoji is four.
+--
+-- THAT FAILURE IS INVISIBLE FROM INSIDE THE GAME. The write goes out through
+-- oxmysql, is refused there, and the error is printed on oxmysql's console.
+-- ArenaStats.Flush sees a nil answer, treats it as "the database is down",
+-- and requeues the row -- so the same doomed row is retried every flush for
+-- the rest of the run, and when 5000 of them have piled up the queue starts
+-- dropping the oldest. One player with an emoji in their name is enough.
+--
+-- utf8mb4 is the only charset that holds everything a player can be called.
+-- utf8mb4_unicode_ci sorts them the way a person would expect.
+--
+-- THE TWO KEY COLUMNS ARE utf8mb4_bin ON PURPOSE, and it is not a style
+-- choice. They are machine identifiers, not prose, and they are the primary
+-- key: under a _ci collation `char:abc` and `char:ABC` are THE SAME ROW, so
+-- two different characters would silently share one set of statistics, and
+-- two different weapon serials would silently share one debt -- which is the
+-- exact collision the `w:` / `i:` prefix below exists to prevent. A binary
+-- collation compares them byte for byte, which is how the Lua compares them.
+--
+-- ROW_FORMAT=DYNAMIC is what pays for that. utf8mb4 reserves four bytes per
+-- character in an index, so the (citizenid, ledger_key) key below asks for
+-- 64*4 + 191*4 = 1020 bytes. InnoDB's old COMPACT format allows 767 and would
+-- refuse the CREATE outright; DYNAMIC allows 3072. It is the default on MySQL
+-- 5.7+ and MariaDB 10.2+ and is named here so that it does not depend on the
+-- default. If a server old enough to refuse it ever turns up, drop the clause
+-- and shorten ledger_key to 100 -- not the charset.
+--
+-- WHICH TABLES ACTUALLY NEED IT, counted rather than assumed:
+--   crimson_arena_owed_kit      64*4 + 191*4 = 1020 bytes -- NEEDS DYNAMIC
+--   crimson_arena_unpaid        64*4 + 191*4 = 1020 bytes -- NEEDS DYNAMIC
+--   crimson_arena_jammed_stash  191*4        =  764 bytes -- fits COMPACT,
+--                               and by three bytes, so do not widen that
+--                               column without revisiting this line
+--   crimson_arena_stats         64*4         =  256 bytes -- fits COMPACT
+--
+-- THIS FILE ONLY AFFECTS A TABLE THAT DOES NOT EXIST YET. Every statement
+-- here is CREATE TABLE IF NOT EXISTS, so importing this over an install that
+-- already has the tables changes NOTHING -- including the charset. To convert
+-- tables that already exist, stop the resource, back them up, and run these
+-- by hand.
+--
+-- ALL FOUR ARE LISTED, and that is not padding. This block named only the
+-- first two for a long time, while the file grew to four -- so an operator
+-- following it converted half their database and left the other half on the
+-- old collation, with nothing to tell them. The two that were missing are
+-- the two it could least afford: crimson_arena_unpaid is keyed on money
+-- owed to a named character, and crimson_arena_jammed_stash is keyed on a
+-- stash the door is refusing to touch. Read the note above on what a _ci
+-- collation does to a key column -- `char:abc` and `char:ABC` becoming one
+-- row is a merged debt in the first table and the wrong stash unblocked in
+-- the second.
+--
+--     ALTER TABLE crimson_arena_stats
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_stats
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+--     ALTER TABLE crimson_arena_owed_kit ROW_FORMAT=DYNAMIC;
+--     ALTER TABLE crimson_arena_owed_kit
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_owed_kit
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL,
+--         MODIFY ledger_key VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+--     ALTER TABLE crimson_arena_unpaid ROW_FORMAT=DYNAMIC;
+--     ALTER TABLE crimson_arena_unpaid
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_unpaid
+--         MODIFY citizenid VARCHAR(64) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL,
+--         MODIFY ledger_key VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+--     ALTER TABLE crimson_arena_jammed_stash
+--         CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--     ALTER TABLE crimson_arena_jammed_stash
+--         MODIFY stash VARCHAR(191) CHARACTER SET utf8mb4
+--                COLLATE utf8mb4_bin NOT NULL;
+--
+-- They are not run for you because an ALTER on a table that is not there
+-- aborts the import, and because the MODIFY statements rebuild a primary key
+-- on tables the arena may be actively collecting from.
+-- ----------------------------------------------------------------------
+
+-- EVERY WIDTH BELOW WAS CHECKED AGAINST WHAT THE LUA ACTUALLY WRITES.
+--
+--   citizenid  ArenaStats.Record cuts it to 64 -- 64 BYTES, because Lua's
+--              string.sub counts bytes. 64 bytes is never more than 64
+--              characters, so it always fits.
+--   name       cut to 128 bytes the same way, into 128 characters. Also
+--              always fits. IT IS THE CUT ITSELF THAT IS THE RISK, not the
+--              width: a cut that lands in the middle of a multi-byte
+--              character produces a half character, and MySQL refuses the
+--              whole row for that just as it refuses an emoji into latin1.
+--              The column cannot fix that; the cut has to be done in
+--              characters. Nothing in this file can do it.
+--   wins/losses/kills/deaths  one per match, accumulated. INT tops out at
+--              2.1 billion matches.
+--   earnings   accumulated money, so BIGINT and not INT: a busy arena passes
+--              INT's 2.1 billion in a way a match count never will.
+
+CREATE TABLE IF NOT EXISTS crimson_arena_stats (
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    name VARCHAR(128) NOT NULL DEFAULT '',
+    wins INT NOT NULL DEFAULT 0,
+    losses INT NOT NULL DEFAULT 0,
+    kills INT NOT NULL DEFAULT 0,
+    deaths INT NOT NULL DEFAULT 0,
+    earnings BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (citizenid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- `losses` IS WRITTEN EVERY ROUND AND IS NOT ON THE BOARD YET. That is a gap
+-- and not a spare column: the leaderboard selects name, wins, kills, deaths
+-- and earnings, so a player who wins two rounds out of forty reads exactly
+-- like one who has won two out of two. DO NOT DROP IT to tidy the schema --
+-- the write is what makes surfacing it possible later, and dropping it throws
+-- away every defeat recorded since the arena opened, which cannot be
+-- reconstructed from anything else here.
+--
+-- `updated_at` IS FOR YOU, NOT FOR THE GAME. Nothing selects it and nothing
+-- is meant to. It is the only way to answer "who has played since March" or
+-- to prune an install that has collected ten years of one-match visitors, and
+-- the database fills it in for free. Same instruction: leave it alone.
+
+-- Optional. The leaderboard orders by wins then kills; on a server with tens of
+-- thousands of rows that is a filesort every time somebody opens the panel.
+-- Below a few thousand players it is not worth the write cost, which is why the
+-- resource does not create it for you.
+-- CREATE INDEX idx_crimson_arena_stats_board ON crimson_arena_stats (wins DESC, kills DESC);
+
+-- ----------------------------------------------------------------------
+-- WHAT PLAYERS STILL OWE THE ARENA.
+--
+-- Two things end up here. The first is the way out of a round the exit
+-- cannot cover: the player on that server id is no longer the character the
+-- arena armed -- a mid-round character switch, or a disconnect whose kit
+-- ox_inventory has already saved into somebody who is not here. Reaching into
+-- whoever holds the id now would take THEIR guns, so the debt is written down
+-- against the character instead and collected the next time they are seen.
+--
+-- The second is quieter: ox_inventory refusing a removal at an ordinary exit.
+-- The arena asked for its rounds back, was told no, and would otherwise have
+-- dropped the record a line later and forgotten they were ever issued.
+--
+-- WITHOUT THIS TABLE THAT SLATE LIVES IN MEMORY, and a restart writes off
+-- every outstanding weapon and every round. On a server that restarts nightly
+-- that is a way to keep an arena loadout: log out mid-round and wait.
+--
+-- Unlike the stashes, none of this can be rebuilt. A stash is a real
+-- ox_inventory row the resource can find again by name; a weapon debt is
+-- identified only by the serial recorded here, and a stack of rounds only by
+-- the number.
+--
+-- `ledger_key` is `w:` and the serial for a weapon, `i:` and the item name
+-- for a stack. The prefix is load-bearing: without it a serial that happened
+-- to read like an item name would collide on the primary key and one debt
+-- would silently overwrite the other. It is what stops one weapon being
+-- written down twice and lets a stack of rounds accumulate instead.
+--
+-- THE WIDTHS, AGAIN AGAINST WHAT THE LUA WRITES. Nothing on this table is
+-- cut to length before it is sent -- unlike the stats table, ammo.lua passes
+-- citizenid, the item name and the serial through as they came:
+--
+--   citizenid   a framework character id, eight or so characters. 64 is
+--               generous. IF ONE EVER ARRIVES LONGER THAN 64 the row is
+--               refused with "Data too long", on oxmysql's console, and the
+--               debt is silently forgiven -- which is a free arena loadout.
+--   ledger_key  two characters plus an ox_inventory serial or item name,
+--               both of which that resource keeps short. 191 is the largest
+--               this can be without the key outgrowing DYNAMIC's 3072 bytes.
+--   kind        never passed as a parameter: 'weapon' and 'item' are written
+--               into the statements themselves. 16 is six to spare.
+--   name        an ox_inventory item name. serial: an ox_inventory serial.
+--   amount      rounds owed, bounded by the per-weapon ammo.max in
+--               config.weapons.lua (500 at the highest) and by the ledger
+--               caps in ammo.lua long before INT is in sight.
+-- ----------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS crimson_arena_owed_kit (
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    serial VARCHAR(128) NULL,
+    amount INT NOT NULL DEFAULT 1,
+    written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (citizenid, ledger_key)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+-- ----------------------------------------------------------------------
+-- crimson_arena_jammed_stash -- STASHES THE DOOR HAS STOPPED TOUCHING
+--
+-- Handing an item back is two calls: put it in the player's hands, then take
+-- it out of the stash. Between those two the item exists in BOTH places, so
+-- a refused removal leaves the copy in the stash -- and every later pass
+-- finds it and hands it over again. One phone became two, then four, then
+-- eight, then sixteen over five rounds.
+--
+-- The first refusal therefore stops the door touching that stash at all,
+-- and this table is what makes that decision outlive the process. Without
+-- it a restart forgot the jam, the thirty-second sweep walked the stash
+-- again -- uncapped, because nothing after a restart knows what the door
+-- put there -- and handed out the very duplicate the jam was parked to
+-- stop. "Wait for the nightly restart" was a way to collect it.
+--
+-- Nothing in here is anybody's property. It is a list of stash names the
+-- door is holding off, and the tablet's Clear the hold button is the only
+-- thing that clears one -- after a human has opened that stash on the
+-- Stashes tab, read what is in it, and settled it by hand.
+--
+--   stash   an ox_inventory stash name, as ammo.lua composes it. 191 is the
+--           longest VARCHAR that can carry a PRIMARY KEY under utf8mb4 on
+--           MySQL's default 767-byte index limit.
+-- ----------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS crimson_arena_jammed_stash (
+    stash VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    jammed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (stash)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------
+-- crimson_arena_unpaid -- MONEY THE ARENA STILL OWES SOMEBODY
+--
+-- Winnings, refunds and returned side-bets that could not be paid at the
+-- moment they were decided: the player had gone, or the framework refused
+-- the credit. One row per character per debt, added to rather than
+-- replaced, and deleted the moment it is settled.
+--
+-- THIS TABLE WAS MISSING FROM THIS FILE, and the omission bit exactly the
+-- operators this file exists for. All three tables are created at runtime
+-- with CREATE TABLE IF NOT EXISTS, so a database user that may create
+-- tables never noticed. A user that MAY NOT -- which is the whole reason to
+-- import this file by hand -- got two tables out of three, and every write
+-- of an unpaid debt failed from then on. A contract test now holds this
+-- file and the three runtime statements together so it cannot drift again.
+--
+--   citizenid   the character the money is owed to.
+--   ledger_key  what the debt is, so the same one cannot be written twice.
+--   name        the player's name when it was written down, for the log.
+--   account     'cash' or 'bank' -- where it was meant to land.
+--   reason      what it was: winnings, a refund, a side-bet coming back.
+--   amount      the outstanding total, added to on a duplicate key.
+-- ----------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS crimson_arena_unpaid (
+    citizenid VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    ledger_key VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    name VARCHAR(128) NOT NULL DEFAULT '',
+    account VARCHAR(32) NOT NULL DEFAULT '',
+    reason VARCHAR(64) NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL DEFAULT 0,
+    written_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (citizenid, ledger_key)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

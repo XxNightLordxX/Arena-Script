@@ -38,19 +38,36 @@ end
 local POLL_MS = 100
 local token = 0
 
+--- The ped the open window made invincible, or nil when none is open.
+local activePed = nil
+
 local function hook(fn, ...)
     local ok, why = pcall(fn, ...)
     if not ok then print(('[crimson_arena] spawn protection hook raised: %s'):format(tostring(why))) end
 end
 
---- Starts a window. `stillWanted` answers whether the round that asked for
---- it is still the one being played; when it stops answering true the
---- window closes early.
+--- Closes the open window now, if there is one. Idempotent.
 ---
 --- "I SET IT, THEREFORE I UNSET IT" -- the same rule as
 --- ArenaDispatch.ReleaseDeadState: there is no getter for invincibility, so
---- this writes `false` only over the `true` it wrote itself, and a newer
---- revive takes the flag over rather than having it cut short.
+--- this writes `false` only while a window it opened is still open. Both the
+--- ped it was put on and the current ped are cleared, in case the ped was
+--- rebuilt mid-window.
+function ArenaSpawnProtection.Stop()
+    if not activePed then return end
+    local ped = activePed
+    activePed = nil
+    token = token + 1
+    SetEntityInvincible(ped, false)
+    local now = PlayerPedId()
+    if now ~= ped then SetEntityInvincible(now, false) end
+    hook(ArenaSpawnProtection.OnEnd, ped)
+end
+
+--- Starts a window. `stillWanted` answers whether the round that asked for
+--- it is still the one being played; when it stops answering true the
+--- window closes early. A newer revive takes over the open window rather
+--- than being cut short by it.
 --- @param stillWanted fun(): boolean
 function ArenaSpawnProtection.Start(stillWanted)
     local cfg = (Config.Match or {}).spawnProtection
@@ -59,9 +76,9 @@ function ArenaSpawnProtection.Start(stillWanted)
 
     token = token + 1
     local mine = token
-    local ped = PlayerPedId()
-    SetEntityInvincible(ped, true)
-    hook(ArenaSpawnProtection.OnStart, ped, seconds)
+    activePed = PlayerPedId()
+    SetEntityInvincible(activePed, true)
+    hook(ArenaSpawnProtection.OnStart, activePed, seconds)
 
     CreateThread(function()
         local ends = GetGameTimer() + seconds * 1000
@@ -71,10 +88,13 @@ function ArenaSpawnProtection.Start(stillWanted)
             if IsPedShooting(PlayerPedId()) then break end
             Wait(POLL_MS)
         end
-        -- A newer revive owns the flag now; it clears it itself.
-        if token == mine then
-            SetEntityInvincible(ped, false)
-            hook(ArenaSpawnProtection.OnEnd, ped)
-        end
+        if token == mine then ArenaSpawnProtection.Stop() end
     end)
 end
+
+-- A STOPPED OR RESTARTED RESOURCE KILLS THE THREAD ABOVE, and with it the
+-- only thing that would have cleared the flag. Without this a restart
+-- inside the window left the player invincible until their ped was rebuilt.
+AddEventHandler('onResourceStop', function(name)
+    if name == GetCurrentResourceName() then ArenaSpawnProtection.Stop() end
+end)

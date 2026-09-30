@@ -135,7 +135,14 @@ local function newClient(opts)
     local env = Sandbox.newArenaEnv({
         CreateThread = runner.CreateThread, Wait = runner.Wait, SetTimeout = runner.SetTimeout,
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
-        AddEventHandler = function(name, fn) handlers[name] = fn end,
+        AddEventHandler = function(name, fn)
+            if name == 'onResourceStop' then
+                world.stops = world.stops or {}
+                world.stops[#world.stops + 1] = fn
+            else
+                handlers[name] = fn
+            end
+        end,
         RegisterCommand = function() end,
         TriggerServerEvent = function(name, payload)
             world.serverEvents[#world.serverEvents + 1] = { name = name, payload = payload }
@@ -1198,6 +1205,32 @@ t.test('a hook that raises cannot keep a fighter invulnerable', function()
     revive(c)
     t.equals(c.world.invincible, true)
     for _ = 1, 60 do c.poll(1, 100) end
+    t.equals(c.world.invincible, false)
+end)
+
+t.test('THE REVIEW: a restart inside the window does not leave the fighter invincible', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    t.equals(c.world.invincible, true)
+    -- The resource dies: its threads with it. Only the stop handlers run.
+    for _, fn in ipairs(c.world.stops or {}) do fn('crimson_arena') end
+    t.equals(c.world.invincible, false, 'a restart left the fighter invincible for good')
+end)
+
+t.test('another resource stopping does not end the window', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    for _, fn in ipairs(c.world.stops or {}) do fn('some_other_resource') end
+    t.equals(c.world.invincible, true)
+end)
+
+t.test('leaving the round ends the protection at once, not on the next poll', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.exit()
     t.equals(c.world.invincible, false)
 end)
 

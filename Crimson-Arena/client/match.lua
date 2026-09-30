@@ -3558,6 +3558,9 @@ local function leaveArena(returnCoords)
     -- never saw start still must not leave them switched off.
     if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(false) end
 
+    -- And any revive invulnerability off, at once, for the same reason.
+    if ArenaSpawnProtection and ArenaSpawnProtection.Stop then ArenaSpawnProtection.Stop() end
+
     if not currentMatch then return end
 
     currentMatch = nil

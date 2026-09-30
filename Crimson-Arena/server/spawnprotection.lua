@@ -61,10 +61,17 @@ function ArenaSpawnProtection.Revived(src)
     if not ok then ArenaLog('spawn protection: the OnStart hook raised -- %s', tostring(why)) end
 end
 
---- Closes a player's window now -- they left the round or were eliminated.
+--- A player left the round or was eliminated: their window shrinks to the
+--- network grace. NOT deleted outright -- the client stays invulnerable until
+--- the exit reaches it, so a detection sampled or in flight during that trip
+--- must still be cancelled. Never lengthens a window.
 --- @param src integer
 function ArenaSpawnProtection.Clear(src)
-    protectedUntil[src] = nil
+    local untilAt = protectedUntil[src]
+    if not untilAt then return end
+    local grace = math.max(0, math.min(10, tonumber(config().finiGraceSeconds) or 0))
+    local capped = GetGameTimer() + grace * 1000
+    if capped < untilAt then protectedUntil[src] = capped end
 end
 
 --- Whether `src` is inside a revive window the server opened.

@@ -18,9 +18,12 @@
     weapon ox_inventory owns -- server/ammo.lua issues those as items, and
     the one native give in this file, restoreOwnLoadout, hands back only
     what the player walked in with that is neither a catalogue weapon nor a
-    weapon ox had drawn (everything, on a server without ox). Two threads
-    outlive a round on purpose -- leaveArena's visibility watch and the
-    item-less weapon watch beside it -- and both end on their own.
+    weapon ox had drawn (everything, on a server without ox; and on one with
+    ox's weaponmismatch off, a native catalogue gun ox never drew). Three
+    threads outlive a round on purpose -- leaveArena's visibility watch, the
+    item-less weapon watch beside it, and the back-prop sweep (a minute after
+    the exit, and 15 s whenever an arena gun's count reaches zero) -- and all
+    end on their own.
 ]]
 
 local UNARMED = joaat('WEAPON_UNARMED')
@@ -304,6 +307,15 @@ local function oxHasDrawn(hash)
     return ok and type(weapon) == 'table' and weapon.hash == hash
 end
 
+--- Whether ox_inventory leaves native weapons alone (inventory:weaponmismatch
+--- off). Read as text so both ox spellings -- bool and 0/1 -- are understood.
+--- @return boolean
+local function oxToleratesNatives()
+    if type(GetConvar) ~= 'function' then return false end
+    local v = tostring(GetConvar('inventory:weaponmismatch', 'true')):lower()
+    return v == 'false' or v == '0'
+end
+
 local function captureOwnLoadout()
     local ped = PlayerPedId()
     local weapons, seen = {}, {}
@@ -311,7 +323,7 @@ local function captureOwnLoadout()
     local function remember(hash)
         if hash == UNARMED or seen[hash] or not HasPedGotWeapon(ped, hash, false) then return end
         seen[hash] = true
-        weapons[#weapons + 1] = { hash = hash, ammo = GetAmmoInPedWeapon(ped, hash) }
+        weapons[#weapons + 1] = { hash = hash, ammo = GetAmmoInPedWeapon(ped, hash), oxDrawn = oxHasDrawn(hash) }
     end
 
     local selected = GetSelectedPedWeapon(ped)
@@ -553,9 +565,15 @@ local function restoreOwnLoadout(ped)
         -- did not have drawn -- still comes back; the strip above left those
         -- on the ped, and SetPedAmmo puts the count back to what it was
         -- rather than adding to it.
+        --
+        -- EXCEPT ON A SERVER THAT TOLERATES NATIVES: with ox's
+        -- inventory:weaponmismatch off, a native catalogue weapon is a real
+        -- possession ox never strips, so one the player walked in with -- and
+        -- that ox did not have drawn -- comes back as it always did.
         local owned = oxOwnedWeapons()
+        local tolerant = oxToleratesNatives()
         for _, weapon in ipairs(carried.weapons) do
-            if not owned[weapon.hash] then
+            if not owned[weapon.hash] or (tolerant and not weapon.oxDrawn) then
                 GiveWeaponToPed(ped, weapon.hash, weapon.ammo, false, false)
                 SetPedAmmo(ped, weapon.hash, weapon.ammo)
             end
@@ -3498,18 +3516,23 @@ local function sweepOrphanWeaponProps(extraPed)
         end
     end
 
+    -- MORE PROPS THAN THERE SHOULD BE: ALL OF THEM GO, and back-weapons
+    -- redraws its one tracked prop on its next refresh. Keeping "the first"
+    -- kept whichever the object pool happened to list first -- which could be
+    -- back-weapons' real prop, deleting it and leaving the orphan. The gun in
+    -- hand should have no back prop at all (back-weapons hides the equipped
+    -- gun), so for it any prop is one too many.
+    local selected = GetSelectedPedWeapon(PlayerPedId())
     local removed = 0
     for name, objects in pairs(found) do
         local count = heldCount(name)
         if count ~= nil then
-            local keep = count > 0 and 1 or 0
-            for i = keep + 1, #objects do
-                deleteOrphanProp(objects[i])
-                removed = removed + 1
-            end
+            local keep = (count > 0 and selected ~= joaat(name)) and 1 or 0
             if #objects > keep then
-                ArenaDebugPrint('back prop: removed %d %s prop(s) from the ped -- the player holds %d of that item',
-                    #objects - keep, name, count)
+                for i = 1, #objects do deleteOrphanProp(objects[i]) end
+                removed = removed + #objects
+                ArenaDebugPrint('back prop: removed %d %s prop(s) from the ped -- the player holds %d; '
+                    .. 'back-weapons redraws its own', #objects, name, count)
             end
         end
     end
@@ -3787,13 +3810,22 @@ local function spawnWeaponSlot()
     local ok, items = pcall(function() return exports.ox_inventory:GetPlayerItems() end)
     if not ok or type(items) ~= 'table' then return nil end
 
-    local owned = oxOwnedWeapons()
+    -- THE ISSUED KIT FIRST. A fighter who carried their own kit in (the door
+    -- off, or a stash that failed) may hold their OWN catalogue gun in a lower
+    -- slot, and drawing it would spend their rounds and wear their gun. Only
+    -- when the round sent no weapon list does any catalogue weapon count.
+    local accept = {}
+    local loadout = currentMatch and currentMatch.loadout
+    for _, w in ipairs(type(loadout) == 'table' and type(loadout.weapons) == 'table' and loadout.weapons or {}) do
+        if type(w) == 'table' and Arena.IsKey(w.weapon) then accept[joaat(w.weapon)] = true end
+    end
+    if next(accept) == nil then accept = oxOwnedWeapons() end
     local gun, blade
     for slot, item in pairs(items) do
         local n = tonumber(slot)
         if n and type(item) == 'table' and Arena.IsKey(item.name) then
             local hash = joaat(item.name)
-            if owned[hash] then
+            if accept[hash] then
                 local melee = type(GetWeaponDamageType) == 'function' and GetWeaponDamageType(hash) == MELEE_DAMAGE
                 if melee then
                     if not blade or n < blade then blade = n end
@@ -3816,8 +3848,10 @@ end
 --- HOLSTERS it, so calling it on every poll would flick the gun in and out.
 --- Stops the moment the fighter has anything in hand -- a player who drew
 --- their own choice first keeps it.
-local function drawSpawnWeapon()
-    if (Config.Match or {}).drawWeaponOnSpawn == false then return end
+local function drawSpawnWeapon(switch)
+    -- EACH CALLER'S OWN SWITCH: round start answers to drawWeaponOnSpawn, a
+    -- revive to drawWeaponOnRespawn -- one must not switch the other off.
+    if (Config.Match or {})[switch or 'drawWeaponOnSpawn'] == false then return end
     if not oxInventoryRunning() then return end
 
     drawToken = drawToken + 1
@@ -4117,11 +4151,14 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
 
     if not placed or matchToken ~= token or not currentMatch then return end
 
+    -- The round's kit for THIS life -- a gun game climber's changes by tier.
+    if currentMatch and type(data.loadout) == 'table' then currentMatch.loadout = data.loadout end
+
     applyLoadout(ped, data.loadout)
 
     holdVitals()
 
-    if (Config.Match or {}).drawWeaponOnRespawn ~= false then drawSpawnWeapon() end
+    drawSpawnWeapon('drawWeaponOnRespawn')
 
     -- INVULNERABLE FOR A MOMENT: client/spawnprotection.lua.
     if ArenaSpawnProtection and ArenaSpawnProtection.Start then

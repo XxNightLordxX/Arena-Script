@@ -102,11 +102,20 @@ t.test('THE REVIEW: the window covers the client\'s placement wait -- 5 + 5 + 2 
     t.equals(f.detect(7, 'GodMode').type, 'GodMode', 'the window stayed open past 12 seconds')
 end)
 
-t.test('THE REVIEW: leaving the round closes the window at once', function()
+t.test('FINAL CHECK: leaving shrinks the window to the network grace, never lengthens it', function()
     local f = load()
     f.SP.Revived(7)
     f.SP.Clear(7)
-    t.equals(f.detect(7, 'GodMode').type, 'GodMode')
+    f.clock.now = f.clock.now + 1900
+    t.equals(f.detect(7, 'GodMode'), false, 'a detection in flight during the exit trip was not cancelled')
+    f.clock.now = f.clock.now + 200
+    t.equals(f.detect(7, 'GodMode').type, 'GodMode', 'the window outlived the exit grace')
+    -- A window with under 2 s left is not lengthened by a Clear.
+    f.SP.Revived(8)
+    f.clock.now = f.clock.now + 11000
+    f.SP.Clear(8)
+    f.clock.now = f.clock.now + 1100
+    t.equals(f.detect(8, 'GodMode').type, 'GodMode', 'Clear lengthened a window')
 end)
 
 t.test('a player leaving closes their window', function()

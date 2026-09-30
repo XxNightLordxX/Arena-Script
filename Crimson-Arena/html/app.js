@@ -4749,6 +4749,8 @@
 
         row.appendChild(chip);
         while (row.children.length > ITEM_ROW_MAX) row.removeChild(row.firstChild);
+        // TOO WIDE FOR THE ROW: the OLDEST go, never the newest on the right.
+        while (row.children.length > 1 && row.scrollWidth > row.clientWidth) row.removeChild(row.firstChild);
 
         setTimeout(() => {
             chip.classList.add('fading');

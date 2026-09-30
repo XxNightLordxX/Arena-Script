@@ -170,8 +170,16 @@ local itemRowOn = false
 --- ON ONLY WHEN ox TOOK THE SWITCH: an ox without the export keeps showing
 --- its own cards, and the row stays silent so nothing is shown twice.
 --- @param on boolean
+--- ox's own item cards switched off server-wide (inventory:itemnotify):
+--- then the arena neither suppresses nor draws anything.
+local function oxItemNotifyOn()
+    if type(GetConvar) ~= 'function' then return true end
+    local v = tostring(GetConvar('inventory:itemnotify', 'true')):lower()
+    return v ~= 'false' and v ~= '0'
+end
+
 function ArenaUI.ItemRow(on)
-    on = on == true and (Config.UI or {}).itemRow ~= false
+    on = on == true and (Config.UI or {}).itemRow ~= false and oxItemNotifyOn()
     if not on and not itemRowOn then return end
 
     local ok = GetResourceState('ox_inventory') == 'started'
@@ -183,6 +191,15 @@ end
 --- ox's own card event, heard by this resource too. Only what the row
 --- draws is passed on, as plain values: the page sets them as text, and an
 --- image path is built here from the item NAME only if it is a plain name.
+--- The first `max` CHARACTERS, never a split multi-byte one.
+local function utf8Cut(text, max)
+    if type(utf8) ~= 'table' then return text:sub(1, max) end
+    local ok, stop = pcall(utf8.offset, text, max + 1)
+    if ok and stop then return text:sub(1, stop - 1) end
+    if ok then return text end
+    return text:sub(1, max)
+end
+
 local function onItemNotify(data)
     if not itemRowOn or type(data) ~= 'table' then return end
     local item, text, count = data[1], data[2], tonumber(data[3])
@@ -199,7 +216,7 @@ local function onItemNotify(data)
     end
 
     ArenaUI.Send('itemRow', {
-        label = tostring(label):sub(1, 40),
+        label = utf8Cut(tostring(label), 40),
         sign = sign,
         count = count and math.floor(count) or nil,
         image = image,
@@ -207,6 +224,14 @@ local function onItemNotify(data)
 end
 
 RegisterNetEvent('ox_inventory:itemNotify', onItemNotify)
+
+-- THE SERVER SAYS WHEN, around the kit it moves: on just before the entry kit
+-- is issued (so it does not arrive as ox's cards), off just before the
+-- reclaim and hand-back at the exit (so returned belongings get ox's normal
+-- cards). Events arrive in order, so each lands before the first card.
+RegisterNetEvent('crimson_arena:client:itemRow', function(on)
+    ArenaUI.ItemRow(on == true)
+end)
 
 AddEventHandler('onResourceStop', function(name)
     if name == GetCurrentResourceName() then ArenaUI.ItemRow(false) end

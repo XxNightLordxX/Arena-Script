@@ -203,7 +203,7 @@ instancing really happened rather than assuming it did.
 | Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | — |
 | Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`), **Gun Game** (`gungame`) | — |
 | Teams | **Crimson** (`crimson`), **Ash** (`ash`) | Bone (`bone`), Ember (`ember`) |
-| Weapons | **96 — all of them**, the whole `heavy` category included | *(none)* |
+| Weapons | **81 of 92** — heavy: firework launcher and flamethrower only | Navy Revolver, RPG, homing / grenade / compact grenade / compact EMP launchers, minigun, railgun, railgun XM3, Unholy Hellbringer, Widowmaker |
 
 Other shipped defaults worth knowing: betting **on** (entry fees, spectator bets
 and fighter bets all on), the database **off** (so the board, and the record of what
@@ -410,11 +410,13 @@ line-number map that is regenerated whenever the file changes.
 | `server/stats.lua` | server | The leaderboard, in memory and in MySQL. |
 | `server/betting.lua` | server | Escrow, side bets, refunds and payouts. |
 | `server/lobby.lua` | server | The match registry, joining, leaving, readiness and the state snapshot. |
+| `server/spawnprotection.lua` | server | The revive-invulnerability window as the server holds it (seconds + 5 s ground wait + finiGraceSeconds), the OnStart anticheat stub, and the FiniAC detection hook. |
 | `server/match.lua` | server | The round itself: start, deaths, respawns, the end, and the instancing sweep. |
 | `server/main.lua` | server | Every client entry point, its validation and its rate limit. |
 | `server/exports.lua` | server | The public surface: everything another resource on this server may ask the arena. Loaded LAST, so every module it names exists. Readings only — see below. |
 | `client/ui.lua` | client | The NUI bridge. |
 | `client/dispatch.lua` | client | Client-side suppression, and holding an arena casualty out of every death poll. |
+| `client/spawnprotection.lua` | client | The revive invulnerability itself: the OnStart/OnEnd anticheat stubs, starting and stopping the window. |
 | `client/main.lua` | client | The lobby ped, the marker, the blip and the cached state. |
 | `client/match.lua` | client | Being in a round: the loadout, the boundary, the props, the blips and outlines, the HUD. |
 | `client/spectate.lua` | client | The spectate camera and its target list. |
@@ -729,6 +731,16 @@ listed; the source documents them where they are.
 | `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
+#### `server/spawnprotection.lua` — 5 functions
+
+| Function | What it does |
+|---|---|
+| `ArenaSpawnProtection.OnStart(src, seconds)` | Empty operator stub: add an anticheat's exemption call here. Called at every revive with protection on. |
+| `ArenaSpawnProtection.Revived(src)` | Opens the server-held window at a revive (seconds + 5 s ground wait + finiGraceSeconds) and calls OnStart. |
+| `ArenaSpawnProtection.Clear(src)` | The player left or was eliminated: shrinks their window to finiGraceSeconds; never lengthens it. |
+| `ArenaSpawnProtection.IsProtected(src)` | Whether the player is inside a window the server opened. |
+| `ArenaSpawnProtection.FiniDetectionHook(player, detection)` | The FiniAC hook: cancels a `finiDetections` (god-mode) detection only inside the window; everything else passes through. |
+
 #### `server/match.lua` — 11 functions
 
 | Function | What it does |
@@ -772,6 +784,15 @@ listed; the source documents them where they are.
 | `ArenaDispatch.ReleaseDeadState(ped)` | Undoes ClearDeadState's holding pattern, putting each property back to the reading taken before the hold. Does nothing at all when no casualty is being held. |
 | `ArenaDispatch.HeldPedState()` | A copy of what the ped really was before the hold was taken — `{ visible, collision, frozen }`, or nil when nothing is held. client/spectate.lua reads it instead of the ped, because by the time an eliminated fighter reaches the camera the hold has already hidden them. |
 | `ArenaDispatch.IsHoldingDeadState()` | Whether a casualty is being held right now. client/spectate.lua asks it before it stands a watcher back up. |
+
+#### `client/spawnprotection.lua` — 4 functions
+
+| Function | What it does |
+|---|---|
+| `ArenaSpawnProtection.OnStart(ped, seconds)` | Empty operator stub: called when the invulnerability goes on. |
+| `ArenaSpawnProtection.OnEnd(ped)` | Empty operator stub: called when it comes off. |
+| `ArenaSpawnProtection.Stop()` | Ends the open window now and clears the flag it set. Runs from leaveArena and on resource stop. |
+| `ArenaSpawnProtection.Start(stillWanted)` | Makes the fighter invulnerable for `seconds`; ends early on their own shot, melee swing or fire key, a newer revive, or the round ending. |
 
 #### `client/main.lua` — 6 functions
 

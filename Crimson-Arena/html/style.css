@@ -2333,7 +2333,9 @@ option {
 #arena-item-row {
     position: fixed;
     left: 1.5rem;
-    bottom: 1.5rem;
+    /* Above the minimap and the health/armour bars, which scale with the
+       screen height. */
+    bottom: calc(1.5rem + 22vh);
     display: flex;
     flex-direction: row;
     align-items: flex-end;

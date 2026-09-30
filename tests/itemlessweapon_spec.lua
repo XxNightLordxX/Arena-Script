@@ -889,15 +889,27 @@ t.test('a prop of a gun they DO hold is never touched', function()
     t.isTrue(c.world.objects[mine] ~= nil, 'the prop of the carbine they own was removed')
 end)
 
-t.test('two props of a gun they hold one of: the extra goes, one stays', function()
+t.test('FINAL CHECK: two props of a gun they hold one of -- both go, whatever the pool order', function()
+    -- Keeping "the first" could delete back-weapons' real prop and keep the
+    -- orphan. Both go; back-weapons redraws its one tracked prop.
     local c = newClient()
     c.enter()
     c.ox.items = { [5] = item(5, 'WEAPON_CARBINERIFLE', 'OWN-5') }
     local a, b = c.prop('WEAPON_CARBINERIFLE'), c.prop('WEAPON_CARBINERIFLE')
     c.exit()
     sweepWindow(c)
-    local left = (c.world.objects[a] and 1 or 0) + (c.world.objects[b] and 1 or 0)
-    t.equals(left, 1, 'the duplicate was left, or both went')
+    t.isNil(c.world.objects[a], 'a duplicate survived')
+    t.isNil(c.world.objects[b], 'a duplicate survived')
+end)
+
+t.test('FINAL CHECK: one prop of a gun they hold, not in hand, is never touched', function()
+    local c = newClient()
+    c.enter()
+    c.ox.items = { [5] = item(5, 'WEAPON_CARBINERIFLE', 'OWN-5') }
+    local a = c.prop('WEAPON_CARBINERIFLE')
+    c.exit()
+    sweepWindow(c)
+    t.isTrue(c.world.objects[a] ~= nil)
 end)
 
 t.test('the gun in their hands is never touched, even with no item behind it', function()
@@ -1291,14 +1303,44 @@ t.test('THE REVIEW: being meleed by an ENEMY does not switch the protection off'
     t.equals(c.world.invincible, true, 'a rusher punched the protection off a fresh spawn')
 end)
 
-t.test('THE REVIEW: a one-frame shot is seen -- the check runs every frame', function()
-    local c = newClient()
+t.test('FINAL CHECK: drawWeaponOnSpawn = false does not switch off the revive draw', function()
+    local c = newClient({ mutate = function(Config) Config.Match.drawWeaponOnSpawn = false end })
+    c.ox.items[4] = item(4, 'WEAPON_CARBINERIFLE', 'ARENA-1')
     c.enter()
+    drawWindow(c)
+    t.equals(useCount(c), 0, 'round start drew with drawWeaponOnSpawn off')
     revive(c)
-    c.poll(3, 16)
-    c.world.shooting = true
-    c.poll(1, 16)
-    t.equals(c.world.invincible, false)
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE', 'the revive draw was switched off by the spawn switch')
+end)
+
+t.test('FINAL CHECK: the issued gun is drawn, not the player\'s own catalogue gun in a lower slot', function()
+    local c = newClient()
+    c.ox.items[1] = item(1, 'WEAPON_PISTOL', 'OWN-1')
+    c.ox.items[6] = item(6, 'WEAPON_CARBINERIFLE', 'ARENA-1')
+    c.fire('enterArena', {
+        matchId = 'm1', arenaKey = 'trailerpark', modeKey = 'ffa',
+        spawn = { x = 2344.0, y = 2565.0, z = 46.7, w = 0.0 },
+        scatterRadius = 0.0, sizeFactor = 1.0, radar = false,
+        loadout = { weapons = { { weapon = 'WEAPON_CARBINERIFLE' } } },
+        boundary = { enabled = true, center = { x = 2344.4, y = 2565.0, z = 46.7 }, radius = 100.0 },
+        freezeSeconds = 0,
+    })
+    c.fire('matchLive', {})
+    drawWindow(c)
+    t.equals(c.ped.selected, 'WEAPON_CARBINERIFLE', 'the player\'s own pistol was drawn over the issued carbine')
+end)
+
+t.test('FINAL CHECK: cover/reload/sprint keys (140, 141) do not end protection', function()
+    for _, key in ipairs({ 140, 141 }) do
+        local c = newClient()
+        c.enter()
+        revive(c)
+        c.poll(1, 16)
+        c.world.pressed = key
+        c.poll(1, 16)
+        t.equals(c.world.invincible, true, 'control ' .. key .. ' ended protection')
+    end
 end)
 
 os.exit(t.summary())

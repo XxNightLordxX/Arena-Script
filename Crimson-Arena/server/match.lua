@@ -1115,6 +1115,7 @@ local instanced = {}
 --- @param src number
 --- @param payload table
 local function sendExitArena(src, payload)
+    TriggerClientEvent('crimson_arena:client:itemRow', src, false)
     ArenaAmmo.Reclaim(src, 'left the arena')
 
     ArenaDispatch.Clear(src)
@@ -1453,6 +1454,7 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
 
     ArenaDispatch.Revive(player.src)
 
+    TriggerClientEvent('crimson_arena:client:itemRow', player.src, true)
     local missingAmmo = ArenaAmmo.Issue(player.src, match.id, withModeExtras(match, player.loadout))
     if #missingAmmo > 0 then
         ArenaDebug('ammo: %s starts without items for %s', tostring(player.src), table.concat(missingAmmo, ', '))

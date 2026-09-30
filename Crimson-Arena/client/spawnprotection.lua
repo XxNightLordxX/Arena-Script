@@ -6,8 +6,9 @@
     If your anticheat flags a player who cannot be hurt, tell it about this
     window in the two functions directly below -- that is the only place
     you need to edit. The arena calls OnStart the moment protection goes on
-    and OnEnd the moment it comes off (timer up, the fighter fired, a newer
-    revive, or they left the round). The server side has the same pair in
+    and OnEnd the moment it comes off (timer up, the fighter attacked, or
+    they left the round). A newer revive while a window is still open takes
+    it over: OnStart is called again with no OnEnd in between. The server side has an OnStart only, in
     server/spawnprotection.lua, called at the same revive, if your anticheat
     is told from the server instead.
 
@@ -35,8 +36,11 @@ end
 -- Nothing below needs editing.
 -- ======================================================================
 
--- The attack keys: attack, attack 2, and the three melee attacks.
-local ATTACK_CONTROLS = { 24, 257, 140, 141, 142 }
+-- THE FIRE KEYS ONLY: attack, attack 2, melee alternate (LMB / RT). The
+-- light and heavy melee inputs (140 R/B, 141 Q/A) share their keys with
+-- reload, cover and pad sprint, so pressing them would end protection on a
+-- non-attack; a real swing is caught by IsPedPerformingMeleeAction instead.
+local ATTACK_CONTROLS = { 24, 257, 142 }
 local token = 0
 
 --- The ped the open window made invincible, or nil when none is open.

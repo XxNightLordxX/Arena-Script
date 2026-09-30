@@ -36,7 +36,7 @@ local function newUI(opts)
         TriggerServerEvent = function() end,
         GetCurrentResourceName = function() return 'crimson_arena' end,
         GetResourceState = function(name) return name == 'ox_inventory' and (opts.ox or 'started') or 'missing' end,
-        GetConvar = function(_, default) return default end,
+        GetConvar = function(name, default) if name == 'inventory:itemnotify' and opts.oxNotify then return opts.oxNotify end return default end,
         exports = setmetatable({ ox_inventory = ox }, { __call = function() end }),
         print = function() end,
         lib = { notify = function() end, callback = { await = function() return nil end } },
@@ -47,6 +47,7 @@ local function newUI(opts)
     f.UI = env.ArenaUI
 
     function f.notify(item, text, count) handlers['ox_inventory:itemNotify']({ item, text, count }) end
+    function f.fireNet(name, ...) handlers[name](...) end
     function f.stop(name) for _, fn in ipairs(stops) do fn(name or 'crimson_arena') end end
     function f.rows()
         local out = {}
@@ -155,6 +156,39 @@ t.test('the page renders by text, never markup, and only nui/https images', func
     t.contains(body, '^(nui|https)')
     local html = io.open('../Crimson-Arena/html/index.html'):read('a')
     t.contains(html, 'id="arena-item-row"')
+end)
+
+t.test('FINAL CHECK: ox item notifications off server-wide -- the arena neither suppresses nor draws', function()
+    for _, v in ipairs({ 'false', '0' }) do
+        local f = newUI({ oxNotify = v })
+        f.UI.ItemRow(true)
+        t.equals(#f.suppress, 0)
+        f.notify(AMMO, 'ui_added', 30)
+        t.equals(#f.rows(), 0)
+    end
+end)
+
+t.test('FINAL CHECK: the server turns the row on before the kit and off before the hand-back', function()
+    local f = newUI()
+    f.fireNet('crimson_arena:client:itemRow', true)
+    t.equals(f.suppress[1], true)
+    f.fireNet('crimson_arena:client:itemRow', false)
+    t.equals(f.suppress[2], false)
+    local text = io.open('../Crimson-Arena/server/match.lua'):read('a')
+    local on = text:find("TriggerClientEvent('crimson_arena:client:itemRow', player.src, true)", 1, true)
+    local issue = text:find('ArenaAmmo.Issue(player.src', 1, true)
+    t.isTrue(on and issue and on < issue, 'the row is not switched on before the entry kit')
+    local off = text:find("TriggerClientEvent('crimson_arena:client:itemRow', src, false)", 1, true)
+    local reclaim = text:find("ArenaAmmo.Reclaim(src, 'left the arena')", 1, true)
+    t.isTrue(off and reclaim and off < reclaim, 'the row is not switched off before the hand-back')
+end)
+
+t.test('FINAL CHECK: a long multi-byte label is cut on a character, not mid-byte', function()
+    local f = newUI()
+    f.UI.ItemRow(true)
+    f.notify({ name = 'x', label = string.rep('é', 60), metadata = {} }, 'ui_added', 1)
+    local label = f.rows()[1].label
+    t.equals(utf8.len(label), 40)
 end)
 
 os.exit(t.summary())

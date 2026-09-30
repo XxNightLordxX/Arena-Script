@@ -20,18 +20,18 @@
        89   Lobby         The NPC players walk up to
       159   Schedule      Opening hours: when the door is actually open
       211   Match         Lives, timers, player counts, win condition
-      564   Teams         The sides, and whether they may be uneven
-      734   Modes         Free-for-all, team deathmatch and gun game
-     1126   DefaultMode   Which of them a new lobby opens on
-     1145   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1389   UI            Panel colours, logo and title
-     1457   Permissions   Who may open a match, who may force-stop one
-     1543   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1977   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2575   Database      Optional: four tables the arena owns. Ships OFF
-     2606   Leaderboard   Which matches count towards the board, and which do not
-     2672   Webhook       Optional: a Discord line per finished match
-     2704   Dispatch      Optional: keeping police and EMS out of the arena
+      566   Teams         The sides, and whether they may be uneven
+      736   Modes         Free-for-all, team deathmatch and gun game
+     1128   DefaultMode   Which of them a new lobby opens on
+     1147   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1391   UI            Panel colours, logo and title
+     1459   Permissions   Who may open a match, who may force-stop one
+     1545   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1979   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2577   Database      Optional: four tables the arena owns. Ships OFF
+     2608   Leaderboard   Which matches count towards the board, and which do not
+     2674   Webhook       Optional: a Discord line per finished match
+     2706   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -354,7 +354,9 @@ Config.Match = {
         -- detection ONLY while the player is inside a revive window the
         -- SERVER opened (the seconds above, plus the up-to-5 s the revive
         -- may wait for the ground to load, plus `finiGraceSeconds` for
-        -- network delay) AND the detection type contains one of
+        -- network delay; it runs its full length even if the fighter
+        -- attacks and loses their invulnerability early -- the server cannot
+        -- see that, and a client's word for it could be forged) AND the detection type contains one of
         -- `finiDetections` (case-insensitive). Everything else FiniAC sees
         -- goes through untouched, and every cancel is written to the server
         -- console with the detection's type, so the list can be tuned to the

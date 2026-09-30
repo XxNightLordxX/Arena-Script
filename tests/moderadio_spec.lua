@@ -312,4 +312,39 @@ t.test('THE REVIEW: a server with no radio item hands none out and says so ONCE'
     t.equals(lines, 1, 'the missing item was named ' .. lines .. ' times, not once')
 end)
 
+-- ---- WIRING: the arena really opens and closes the FiniAC window ---------
+
+local function recordProtection(server)
+    local calls = {}
+    server.env.ArenaSpawnProtection = {
+        Revived = function(src) calls[#calls + 1] = 'open:' .. src end,
+        Clear = function(src) calls[#calls + 1] = 'close:' .. src end,
+    }
+    return calls
+end
+
+local function has(calls, want)
+    for _, c in ipairs(calls) do if c == want then return true end end
+    return false
+end
+
+t.test('WIRING: a respawn opens the window for the fighter revived', function()
+    local server = twoPlayers(function(config) config.Match.lives = 3; config.Modes.tdm.lives = 3 end)
+    local calls = recordProtection(server)
+    runMatch(server, 'trailerpark', { 1, 2 }, 'tdm')
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.step(10)
+    t.isTrue(has(calls, 'open:2'), 'no window was opened at the respawn: ' .. table.concat(calls, ','))
+end)
+
+t.test('WIRING: the round ending closes every fighter\'s window', function()
+    local server = twoPlayers(function(config) config.Match.lives = 1; config.Modes.tdm.lives = 1 end)
+    local calls = recordProtection(server)
+    runMatch(server, 'trailerpark', { 1, 2 }, 'tdm')
+    server.fire('reportDeath', 2, { killerServerId = 1 })
+    server.step(20)
+    t.isTrue(has(calls, 'close:1') and has(calls, 'close:2'),
+        'a window was left open past the end of the round: ' .. table.concat(calls, ','))
+end)
+
 os.exit(t.summary())

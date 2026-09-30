@@ -219,7 +219,8 @@ local function newClient(opts)
         SetEntityCollision = function() end,
         SetEntityInvincible = function(_p, on) world.invincible = on; world.invincibleWrites = (world.invincibleWrites or 0) + 1 end,
         IsPedShooting = function() return world.shooting == true end,
-        IsPedInMeleeCombat = function() return world.melee == true end,
+        IsPedPerformingMeleeAction = function() return world.melee == true end,
+        IsPedInMeleeCombat = function() return world.beingMeleed == true end,
         IsControlJustPressed = function(_g, control) return world.pressed == control end,
         IsDisabledControlJustPressed = function(_g, control) return world.disabledPressed == control end,
         SetEntityHeading = function() end,
@@ -1260,16 +1261,34 @@ t.test('THE REVIEW: a melee attack ends the protection too', function()
     t.equals(c.world.invincible, false, 'a knife fighter stayed untouchable while swinging')
 end)
 
-t.test('THE REVIEW: pressing attack ends it, even on a disabled control', function()
-    for _, key in ipairs({ 'pressed', 'disabledPressed' }) do
-        local c = newClient()
-        c.enter()
-        revive(c)
-        c.poll(1, 16)
-        c.world[key] = 24
-        c.poll(1, 16)
-        t.equals(c.world.invincible, false, key .. ' attack did not end protection')
-    end
+t.test('THE REVIEW: pressing attack ends it', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(1, 16)
+    c.world.pressed = 24
+    c.poll(1, 16)
+    t.equals(c.world.invincible, false)
+end)
+
+t.test('THE REVIEW: a press on a DISABLED control (menu, phone) is not an attack', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(1, 16)
+    c.world.disabledPressed = 24
+    c.poll(1, 16)
+    t.equals(c.world.invincible, true)
+end)
+
+t.test('THE REVIEW: being meleed by an ENEMY does not switch the protection off', function()
+    local c = newClient()
+    c.enter()
+    revive(c)
+    c.poll(1, 16)
+    c.world.beingMeleed = true
+    c.poll(1, 16)
+    t.equals(c.world.invincible, true, 'a rusher punched the protection off a fresh spawn')
 end)
 
 t.test('THE REVIEW: a one-frame shot is seen -- the check runs every frame', function()

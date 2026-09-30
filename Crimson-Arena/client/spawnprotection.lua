@@ -47,13 +47,19 @@ local function hook(fn, ...)
     if not ok then print(('[crimson_arena] spawn protection hook raised: %s'):format(tostring(why))) end
 end
 
---- Whether the fighter is attacking this frame: firing, in melee, or
+--- Whether the fighter is attacking this frame: firing, swinging, or
 --- pressing an attack key (which also covers a swing that has not landed).
+---
+--- THEIR OWN ATTACK ONLY. IsPedPerformingMeleeAction is the fighter's own
+--- swing; IsPedInMeleeCombat was also true while an ENEMY meleed them, so a
+--- rusher could switch a fresh spawn's protection off by punching it. And
+--- only ENABLED controls count: a press on a control the game has disabled
+--- (a menu, the phone) is not an attack.
 local function attacking()
     local ped = PlayerPedId()
-    if IsPedShooting(ped) or IsPedInMeleeCombat(ped) then return true end
+    if IsPedShooting(ped) or IsPedPerformingMeleeAction(ped) then return true end
     for _, control in ipairs(ATTACK_CONTROLS) do
-        if IsControlJustPressed(0, control) or IsDisabledControlJustPressed(0, control) then return true end
+        if IsControlJustPressed(0, control) then return true end
     end
     return false
 end

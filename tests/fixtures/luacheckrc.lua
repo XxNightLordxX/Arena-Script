@@ -269,7 +269,7 @@ files['client/'] = {
         'GetSelectedPedWeapon',
         'GetWeaponDamageType',
         'IsPedShooting',
-        'IsPedInMeleeCombat',
+        'IsPedPerformingMeleeAction',
         'IsControlJustPressed',
         'GiveWeaponToPed',
         'HasPedGotWeapon',

@@ -3457,6 +3457,24 @@ t.test('and hands it back to the player at that same slot', function()
         .. 'on this server that opens an item BY SLOT is now aimed at the wrong one')
 end)
 
+t.test('THE OWNER\'S ASK: winnings paid as cash before the exit go to a free slot; belongings keep theirs', function()
+    -- The pot settles before the hand-back, so on Qbox the winnings are a
+    -- cash ITEM already sitting in the first free pocket slot -- the slot
+    -- the player's own phone is about to go back to. ox would put the phone
+    -- somewhere else. The cash is lifted out, the belongings go back to their
+    -- own slots, and the cash is added again last, wherever it fits.
+    local server, matchId = liveMatch({ 1, 2 })
+    server.wipe(1)
+    server.give(1, 'money', 500)
+    server.match.End(matchId, 'match.ended')
+    server.step(8)
+
+    t.equals(server.slotsAskedFor(1, 'phone'), '1', 'the phone did not go back to its own slot')
+    t.equals(server.slotsAskedFor(1, 'money'), '-', 'the cash was not put back after the belongings, slotless')
+    t.contains(server.carrying(1), 'moneyx500', 'the winnings were lost moving them aside')
+    t.contains(server.carrying(1), 'phonex1')
+end)
+
 t.test('and a bag carried through a round comes back in the slot it was carried in', function()
     -- THE ONE THE OWNER HIT. A LEO bag in slot 4 that comes back in slot 1
     -- is a bag the client asks for at slot 4 and the server cannot find.

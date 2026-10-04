@@ -409,6 +409,10 @@ local DEFAULT_NEVER_STASH = {}
 --- must not mean the broken behaviour.
 local DEFAULT_NEVER_DESTROY = { 'money', 'black_money' }
 
+--- Cash as an ox_inventory item. Fungible and metadata-free, which is what
+--- lets handBack lift it out of a slot and put it back without loss.
+local CASH_ITEMS = { money = true, black_money = true }
+
 local function nameSet(names, fallback)
     local map, list = {}, {}
     if type(names) ~= 'table' then names = fallback end
@@ -2196,6 +2200,38 @@ local function handBack(ox, src, stash, allowed, manifest)
         rows = kept
     end
 
+    -- CASH STEPS ASIDE, AND GOES BACK LAST.
+    --
+    -- THE OWNER'S ASK: "it gives cash at the end in the next free slot but
+    -- the other items get put in the correct spot". The pot is settled
+    -- BEFORE the exit -- winnings land as a cash ITEM on Qbox -- and ox
+    -- quietly puts an item asked for a taken slot into the first free one.
+    -- So the winnings sat in slot 1 and the player's own slot-1 item came
+    -- back somewhere else. Cash in a slot one of their belongings is going
+    -- back to is lifted out first and added again after them: into their own
+    -- cash stack if they have one, else the next free slot. Cash carries no
+    -- metadata, so taking it out and putting it back is exact.
+    local cashAside = {}
+    do
+        local wanted = {}
+        for _, item in ipairs(rows) do
+            local slot = Arena.ToInt(item.slot)
+            if slot then wanted[slot] = true end
+        end
+        local read, holding = pcall(function() return ox:GetInventoryItems(src) end)
+        if read and type(holding) == 'table' then
+            for _, held in ipairs(itemsIn(holding)) do
+                local slot, count = Arena.ToInt(held.slot), Arena.ToInt(held.count) or 0
+                if slot and wanted[slot] and CASH_ITEMS[held.name] and count > 0 then
+                    local ok, answer = pcall(function() return ox:RemoveItem(src, held.name, count, nil, slot) end)
+                    if ok and answer == true then
+                        cashAside[#cashAside + 1] = { name = held.name, count = count }
+                    end
+                end
+            end
+        end
+    end
+
     local failures, returned = 0, 0
     for _, item in ipairs(rows) do
         -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
@@ -2300,6 +2336,15 @@ local function handBack(ox, src, stash, allowed, manifest)
         returned = returned + 1
 
         ::nextItem::
+    end
+
+    for _, cash in ipairs(cashAside) do
+        local landed, why, answer = oxGave(function() return ox:AddItem(src, cash.name, cash.count) end)
+        if not landed then
+            ArenaLog('door: %s x%d was lifted out of %s\'s pockets so their belongings could go back '
+                .. 'in their own slots, and could NOT be put back -- %s. Give it to them by hand.',
+                cash.name, cash.count, tostring(src), gaveWhy(why, answer))
+        end
     end
 
     return true, failures, returned

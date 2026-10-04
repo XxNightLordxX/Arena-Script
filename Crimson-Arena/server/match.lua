@@ -79,6 +79,51 @@ local function withModeExtras(match, loadout)
     return copy
 end
 
+-- ======================================================================
+-- TEAM RADIO (Config.Modes.<mode>.teamRadio)
+-- ======================================================================
+
+local nextRadioChannel = nil
+
+--- The pma-voice channel this side of this match talks on, handed out from
+--- the mode's range the first time a side asks and locked to that side with
+--- pma-voice's own channel check. nil when the mode has none or pma-voice
+--- is not running.
+--- @return integer|nil
+local function teamRadioChannel(match, teamKey)
+    if type(match) ~= 'table' or not Arena.IsKey(teamKey) then return nil end
+    local mode = Arena.GetModeByKey(match.modeKey)
+    local cfg = mode and mode.teamRadio
+    if type(cfg) ~= 'table' or cfg.enabled ~= true then return nil end
+    if type(GetResourceState) ~= 'function' or GetResourceState('pma-voice') ~= 'started' then return nil end
+
+    match.radioChannels = match.radioChannels or {}
+    if match.radioChannels[teamKey] then return match.radioChannels[teamKey] end
+
+    local first = math.max(1, Arena.ToInt(cfg.firstChannel) or 500)
+    local last = math.max(first, Arena.ToInt(cfg.lastChannel) or first)
+    if not nextRadioChannel or nextRadioChannel < first or nextRadioChannel > last then
+        nextRadioChannel = first
+    end
+    local channel = nextRadioChannel
+    nextRadioChannel = channel + 1
+
+    local ok, why = pcall(function()
+        exports['pma-voice']:addChannelCheck(channel, function(src)
+            local player = match.players[tonumber(src) or src]
+            return match.state ~= 'ended' and player ~= nil and player.team == teamKey
+        end)
+    end)
+    if not ok then
+        ArenaLog('team radio: pma-voice would not lock channel %d -- %s. Fighters are not put on it.',
+            channel, tostring(why))
+        return nil
+    end
+    match.radioChannels[teamKey] = channel
+    ArenaDebug('team radio: match %s side %s talks on channel %d.', tostring(match.id), teamKey, channel)
+    return channel
+end
+
 local function toPoint(value)
     -- Arena.IsPoint RATHER THAN A LIST OF ITS OWN. Elsewhere in this file the
     -- rule is written down as "Arena.IsPoint is the one place that knows the
@@ -1501,6 +1546,7 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         arenaKey = match.arenaKey,
         modeKey = match.modeKey,
         teamKey = teamKey,
+        radioChannel = teamRadioChannel(match, teamKey),
         spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
             or Arena.PickSpawn(match.arenaKey, teamKey, index)),
         scatterRadius = (match.spawnPlan and match.spawnPlan[player.src]) and 0.0 or scatterRadius(),

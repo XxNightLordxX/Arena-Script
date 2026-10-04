@@ -53,6 +53,9 @@ local BLIP_FFA_COLOR = 1
 local BLIP_UNKNOWN_TEAM_COLOR = 40
 
 local currentMatch
+
+--- The pma-voice team channel this client was put on, or nil.
+local teamRadioOn = nil
 local matchLive = false
 local deathReported = false
 
@@ -3581,12 +3584,38 @@ end)
 --- also the resource-stop path, and a stop handler that yields is a stop
 --- handler that does not finish.
 --- @param returnCoords table|nil
+--- Puts this client on its team's radio channel. THROUGH mm_radio WHEN IT
+--- OFFERS A JOIN EXPORT, so the channel shows on the radio itself; straight
+--- through pma-voice otherwise (voice works, the radio screen is not told).
+local function joinTeamRadio(channel)
+    local shown = type(GetResourceState) == 'function' and GetResourceState('mm_radio') == 'started'
+        and pcall(function() exports.mm_radio:JoinChannel(channel) end)
+    if not shown then
+        pcall(function()
+            exports['pma-voice']:setVoiceProperty('radioEnabled', true)
+            exports['pma-voice']:setRadioChannel(channel)
+        end)
+    end
+end
+
+local function leaveTeamRadio()
+    local left = type(GetResourceState) == 'function' and GetResourceState('mm_radio') == 'started'
+        and pcall(function() exports.mm_radio:LeaveChannel() end)
+    if not left then pcall(function() exports['pma-voice']:setRadioChannel(0) end) end
+end
+
 local function leaveArena(returnCoords)
     clearArenaScenery()
 
     -- ox's item cards back BEFORE the early return: an exit this client
     -- never saw start still must not leave them switched off.
     if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(false) end
+
+    -- Off the team channel, on every way out.
+    if teamRadioOn then
+        teamRadioOn = nil
+        leaveTeamRadio()
+    end
 
     -- And any revive invulnerability off, at once, for the same reason.
     if ArenaSpawnProtection and ArenaSpawnProtection.Stop then ArenaSpawnProtection.Stop() end
@@ -3993,6 +4022,24 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     -- ITEM CARDS OFF THE CROSSHAIR for the round: see ArenaUI.ItemRow.
     if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(true) end
+
+    -- TEAM RADIO: on the side's channel before the round starts, and LOCKED
+    -- to it for the round -- see joinTeamRadio.
+    if tonumber(data.radioChannel) and type(GetResourceState) == 'function' and GetResourceState('pma-voice') == 'started' then
+        teamRadioOn = tonumber(data.radioChannel)
+        joinTeamRadio(teamRadioOn)
+        local token = matchToken
+        CreateThread(function()
+            while teamRadioOn and matchToken == token do
+                Wait(1000)
+                local now = tonumber(LocalPlayer.state.radioChannel) or 0
+                if teamRadioOn and matchToken == token and now ~= teamRadioOn then
+                    joinTeamRadio(teamRadioOn)
+                    ArenaUI.Notify(('Team radio: locked to channel %d for this match.'):format(teamRadioOn), 'info', true)
+                end
+            end
+        end)
+    end
 
     ArenaDispatch.Enter(data.matchId)
 

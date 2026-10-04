@@ -22,16 +22,16 @@
       217   Match         Lives, timers, player counts, win condition
       572   Teams         The sides, and whether they may be uneven
       742   Modes         Free-for-all, team deathmatch and gun game
-     1159   DefaultMode   Which of them a new lobby opens on
-     1178   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1422   UI            Panel colours, logo and title
-     1490   Permissions   Who may open a match, who may force-stop one
-     1576   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2010   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2608   Database      Optional: four tables the arena owns. Ships OFF
-     2639   Leaderboard   Which matches count towards the board, and which do not
-     2705   Webhook       Optional: a Discord line per finished match
-     2737   Dispatch      Optional: keeping police and EMS out of the arena
+     1167   DefaultMode   Which of them a new lobby opens on
+     1186   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1430   UI            Panel colours, logo and title
+     1498   Permissions   Who may open a match, who may force-stop one
+     1584   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2018   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2616   Database      Optional: four tables the arena owns. Ships OFF
+     2647   Leaderboard   Which matches count towards the board, and which do not
+     2713   Webhook       Optional: a Discord line per finished match
+     2745   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -786,6 +786,14 @@ Config.Modes = {
         extraItems = {
             { item = 'radio', count = 1 },
         },
+
+        -- EACH TEAM ON ITS OWN RADIO CHANNEL, JOINED FOR THEM. At the start of
+        -- the round every fighter is put on their side's channel through
+        -- pma-voice, and taken off it when they leave. Each match gets fresh
+        -- channels from firstChannel..lastChannel, locked so only that side
+        -- can join -- the other team cannot tune in. Pick a range no job or
+        -- player uses. Needs pma-voice; without it nothing happens.
+        teamRadio = { enabled = true, firstChannel = 500, lastChannel = 599 },
     },
 
     -- ==================================================================

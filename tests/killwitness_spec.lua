@@ -601,7 +601,7 @@ t.test('THE LAST-LIFE TRADE: the second report named its killer, and is not logg
     -- milliseconds apart, inside one sweep.
     local server = newServer(function(config)
         config.Match.lives = 1
-        config.Debug = false
+        config.Debug = true
     end)
     local id = server.play(3)
 
@@ -635,7 +635,7 @@ t.test('A KILLER WHO WALKED OUT: the log says the victim named them, and says no
     -- which must not rescue a kill for somebody no longer in the round.
     local server = newServer(function(config)
         config.Modes.gungame.enabled = true
-        config.Debug = false
+        config.Debug = true
     end)
     local id = server.play(3, 'gungame')
 
@@ -676,7 +676,7 @@ t.test('AN HONEST TEAM-KILL: the TEAMKILL line speaks for it, alone', function()
     local server = newServer(function(config)
         config.Teams.friendlyFire = false
         config.Modes.tdm.enabled = true
-        config.Debug = false
+        config.Debug = true
     end)
     server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
     t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
@@ -697,7 +697,7 @@ t.test('and a team-mate who is already out still gets a line, because TEAMKILL s
     local server = newServer(function(config)
         config.Teams.friendlyFire = false
         config.Modes.tdm.enabled = true
-        config.Debug = false
+        config.Debug = true
     end)
     server.play(3, 'tdm', { [1] = 'ash', [2] = 'ash', [3] = 'crimson' })
     t.isTrue(server.match.IsLive(server.matchId()), 'the round never went live, so nothing below tests anything')
@@ -724,7 +724,7 @@ end)
 t.test('a server id that is nobody in the round is still logged, always on', function()
     -- The one a modded client reaches. It named nobody REAL, but it did put
     -- an id on the wire, and the always-on line must not go quiet for it.
-    local server = newServer(function(config) config.Debug = false end)
+    local server = newServer(function(config) config.Debug = true end)
     server.play(3)
 
     server.diesNaming(2, 99)
@@ -742,7 +742,7 @@ t.test('and an id that belongs to somebody on the server, but not in the round, 
     -- THE BYSTANDER. Player 3 is online, nowhere near the arena. A client
     -- naming 3 had the framework asked who 3 is, and an innocent player's
     -- name went into the always-on record as the accused.
-    local server = newServer(function(config) config.Debug = false end)
+    local server = newServer(function(config) config.Debug = true end)
     server.play(2)
 
     server.diesNaming(2, 3)
@@ -787,7 +787,7 @@ t.test('CONTROL: a report naming nobody -- no id, its own id, nought, negative -
         zero = { killerServerId = 0 },
         negative = { killerServerId = -1 },
     }) do
-        local server = newServer(function(config) config.Debug = false end)
+        local server = newServer(function(config) config.Debug = true end)
         server.play(3)
 
         server.fire('reportDeath', 2, payload)
@@ -802,7 +802,7 @@ end)
 t.test('a refused claim does not spend the notice a real unattributed death is owed', function()
     -- The notice goes out once a round. Spent on a death whose client DID
     -- name its killer, it was gone when a genuine one came.
-    local server = newServer(function(config) config.Debug = false end)
+    local server = newServer(function(config) config.Debug = true end)
     local id = server.play(3)
 
     server.fire('leaveMatch', 1, {})
@@ -866,7 +866,7 @@ t.test('THE SILENT VICTIM: a bleed-out the sweep books still pays the shooter it
     --
     -- Config.Debug OFF: the KILL line is the always-on record that this kill
     -- was paid on the server's own record, with no report behind it.
-    local server = silentServer(4, function(config) config.Debug = false end)
+    local server = silentServer(4, function(config) config.Debug = true end)
     server.play(3)
 
     t.isTrue(server.match.RememberDamage(2, 1), 'the server refused to remember a landed hit')
@@ -2070,15 +2070,26 @@ end)
 local function killLines(server)
     local out = {}
     for _, line in ipairs(server.console) do
-        if line:sub(1, #'[crimson_arena] KILL: ') == '[crimson_arena] KILL: ' then out[#out + 1] = line end
+        if line:find('^%[crimson_arena%] %[debug%] KILL: ') then out[#out + 1] = line end
     end
     return out
 end
 
-t.test('THE KILL LOG: a kill the victim names is written down with both names, Debug off', function()
-    -- ALWAYS ON: it is a record, and turning Debug off to quieten a busy
-    -- console must not take the answer to "who killed me" with it.
+t.test('OWNER\'S RULING: with Debug OFF no kill line reaches the console at all', function()
+    -- "when debug mode is off it doesnt spam the server console" and "kill
+    -- stuff should all be on debug": every KILL / TEAMKILL / UNATTRIBUTED /
+    -- KILL NOT CREDITED / DEATH line is debug-only.
     local server = newServer(function(config) config.Debug = false end)
+    server.play(2)
+    server.diesNaming(2, 1)
+    for _, line in ipairs(server.console) do
+        t.isNil(line:find('KILL', 1, true), 'a kill line printed with Debug off: ' .. line)
+        t.isNil(line:find('UNATTRIBUTED', 1, true), 'a death line printed with Debug off: ' .. line)
+    end
+end)
+
+t.test('THE KILL LOG: a kill the victim names is written down with both names, Debug on', function()
+    local server = newServer(function(config) config.Debug = true end)
     server.play(2)
     server.diesNaming(2, 1)
 

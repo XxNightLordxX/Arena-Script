@@ -4033,24 +4033,24 @@ t.test('and it names the WEAPON when the catalogue knows the hash', function()
         'the unsigned hash did not find the weapon its signed twin was indexed under')
 end)
 
-t.test('and it survives Config.Debug being switched off', function()
+t.test('and it follows Config.Debug: silent off, written on', function()
     -- THE TAP THE OPERATOR CAN TURN OFF MUST NOT CARRY IT. Config.Debug
     -- ships ON, so ArenaDebug and ArenaLog both print on a stock server and
     -- watching the console cannot tell them apart -- which is exactly how a
     -- mutant swapping one for the other survived the first pass of this
     -- suite. The operator most likely to have silenced the debug noise is
     -- the one running the busy server where team-kills are happening.
+    -- OWNER'S RULING: kill lines are debug-only, team-kills included. With
+    -- Debug off the console stays quiet; with it on the line is there.
     local s = teamedServer(function(config) config.Debug = false end)
     sidesFor(s)
     s.match.OnDeath(1, 3, nil, nil, 987654321)
+    t.isNil(consoleOf(s):find('TEAMKILL:', 1, true), 'with debug off a team-kill line still reached the console')
 
-    t.contains(consoleOf(s), 'TEAMKILL:',
-        'with debug off the team-kill went unreported -- it is on the debug tap')
-
-    -- AND THE CONTROL THAT PROVES THE SWITCH REALLY IS OFF, or the assertion
-    -- above passes on a server that simply never turned it off.
-    t.isNil(consoleOf(s):find('[debug]', 1, true),
-        'Config.Debug = false did not silence the debug lines, so this proves nothing')
+    local on = teamedServer(function(config) config.Debug = true end)
+    sidesFor(on)
+    on.match.OnDeath(1, 3, nil, nil, 987654321)
+    t.contains(consoleOf(on), 'TEAMKILL:', 'with debug on the team-kill went unreported')
 end)
 
 t.test('CONTROL: only a real team-kill trips it, not every refused claim', function()
@@ -5119,7 +5119,7 @@ t.test('THE TRADE: a gun and a blade kill each other, and it ends the same which
         local line
         for index = #s.console, 1, -1 do
             local candidate = s.console[index]
-            if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+            if candidate:find('^%[crimson_arena%] %[debug%] KILL: ') and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
                 line = candidate
                 break
             end
@@ -5151,7 +5151,7 @@ t.test('and the KILL line names the gun a dead killer fired, when a knife droppe
     local line
     for index = #s.console, 1, -1 do
         local candidate = s.console[index]
-        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+        if candidate:find('^%[crimson_arena%] %[debug%] KILL: ') and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
             line = candidate
             break
         end
@@ -5183,7 +5183,7 @@ t.test('and on a ladder with two melee rungs, the KILL line names the blade a de
     local line
     for index = #s.console, 1, -1 do
         local candidate = s.console[index]
-        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+        if candidate:find('^%[crimson_arena%] %[debug%] KILL: ') and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
             line = candidate
             break
         end
@@ -5246,7 +5246,7 @@ t.test('and a killer who has already stood back up is judged on the rung they ho
     local line
     for index = #s.console, 1, -1 do
         local candidate = s.console[index]
-        if candidate:find('KILL: ', 1, true) == 17 and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
+        if candidate:find('^%[crimson_arena%] %[debug%] KILL: ') and candidate:find(' killed "' .. s.row(2).name .. '" (2 ', 1, true) then
             line = candidate
             break
         end

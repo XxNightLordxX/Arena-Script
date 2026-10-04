@@ -17,21 +17,21 @@
     ------------------------------------------------------------------------------
      line   setting       what it is
     ------------------------------------------------------------------------------
-       89   Lobby         The NPC players walk up to
-      159   Schedule      Opening hours: when the door is actually open
-      211   Match         Lives, timers, player counts, win condition
-      566   Teams         The sides, and whether they may be uneven
-      736   Modes         Free-for-all, team deathmatch and gun game
-     1128   DefaultMode   Which of them a new lobby opens on
-     1147   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1391   UI            Panel colours, logo and title
-     1459   Permissions   Who may open a match, who may force-stop one
-     1545   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1979   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2577   Database      Optional: four tables the arena owns. Ships OFF
-     2608   Leaderboard   Which matches count towards the board, and which do not
-     2674   Webhook       Optional: a Discord line per finished match
-     2706   Dispatch      Optional: keeping police and EMS out of the arena
+       96   Lobby         The NPC players walk up to
+      166   Schedule      Opening hours: when the door is actually open
+      218   Match         Lives, timers, player counts, win condition
+      573   Teams         The sides, and whether they may be uneven
+      743   Modes         Free-for-all, team deathmatch and gun game
+     1135   DefaultMode   Which of them a new lobby opens on
+     1154   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1398   UI            Panel colours, logo and title
+     1466   Permissions   Who may open a match, who may force-stop one
+     1552   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     1986   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2584   Database      Optional: four tables the arena owns. Ships OFF
+     2615   Leaderboard   Which matches count towards the board, and which do not
+     2681   Webhook       Optional: a Discord line per finished match
+     2713   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -78,6 +78,13 @@ Config.ResourceLabel = 'Crimson Arena'
 ---
 --- SHIPS ON, DELIBERATELY. Nothing here reaches a player, and the console is
 --- how a strange round gets explained rather than guessed at.
+---
+--- OFF = A QUIET CONSOLE. Every routine line -- each kill, team-kill and
+--- death, a round created, ended or aborted, a pot paid out, kit issued,
+--- stashed or taken back, a side-bet returned -- is debug-only. What still
+--- prints with it off is what an operator must act on: errors, refused
+--- payments or items, misconfiguration, money owed or lost, forfeits,
+--- exploit refusals, start-up checks and admin actions.
 Config.Debug = true
 
 --- ox_lib notification title for every message this resource sends.

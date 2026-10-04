@@ -3327,7 +3327,7 @@ local function issueWeapons(ox, src, matchId, loadout)
                 -- the bug in it was indistinguishable from the log of a
                 -- server without it. What goes onto the gun is now in the
                 -- line that says the gun was handed over.
-                ArenaLog('weapons: gave %s x1 to %s (ammo %d, serial %s, fitted %s).',
+                ArenaDebug('weapons: gave %s x1 to %s (ammo %d, serial %s, fitted %s).',
                     name, tostring(src), loaded, tostring(issued.serial or 'unread'),
                     (metadata.components and #metadata.components > 0)
                         and table.concat(metadata.components, '+') or 'nothing')
@@ -5100,7 +5100,7 @@ local function chaseOwedKit(src, citizenid)
             dropOwedWeapon(citizenid, row.serial)
             taken = taken + 1
             tookWeapon = true
-            ArenaLog('weapons: took the arena\'s %s (%s) back off %s.',
+            ArenaDebug('weapons: took the arena\'s %s (%s) back off %s.',
                 row.name, tostring(row.serial or 'no serial'), tostring(citizenid))
         else
             left[#left + 1] = row
@@ -5160,7 +5160,7 @@ local function chaseOwedKit(src, citizenid)
 
             if got > 0 then
                 taken = taken + 1
-                ArenaLog('weapons: took back %d %s the arena issued %s.', got, item, tostring(citizenid))
+                ArenaDebug('weapons: took back %d %s the arena issued %s.', got, item, tostring(citizenid))
             end
 
             if got > 0 then setOwedItem(citizenid, item, still) end
@@ -6021,7 +6021,7 @@ function ArenaAmmo.Issue(src, matchId, loadout)
                 -- problem, because the problem is silent by nature. One line
                 -- per fighter per round is a price worth paying for being
                 -- able to answer "did it strip me" from the console.
-                ArenaLog('door: put %d item(s) of %s\'s away for match %s.',
+                ArenaDebug('door: put %d item(s) of %s\'s away for match %s.',
                     count, tostring(src), tostring(matchId))
             else
                 -- THE PLAYER IS TOLD, ON PURPOSE. `stow` puts back

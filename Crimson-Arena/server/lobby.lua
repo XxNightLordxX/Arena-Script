@@ -1169,7 +1169,7 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
         return nil, reason
     end
 
-    ArenaLog('%s created match %s (%s / %s, fee %d)', hostName, id, arenaKey, wantedMode, fee)
+    ArenaDebug('%s created match %s (%s / %s, fee %d)', hostName, id, arenaKey, wantedMode, fee)
     return id, nil
 end
 
@@ -1719,7 +1719,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
         if (remaining[leftTeam] or 0) == 0 and not started then
             local returned, owed = ArenaBetting.ReturnBetsOn(match.id, leftTeam)
             if returned > 0 then
-                ArenaLog('betting: the last player on "%s" left match %s, so %d side-bet(s) on that side were returned unjudged.',
+                ArenaDebug('betting: the last player on "%s" left match %s, so %d side-bet(s) on that side were returned unjudged.',
                     tostring(leftTeam), tostring(match.id), returned)
             end
             if owed > 0 then
@@ -1730,7 +1730,7 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
     elseif not started then
         local returned, owed = ArenaBetting.ReturnBetsOn(match.id, tostring(target))
         if returned > 0 then
-            ArenaLog('betting: %s left match %s, so %d side-bet(s) backing them were returned unjudged.',
+            ArenaDebug('betting: %s left match %s, so %d side-bet(s) backing them were returned unjudged.',
                 tostring(target), tostring(match.id), returned)
         end
         if owed > 0 then
@@ -1873,7 +1873,7 @@ function ArenaLobby.Destroy(matchId, reasonKey)
     end
 
     matches[match.id] = nil
-    ArenaLog('match %s closed (%s)', match.id, notice)
+    ArenaDebug('match %s closed (%s)', match.id, notice)
 
     ArenaLobby.Broadcast()
     return true

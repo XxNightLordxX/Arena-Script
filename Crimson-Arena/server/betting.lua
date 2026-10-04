@@ -1772,7 +1772,7 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
 
     local stake = stakesOf(matchId)[id]
     if not stake then
-        ArenaLog('REFUND IGNORED: no stake is held for %s on match %s.', tostring(id), tostring(matchId))
+        ArenaDebug('REFUND IGNORED: no stake is held for %s on match %s.', tostring(id), tostring(matchId))
         return false
     end
     if stake.settled then
@@ -1816,7 +1816,7 @@ function ArenaBetting.RefundOne(matchId, src, reasonKey)
     end
 
     if stake.forfeited then
-        ArenaLog('FORFEIT RETURNED: %d for %s on match %s was forfeited when they left, but the round '
+        ArenaDebug('FORFEIT RETURNED: %d for %s on match %s was forfeited when they left, but the round '
             .. 'was stopped (%s) -- there is nobody left to win it, so it goes back.',
             stake.amount, tostring(stake.citizenid or id), tostring(matchId), tostring(reasonKey))
     end
@@ -1944,7 +1944,7 @@ function ArenaBetting.RefundAll(matchId, reasonKey)
     end
 
     if handedBackForfeits > 0 then
-        ArenaLog('betting: match %s handed back %d forfeited stake(s) because there was nobody left '
+        ArenaDebug('betting: match %s handed back %d forfeited stake(s) because there was nobody left '
             .. 'to win them (%s).', tostring(matchId), handedBackForfeits, tostring(reasonKey))
     end
 
@@ -2167,7 +2167,7 @@ function ArenaBetting.Settle(matchId, context)
         return {}
     end
 
-    ArenaLog('betting: match %s paid out %s of a %s pot to %d player(s) (%s), house kept %s.',
+    ArenaDebug('betting: match %s paid out %s of a %s pot to %d player(s) (%s), house kept %s.',
         tostring(matchId), money(distributed), money(pot), #payouts,
         tostring(Config.Betting.payout or 'winner_takes_all'), money(houseCut))
 
@@ -2789,7 +2789,7 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
                     local whole = Arena.ToInt(bet.amount) or 0
                     if returnSideBet(bet, matchId) then
                         returned = returned + whole
-                        ArenaLog('SIDE-BET BAND LAPSED: %s left match %s before it started and this server allows non-fighters no side-bet at all -- the whole %d went back.',
+                        ArenaDebug('SIDE-BET BAND LAPSED: %s left match %s before it started and this server allows non-fighters no side-bet at all -- the whole %d went back.',
                             tostring(bet.name or id), tostring(matchId), whole)
                     end
                 elseif ceiling == nil then
@@ -2810,7 +2810,7 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
                     -- There is no spectator band to trim to here, so the
                     -- stake stays where it is and settles on the pick the
                     -- holder chose, win or lose. DO NOT return it.
-                    ArenaLog('SIDE-BET BAND LAPSED: %s left match %s mid-round holding %d, and this server allows non-fighters no side-bet at all -- there is nothing smaller to hold it to, so it STANDS and settles on the pick they chose.',
+                    ArenaDebug('SIDE-BET BAND LAPSED: %s left match %s mid-round holding %d, and this server allows non-fighters no side-bet at all -- there is nothing smaller to hold it to, so it STANDS and settles on the pick they chose.',
                         tostring(bet.name or id), tostring(matchId), Arena.ToInt(bet.amount) or 0)
                 else
                     local held = Arena.ToInt(bet.amount) or 0
@@ -2832,7 +2832,7 @@ function ArenaBetting.MarkWalkedOut(matchId, src, citizenid)
                         if paid then
                             bet.amount = ceiling
                             returned = returned + excess
-                            ArenaLog('SIDE-BET TRIMMED: %s left match %s holding a fighter stake of %d; the fighter band went with them, so %d was returned and %d stands as a spectator bet.',
+                            ArenaDebug('SIDE-BET TRIMMED: %s left match %s holding a fighter stake of %d; the fighter band went with them, so %d was returned and %d stands as a spectator bet.',
                                 tostring(bet.name or id), tostring(matchId), held, excess, ceiling)
                         else
                             ArenaLog('SIDE-BET TRIM FAILED: %d could not be returned to %s (citizenid %s) on match %s -- the bet stands at its full %d and is still held to the fighter band.',
@@ -3040,13 +3040,13 @@ function ArenaBetting.SettleSpectatorBets(matchId, winningPick)
     for _, bet in ipairs(bets) do
         if not bet.settled then
             if voided(bet, fighters) then
-                ArenaLog('SIDE-BET VOID: %s backed "%s" on match %s and then fought in it -- returning %d unjudged.',
+                ArenaDebug('SIDE-BET VOID: %s backed "%s" on match %s and then fought in it -- returning %d unjudged.',
                     tostring(bet.name or bet.src), tostring(bet.pick), tostring(matchId), bet.amount)
                 returnSideBet(bet, matchId)
             elseif not wanted then
                 returnSideBet(bet, matchId)
             elseif bet.mode ~= 'odds' and uncontested[poolKeyFor(bet.kind or 'spectator')] then
-                ArenaLog('SIDE-BET UNCONTESTED: nobody bet against %s on match %s -- returning %d.',
+                ArenaDebug('SIDE-BET UNCONTESTED: nobody bet against %s on match %s -- returning %d.',
                     tostring(bet.name or bet.src), tostring(matchId), bet.amount)
                 returnSideBet(bet, matchId)
             elseif bet.pick == wanted and not bet.forfeited then

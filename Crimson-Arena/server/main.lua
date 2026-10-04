@@ -2054,5 +2054,5 @@ RegisterCommand('arenaadmin', function(src)
 
     pushAdmin(src, nil)
 
-    ArenaLog('%s opened the admin tablet', ArenaPlayerName(src))
+    ArenaDebug('%s opened the admin tablet', ArenaPlayerName(src))
 end, false)

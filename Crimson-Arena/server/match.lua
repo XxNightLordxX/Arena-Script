@@ -1762,7 +1762,7 @@ local function runServerChecks(match)
                 end
 
                 if strike(match.deadStrikes, src, dead, deadTicks) then
-                    ArenaLog('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
+                    ArenaDebug('DEATH: %s has read as dead in match %s for %d checks running with nothing reported -- booking it.',
                         tostring(src), tostring(match.id), deadTicks)
                     ArenaMatch.OnDeath(src, nil, true, nil, nil, match.deadWitness[src])
                 end
@@ -3130,7 +3130,7 @@ local function logKill(match, killer, victim, kill)
         outcome = outcome .. ' They are team-mates: friendly fire is on.'
     end
 
-    ArenaLog(KILL_LINE,
+    ArenaDebug(KILL_LINE,
         ArenaLogText(killer.name or ArenaPlayerName(killer.src)), tostring(killer.src),
         ArenaLogText(killer.citizenid, 16),
         ArenaLogText(victim.name or ArenaPlayerName(victim.src)), tostring(victim.src),
@@ -3542,7 +3542,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
             -- NAMES THROUGH THE SCRUBBER, in quotes, like the KILL line: a name
             -- is written by the player wearing it, and printed raw it could
             -- start a forged console line of its own.
-            ArenaLog('TEAMKILL: "%s" was killed by their own team-mate "%s" with %s in match %s. '
+            ArenaDebug('TEAMKILL: "%s" was killed by their own team-mate "%s" with %s in match %s. '
                 .. 'Friendly fire is off, so the kill was credited to nobody -- but the damage '
                 .. 'landed, which for melee is a hole this server cannot close: the engine does '
                 .. 'not raise weaponDamageEvent for it, so there is nothing to cancel.',
@@ -3624,7 +3624,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
         unwitnessed = priced
 
         if priced then
-            ArenaLog('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait. %s',
+            ArenaDebug('DEATH: %s reported their own death in match %s and named nobody -- %d of them inside %ds, which is faster than this arena kills people, so it is booked with no resupply and a longer wait. %s',
                 tostring(id), tostring(match.id), inWindow,
                 UNWITNESSED_FREE_IN_WINDOW * UNWITNESSED_HONEST_PRESS_MULTIPLE
                     * math.max(1, respawnDelaySeconds()),
@@ -3679,7 +3679,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
                     :format(tostring(claimed))
             return ('"%s" and %s'):format(ArenaLogText(player.name or ArenaPlayerName(id)), accused)
         end)
-        ArenaLog('KILL NOT CREDITED: %s died in match %s naming %s as their killer, who %s. The roster '
+        ArenaDebug('KILL NOT CREDITED: %s died in match %s naming %s as their killer, who %s. The roster '
             .. 'refused the claim, so nobody was credited, no kill ammo was paid and the score did not '
             .. 'move. The client did name somebody -- this is the rule working, not a kill the '
             .. 'server failed to see. By name: %s.',
@@ -3720,7 +3720,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
             ArenaDebug('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s',
                 tostring(id), tostring(match.id), where, unattributedReason(why))
         else
-            ArenaLog('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s Nobody was '
+            ArenaDebug('UNATTRIBUTED: %s died in match %s with nobody named -- %s. %s Nobody was '
                 .. 'credited, no kill ammo was paid and the score did not move. If this keeps '
                 .. 'happening on ordinary shooting, it is this resource to blame and not the player.',
                 tostring(id), tostring(match.id), where, unattributedReason(why))
@@ -3887,7 +3887,7 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
             tierCredited = tierCredited, spared = spared, remaining = remaining,
         })
         if not ok then
-            ArenaLog('KILL line for match %s could not be written: %s', tostring(match.id), tostring(err))
+            ArenaDebug('KILL line for match %s could not be written: %s', tostring(match.id), tostring(err))
         end
     end
 
@@ -4394,7 +4394,7 @@ function ArenaMatch.End(matchId, reasonKey, winners)
 
     ArenaDispatch.ReleaseBucket(match.id)
 
-    ArenaLog('match %s ended: %s', tostring(match.id), endReason)
+    ArenaDebug('match %s ended: %s', tostring(match.id), endReason)
     ArenaLobby.Destroy(match.id, endReason)
     return true
 end
@@ -4428,7 +4428,7 @@ function ArenaMatch.Abort(matchId, reasonKey)
 
     ArenaDispatch.ReleaseBucket(match.id)
 
-    ArenaLog('match %s aborted: %s', tostring(match.id), reason)
+    ArenaDebug('match %s aborted: %s', tostring(match.id), reason)
     ArenaLobby.Destroy(match.id, reason)
     return true
 end

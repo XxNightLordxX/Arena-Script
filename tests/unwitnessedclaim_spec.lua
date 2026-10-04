@@ -182,7 +182,7 @@ local function run(label, payloadFor, deaths, opts)
     if false then print(('%-28s arena=%-12s resupplies=%2d  pricedLOG=%2d  UNATTRIB(log)=%2d UNATTRIB(dbg)=%2d  toasts=%d  unverified=%2d  respawnWaits=%s')
         :format(label, arenaKey, #s.refreshes - refreshBase, pricedLog, unattributedLog, unattributedDebug,
             toasts, unverified, table.concat(respawnNotices, ','))) end
-    return { resupplies = #s.refreshes - refreshBase, priced = pricedLog, unattrib = unattributedLog, toasts = toasts,
+    return { resupplies = #s.refreshes - refreshBase, priced = pricedLog, unattrib = unattributedLog + unattributedDebug, toasts = toasts,
         notCredited = notCredited, olderClient = olderClient, teamkill = teamkill }
 end
 

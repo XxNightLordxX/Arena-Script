@@ -3425,7 +3425,7 @@ function ArenaDispatch.WithdrawFiledCall(data)
     end
     withdrawing[id] = true
 
-    ArenaLog('retract: withdrawing "%s" -- filed about %s, who is in a match.', tostring(id), tostring(src))
+    ArenaDebug('retract: withdrawing "%s" -- filed about %s, who is in a match.', tostring(id), tostring(src))
 
     local function ask()
         local ok, err = pcall(function()

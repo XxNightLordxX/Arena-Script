@@ -494,7 +494,7 @@ t.test('and the second report of that trade is logged as a refused claim, not as
     -- always-on line said UNATTRIBUTED "with nobody named ... an older client
     -- ... this resource to blame", and the fighter was told nothing could be
     -- pinned on anybody. Their client had named its killer.
-    local server = newServer(function(config) config.Debug = false end)
+    local server = newServer(function(config) config.Debug = true end)
     server.play(2, true)
     server.kill(2, 1)
     server.kill(1, 2)

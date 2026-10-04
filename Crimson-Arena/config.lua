@@ -19,19 +19,19 @@
     ------------------------------------------------------------------------------
        96   Lobby         The NPC players walk up to
       166   Schedule      Opening hours: when the door is actually open
-      218   Match         Lives, timers, player counts, win condition
-      573   Teams         The sides, and whether they may be uneven
-      743   Modes         Free-for-all, team deathmatch and gun game
-     1160   DefaultMode   Which of them a new lobby opens on
-     1179   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1423   UI            Panel colours, logo and title
-     1491   Permissions   Who may open a match, who may force-stop one
-     1577   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2011   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2609   Database      Optional: four tables the arena owns. Ships OFF
-     2640   Leaderboard   Which matches count towards the board, and which do not
-     2706   Webhook       Optional: a Discord line per finished match
-     2738   Dispatch      Optional: keeping police and EMS out of the arena
+      217   Match         Lives, timers, player counts, win condition
+      572   Teams         The sides, and whether they may be uneven
+      742   Modes         Free-for-all, team deathmatch and gun game
+     1159   DefaultMode   Which of them a new lobby opens on
+     1178   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1422   UI            Panel colours, logo and title
+     1490   Permissions   Who may open a match, who may force-stop one
+     1576   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2010   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2608   Database      Optional: four tables the arena owns. Ships OFF
+     2639   Leaderboard   Which matches count towards the board, and which do not
+     2705   Webhook       Optional: a Discord line per finished match
+     2737   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -85,7 +85,7 @@ Config.ResourceLabel = 'Crimson Arena'
 --- prints with it off is what an operator must act on: errors, refused
 --- payments or items, misconfiguration, money owed or lost, forfeits,
 --- exploit refusals, start-up checks and admin actions.
-Config.Debug = true
+Config.Debug = false
 
 --- ox_lib notification title for every message this resource sends.
 Config.NotifyTitle = 'CRIMSON ARENA'
@@ -180,10 +180,9 @@ Config.Schedule = {
     -- DROPPED and named in the console rather than corrected. Write
     -- { from = 0, to = 24 } for all day.
     windows = {
-        { from = 0,  to = 4 },   -- midnight to 4am
-        { from = 5,  to = 7 },   -- 5am to 7am
+        { from = 0,  to = 12 },  -- midnight to noon
         { from = 12, to = 14 },  -- noon to 2pm
-        { from = 18, to = 20 },  -- 6pm to 8pm
+        { from = 18, to = 21 },  -- 6pm to 9pm
     },
 
     -- HOURS TO ADD TO THE SERVER'S CLOCK, when the machine is not in your
@@ -721,14 +720,14 @@ Config.Teams = {
             label = 'Bone',
             color = '#ffd34d',
             blipColor = 5,      -- yellow
-            enabled = false,
+            enabled = true,
             order = 3,
         },
         ['ember'] = {
             label = 'Ember',
             color = '#ff8c1a',
             blipColor = 17,     -- orange
-            enabled = false,
+            enabled = true,
             order = 4,
         },
     },

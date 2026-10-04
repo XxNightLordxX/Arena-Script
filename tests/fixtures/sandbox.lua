@@ -430,7 +430,29 @@ function Sandbox.newArenaEnv(overrides)
     -- hoursgate_spec -- switch them back on and say what time it is.
     Sandbox.openTheDoors(env)
 
+    -- AND THE SUITE'S OWN BASELINE FOR TWO OPERATOR CHOICES, for the same
+    -- reason again. The owner's config ships Debug OFF and FOUR teams on;
+    -- the specs were written against Debug on (they read the debug lines)
+    -- and two sides (crimson and ash). A spec about debug output or about
+    -- extra sides sets them itself; Sandbox.shippedConfig() is untouched.
+    Sandbox.suiteBaseline(env)
+
     Sandbox.loadInto('../Crimson-Arena/shared/arena.lua', env)
+    return env
+end
+
+--- Debug on and only crimson and ash, whatever config.lua ships.
+--- @param env table
+--- @return table env
+function Sandbox.suiteBaseline(env)
+    local config = env.Config or {}
+    config.Debug = true
+    local list = (config.Teams or {}).list
+    if type(list) == 'table' then
+        for key, team in pairs(list) do
+            if type(team) == 'table' then team.enabled = (key == 'crimson' or key == 'ash') end
+        end
+    end
     return env
 end
 

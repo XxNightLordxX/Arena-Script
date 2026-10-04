@@ -904,6 +904,27 @@ local function reachedScoreLimit(match, teamMode)
     return false
 end
 
+--- TEAM GUN GAME: a ladder is climbed alone and won for the side. Hands back
+--- every fighter on the winner's team -- or, for winners from different
+--- teams, nobody (a draw). Outside a team mode the list comes back unchanged.
+--- @return integer[]
+local function sideOfLadder(match, srcs)
+    if not Arena.ModeUsesTeams(match.modeKey) or type(srcs) ~= 'table' or #srcs == 0 then return srcs end
+    local team
+    for _, src in ipairs(srcs) do
+        local player = match.players[src]
+        local side = player and player.team
+        if not Arena.IsKey(side) then return srcs end
+        if team and team ~= side then return {} end
+        team = side
+    end
+    local out = {}
+    for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
+        if player.team == team then out[#out + 1] = player.src end
+    end
+    return out
+end
+
 local function evaluate(match)
     local teamMode = Arena.ModeUsesTeams(match.modeKey)
 
@@ -930,6 +951,11 @@ local function evaluate(match)
         if playingLadder and stillIn(player) and topped(player, #ladder) then
             climbed[#climbed + 1] = player.src
         end
+    end
+    if teamMode and #climbed > 0 then
+        local side = sideOfLadder(match, climbed)
+        if #side > 0 then return side, 'match.ended_ladder' end
+        return {}, 'match.ended_draw'
     end
     if #climbed == 1 then return climbed, 'match.ended_ladder' end
     if #climbed > 1 then return {}, 'match.ended_draw' end
@@ -988,7 +1014,7 @@ local function evaluate(match)
     end
 
     if match.endsAt and os.time() >= match.endsAt then
-        local winners = playingLadder and decideOnLadder(match) or decideOnKills(match, teamMode)
+        local winners = playingLadder and sideOfLadder(match, decideOnLadder(match)) or decideOnKills(match, teamMode)
         return winners, #winners > 0 and 'match.ended_time_up' or 'match.ended_draw'
     end
 

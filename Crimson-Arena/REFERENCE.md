@@ -201,7 +201,7 @@ instancing really happened rather than assuming it did.
 | | Enabled | Also in the catalogue, switched off |
 |---|---|---|
 | Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | — |
-| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`), **Gun Game** (`gungame`) | — |
+| Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`), **Gun Game** (`gungame`) | Team Gun Game (`teamgungame`) |
 | Teams | **Crimson** (`crimson`), **Ash** (`ash`) | Bone (`bone`), Ember (`ember`) |
 | Weapons | **81 of 92** — heavy: firework launcher and flamethrower only | Navy Revolver, RPG, homing / grenade / compact grenade / compact EMP launchers, minigun, railgun, railgun XM3, Unholy Hellbringer, Widowmaker |
 

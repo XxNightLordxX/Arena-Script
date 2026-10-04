@@ -22,16 +22,16 @@
       218   Match         Lives, timers, player counts, win condition
       573   Teams         The sides, and whether they may be uneven
       743   Modes         Free-for-all, team deathmatch and gun game
-     1135   DefaultMode   Which of them a new lobby opens on
-     1154   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1398   UI            Panel colours, logo and title
-     1466   Permissions   Who may open a match, who may force-stop one
-     1552   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     1986   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2584   Database      Optional: four tables the arena owns. Ships OFF
-     2615   Leaderboard   Which matches count towards the board, and which do not
-     2681   Webhook       Optional: a Discord line per finished match
-     2713   Dispatch      Optional: keeping police and EMS out of the arena
+     1160   DefaultMode   Which of them a new lobby opens on
+     1179   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1423   UI            Panel colours, logo and title
+     1491   Permissions   Who may open a match, who may force-stop one
+     1577   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2011   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2609   Database      Optional: four tables the arena owns. Ships OFF
+     2640   Leaderboard   Which matches count towards the board, and which do not
+     2706   Webhook       Optional: a Discord line per finished match
+     2738   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -1130,6 +1130,31 @@ Config.Modes = {
         announceFinalTier = true,
     },
 }
+
+-- ======================================================================
+-- TEAM GUN GAME -- the same ladder, fought in teams. SHIPS OFF.
+--
+-- Every fighter still climbs their OWN ladder, exactly as in Gun Game; the
+-- first to top it wins the round for their whole team, and the pot is split
+-- across that team the way Team Deathmatch splits it. When the clock runs
+-- out, the side of the highest climber wins. Two fighters from different
+-- sides topping it at the same moment is a draw.
+--
+-- It is a copy of the Gun Game block above -- the same tiers, classes and
+-- rules -- so tuning Gun Game tunes this too. Set `enabled = true` to offer it
+-- in the match creator as its own mode beside Gun Game. Needs two teams on in
+-- Config.Teams, like every team mode.
+-- ======================================================================
+Config.Modes['teamgungame'] = (function()
+    local mode = {}
+    for key, value in pairs(Config.Modes['gungame']) do mode[key] = value end
+    mode.label = 'Team Gun Game'
+    mode.description = 'Climb the tiers with a side behind you. The first to the top wins it for the whole team.'
+    mode.teams = true
+    mode.icon = 'fas fa-people-arrows'
+    mode.enabled = false
+    return mode
+end)()
 
 --- Which mode a newly created match starts on before the host changes it.
 Config.DefaultMode = 'ffa'

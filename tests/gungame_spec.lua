@@ -2789,7 +2789,9 @@ t.test('and about a supply nobody can ever be handed', function()
         ('the shipped catalogue raised the complaint: %s'):format(quiet))
 end)
 
-t.test('a ladder round crowns a climber, not a side, so no side is named', function()
+t.test('TEAM GUN GAME: the highest climber wins the round for their whole side', function()
+    -- THE OWNER'S RULING: in a team ladder every fighter climbs their own
+    -- ladder, and the round is won for the climber's side.
     -- `winningPick` answers "which side is this round settled against" --
     -- the question the spectator side-bets ask, and the right answer for
     -- them. The results card asks a different one, and a team mode running a
@@ -2829,15 +2831,11 @@ t.test('a ladder round crowns a climber, not a side, so no side is named', funct
     s.settle(3)
 
     local card = s.resultFor(1)
-    t.isTrue(card ~= nil, 'the climber was sent no results card at all')
-    t.isTrue(card.won == true, 'the highest climber should have taken the round')
-    t.isTrue(s.resultFor(3) ~= nil and s.resultFor(3).won ~= true,
-        'their team-mate climbed nothing and must not be a winner -- otherwise this proves nothing')
-
-    t.isNil(card.winningTeam,
-        'a ladder round crowned one climber and told their whole side they had won it')
-    t.isNil(s.resultFor(3).winningTeam,
-        'and told the team-mate who lost that their side had taken it')
+    t.isTrue(card ~= nil and card.won == true, 'the highest climber should have taken the round')
+    t.isTrue(s.resultFor(3) ~= nil and s.resultFor(3).won == true,
+        'their team-mate on the winning side was not counted a winner')
+    t.isTrue(s.resultFor(2) ~= nil and s.resultFor(2).won ~= true, 'a fighter on the losing side was counted a winner')
+    t.isTrue(s.resultFor(4) ~= nil and s.resultFor(4).won ~= true, 'a fighter on the losing side was counted a winner')
 end)
 
 -- ======================================================================
@@ -5342,6 +5340,19 @@ t.test('CONTROL: with the cap off, as shipped, every gun kill still spares and s
 
     t.equals(s.row(2).tier, 3, 'with no cap, a gun kill took the victim\'s tier')
     t.equals(s.row(3).tier, before + 1, 'with no cap, the killer did not climb')
+end)
+
+t.test('TEAM GUN GAME ships off, and switched on is the Gun Game ladder with teams', function()
+    local off = newServer()
+    t.isNil(off.env.Arena.GetModeByKey('teamgungame'), 'Team Gun Game is offered on the shipped config')
+
+    local on = newServer(function(config) config.Modes.teamgungame.enabled = true end)
+    local Arena = on.env.Arena
+    t.isTrue(Arena.ModeUsesTeams('teamgungame'), 'switched on, it is not a team mode')
+    t.isTrue(Arena.PlaysLadder('teamgungame'), 'switched on, it does not play the ladder')
+    t.equals(#Arena.LadderTiersFor('teamgungame'), #Arena.LadderTiersFor('gungame'),
+        'it does not climb the same ladder as Gun Game')
+    t.isTrue(not Arena.ModeUsesTeams('gungame'), 'plain Gun Game became a team mode')
 end)
 
 os.exit(t.summary())

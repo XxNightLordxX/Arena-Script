@@ -85,7 +85,7 @@ Config.ResourceLabel = 'Crimson Arena'
 --- prints with it off is what an operator must act on: errors, refused
 --- payments or items, misconfiguration, money owed or lost, forfeits,
 --- exploit refusals, start-up checks and admin actions.
-Config.Debug = false
+Config.Debug = true
 
 --- ox_lib notification title for every message this resource sends.
 Config.NotifyTitle = 'CRIMSON ARENA'

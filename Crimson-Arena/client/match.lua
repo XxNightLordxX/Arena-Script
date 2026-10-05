@@ -4196,7 +4196,12 @@ RegisterNetEvent('crimson_arena:client:respawn', function(data)
     -- Measured, not supposed.
     FreezeEntityPosition(ped, false)
 
-    if not placed or matchToken ~= token or not currentMatch then return end
+    if not placed or matchToken ~= token or not currentMatch then
+        if ArenaSpawnProtection and ArenaSpawnProtection.Trace then
+            ArenaSpawnProtection.Trace('not started -- the respawn did not finish placing them')
+        end
+        return
+    end
 
     -- The round's kit for THIS life -- a gun game climber's changes by tier.
     if currentMatch and type(data.loadout) == 'table' then currentMatch.loadout = data.loadout end

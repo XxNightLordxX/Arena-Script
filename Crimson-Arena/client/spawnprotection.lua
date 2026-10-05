@@ -46,6 +46,13 @@ local token = 0
 --- The ped the open window made invincible, or nil when none is open.
 local activePed = nil
 
+--- F8 trace, Config.Debug only: says when the window opens, why it closes,
+--- and every hit it undid, so a live test shows exactly where it fails.
+local function trace(fmt, ...)
+    if Config.Debug == true then print(('[crimson_arena] spawn protection: ' .. fmt):format(...)) end
+end
+ArenaSpawnProtection.Trace = trace
+
 local function hook(fn, ...)
     local ok, why = pcall(fn, ...)
     if not ok then print(('[crimson_arena] spawn protection hook raised: %s'):format(tostring(why))) end
@@ -95,13 +102,16 @@ end
 function ArenaSpawnProtection.Start(stillWanted)
     local cfg = (Config.Match or {}).spawnProtection
     local seconds = math.max(0, math.min(30, tonumber(type(cfg) == 'table' and cfg.seconds or 0) or 0))
-    if seconds <= 0 then return end
+    if seconds <= 0 then trace('off (spawnProtection.seconds is 0)') return end
 
     -- ADMIN GOD MODE IS LEFT ALONE. A player who is already invincible and
     -- not through a window of ours (an admin menu turned it on) needs no
     -- protection, and nothing here may switch theirs off -- so no window is
     -- opened at all and neither Start nor Stop writes a flag.
-    if not activePed and GetPlayerInvincible(PlayerId()) then return end
+    if not activePed and GetPlayerInvincible(PlayerId()) then
+        trace('skipped -- already invincible (admin god mode), left alone')
+        return
+    end
 
     token = token + 1
     local mine = token
@@ -109,13 +119,16 @@ function ArenaSpawnProtection.Start(stillWanted)
     SetEntityInvincible(activePed, true)
     SetPlayerInvincible(PlayerId(), true)
     hook(ArenaSpawnProtection.OnStart, activePed, seconds)
+    trace('ON for %d s (ped %s, health %d)', seconds, tostring(activePed), GetEntityHealth(activePed))
 
     CreateThread(function()
         local ends = GetGameTimer() + seconds * 1000
         local ped = activePed
         local health = GetEntityHealth(ped)
+        local why = 'time up'
         while GetGameTimer() < ends do
-            if token ~= mine or not stillWanted() then break end
+            if token ~= mine then why = 'a newer revive took over' break end
+            if not stillWanted() then why = 'the round ended or they left' break end
             -- HELD EVERY FRAME, NOT SET ONCE. In live testing a single
             -- SetEntityInvincible did not stop revived fighters dying: other
             -- resources (medical, the ped being rebuilt) clear it, and the
@@ -123,18 +136,27 @@ function ArenaSpawnProtection.Start(stillWanted)
             -- player. So both flags are re-applied each frame on the current
             -- ped, and any health lost anyway is put straight back.
             local now = PlayerPedId()
-            if now ~= ped then ped = now; activePed = now; health = GetEntityHealth(now) end
+            if now ~= ped then
+                trace('ped was replaced (%s -> %s), protecting the new one', tostring(ped), tostring(now))
+                ped = now; activePed = now; health = GetEntityHealth(now)
+            end
             SetEntityInvincible(ped, true)
             SetPlayerInvincible(PlayerId(), true)
             local h = GetEntityHealth(ped)
-            if h < health and h > 0 then SetEntityHealth(ped, health) elseif h > health then health = h end
+            if h < health and h > 0 then
+                trace('took damage anyway (%d -> %d), health put back', health, h)
+                SetEntityHealth(ped, health)
+            elseif h <= 0 then
+                trace('DIED while protected -- something killed them through invincibility')
+            elseif h > health then health = h end
             -- PROTECTION IS FOR ARRIVING, NOT ATTACKING -- any attack, gun
             -- or melee, ends it. EVERY FRAME, because a shot is one frame
             -- long: polled every 100 ms, five single shots in six went by
             -- unseen.
-            if attacking() then break end
+            if attacking() then why = 'they attacked' break end
             Wait(0)
         end
+        trace('OFF -- %s', why)
         if token == mine then ArenaSpawnProtection.Stop() end
     end)
 end

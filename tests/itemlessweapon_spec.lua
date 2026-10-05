@@ -218,6 +218,7 @@ local function newClient(opts)
         SetEntityVisible = function() end,
         SetEntityCollision = function() end,
         SetEntityInvincible = function(_p, on) world.invincible = on; world.invincibleWrites = (world.invincibleWrites or 0) + 1 end,
+        SetPlayerInvincible = function() end,
         IsPedShooting = function() return world.shooting == true end,
         IsPedPerformingMeleeAction = function() return world.melee == true end,
         IsPedInMeleeCombat = function() return world.beingMeleed == true end,

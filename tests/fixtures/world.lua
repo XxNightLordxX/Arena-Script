@@ -272,6 +272,7 @@ function World.new(opts)
             if object then object.collision = on == true end
         end,
         SetEntityInvincible = function() end,
+        SetPlayerInvincible = function() end,
 
         -- RECORDED RATHER THAN SWALLOWED. A native stubbed to an empty
         -- function is one no test can assert, and this world has been burned

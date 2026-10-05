@@ -81,6 +81,7 @@ function ArenaSpawnProtection.Stop()
     activePed = nil
     token = token + 1
     SetEntityInvincible(ped, false)
+    SetPlayerInvincible(PlayerId(), false)
     local now = PlayerPedId()
     if now ~= ped then SetEntityInvincible(now, false) end
     hook(ArenaSpawnProtection.OnEnd, ped)
@@ -100,12 +101,27 @@ function ArenaSpawnProtection.Start(stillWanted)
     local mine = token
     activePed = PlayerPedId()
     SetEntityInvincible(activePed, true)
+    SetPlayerInvincible(PlayerId(), true)
     hook(ArenaSpawnProtection.OnStart, activePed, seconds)
 
     CreateThread(function()
         local ends = GetGameTimer() + seconds * 1000
+        local ped = activePed
+        local health = GetEntityHealth(ped)
         while GetGameTimer() < ends do
             if token ~= mine or not stillWanted() then break end
+            -- HELD EVERY FRAME, NOT SET ONCE. In live testing a single
+            -- SetEntityInvincible did not stop revived fighters dying: other
+            -- resources (medical, the ped being rebuilt) clear it, and the
+            -- entity flag alone does not cover every damage path for a
+            -- player. So both flags are re-applied each frame on the current
+            -- ped, and any health lost anyway is put straight back.
+            local now = PlayerPedId()
+            if now ~= ped then ped = now; activePed = now; health = GetEntityHealth(now) end
+            SetEntityInvincible(ped, true)
+            SetPlayerInvincible(PlayerId(), true)
+            local h = GetEntityHealth(ped)
+            if h < health and h > 0 then SetEntityHealth(ped, health) elseif h > health then health = h end
             -- PROTECTION IS FOR ARRIVING, NOT ATTACKING -- any attack, gun
             -- or melee, ends it. EVERY FRAME, because a shot is one frame
             -- long: polled every 100 ms, five single shots in six went by

@@ -119,13 +119,14 @@ function ArenaSpawnProtection.Start(stillWanted)
     SetEntityInvincible(activePed, true)
     SetPlayerInvincible(PlayerId(), true)
     hook(ArenaSpawnProtection.OnStart, activePed, seconds)
-    trace('ON for %d s (ped %s, health %d)', seconds, tostring(activePed), GetEntityHealth(activePed))
+    trace('ON for %s s (ped %s, health %s)', tostring(seconds), tostring(activePed), GetEntityHealth(activePed))
 
     CreateThread(function()
         local ends = GetGameTimer() + seconds * 1000
         local ped = activePed
         local health = GetEntityHealth(ped)
         local why = 'time up'
+        local reportedDeath = false
         while GetGameTimer() < ends do
             if token ~= mine then why = 'a newer revive took over' break end
             if not stillWanted() then why = 'the round ended or they left' break end
@@ -144,9 +145,10 @@ function ArenaSpawnProtection.Start(stillWanted)
             SetPlayerInvincible(PlayerId(), true)
             local h = GetEntityHealth(ped)
             if h < health and h > 0 then
-                trace('took damage anyway (%d -> %d), health put back', health, h)
+                trace('took damage anyway (%s -> %s), health put back', tostring(health), tostring(h))
                 SetEntityHealth(ped, health)
-            elseif h <= 0 then
+            elseif h <= 0 and not reportedDeath then
+                reportedDeath = true
                 trace('DIED while protected -- something killed them through invincibility')
             elseif h > health then health = h end
             -- PROTECTION IS FOR ARRIVING, NOT ATTACKING -- any attack, gun

@@ -93,10 +93,17 @@ local function newFixture(mutate)
         friendlyCalls = {},
         -- EVERY ArenaUI.UpdateHud, in order. See the stub below.
         hudCalls = {},
+        threadsCreated = 0,
     }
 
     local env = Sandbox.newArenaEnv({
-        CreateThread = runner.CreateThread,
+        -- COUNTED, so a test can tell a loop that was never started from a
+        -- loop that runs and draws nothing -- the two look identical on the
+        -- map. See enterLive's `goLiveThreads`.
+        CreateThread = function(fn)
+            f.threadsCreated = f.threadsCreated + 1
+            return runner.CreateThread(fn)
+        end,
         -- A PER-THREAD CLOCK, because the runner's own is global.
         --
         -- runner.elapsed sums every Wait from every captured thread, so it
@@ -357,7 +364,14 @@ local function newFixture(mutate)
         for key, value in pairs(overrides or {}) do payload[key] = value end
         f.matchId = payload.matchId
         f.fire('crimson_arena:client:enterArena', payload)
+
+        -- THE THREADS GO-LIVE ITSELF STARTED, apart from entry's own. With no
+        -- boundary in the payload startBoundaryThread returns before making
+        -- one, so on the default payload the only thread this can count is
+        -- the blip loop.
+        local before = f.threadsCreated
         f.fire('crimson_arena:client:matchLive', { matchId = payload.matchId })
+        f.goLiveThreads = f.threadsCreated - before
     end
 
     --- Which server ids currently carry a blip.

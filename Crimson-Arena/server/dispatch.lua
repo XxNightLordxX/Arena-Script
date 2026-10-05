@@ -112,6 +112,11 @@ local function announce(eventName, src, matchId)
     end
 end
 
+--- WAKES THE DOWN-STATE HOLD further down this file. Declared up here only
+--- because Set is what calls it; the body lives beside the hold itself, where
+--- the config it reads is in scope.
+local startDownStateHold
+
 --- @param src number
 --- @param matchId string
 --- @param isFighter boolean? -- true only for somebody PLACED in the round
@@ -135,6 +140,11 @@ function ArenaDispatch.Set(src, matchId, isFighter)
     fighter[src] = isFighter == true
 
     active[src] = matchId
+    -- THE HOLD ONLY RUNS WHILE `active` HAS SOMEBODY IN IT, and this is the
+    -- one line that ever puts anybody there -- so this is where it is woken.
+    -- Straight after the write rather than at the end of Set, so nothing
+    -- below that might throw can leave a flagged player without a hold.
+    startDownStateHold()
     Player(src).state:set(stateKey(), { active = true, matchId = matchId }, true)
     announce(customConfig().enterEvent, src, matchId)
 end
@@ -309,15 +319,44 @@ function ArenaDispatch.HoldDownState()
     return touched
 end
 
-CreateThread(function()
+--- NO THREAD WHILE NOBODY IS IN A MATCH. This used to start at load and wake
+--- every holdIntervalMs for the life of the server, walking an empty table on
+--- every pass of every quiet hour. Now ArenaDispatch.Set -- the only line
+--- that ever adds to `active` -- starts it, and it ends itself on the first
+--- wake that finds `active` empty: the very pass HoldDownState would have
+--- spent touching nobody. The next Set starts it again. While anybody IS in,
+--- it is the same loop it always was: the same interval, Wait then sweep, one
+--- pass every holdIntervalMs.
+---
+--- ONE COPY AT A TIME. `holdRunning` goes up before the thread is created and
+--- comes down only inside the thread, in the same uninterrupted run as the
+--- empty check -- there is no Wait between the two -- so a Set landing while
+--- it sleeps finds it still running and leaves it be, and a Set landing after
+--- it has ended finds the flag down and starts a fresh one. A Clear and a Set
+--- inside one interval simply keep the one that is already sleeping.
+---
+--- `0` STILL SWITCHES IT OFF, and now off means no thread at all rather than
+--- one that starts and returns.
+local holdRunning = false
+
+startDownStateHold = function()
+    if holdRunning then return end
+
     local interval = Arena.ToInt(downStateConfig().holdIntervalMs) or 0
     if interval <= 0 then return end
 
-    while true do
-        Wait(interval)
-        ArenaDispatch.HoldDownState()
-    end
-end)
+    holdRunning = true
+    CreateThread(function()
+        while true do
+            Wait(interval)
+            if next(active) == nil then
+                holdRunning = false
+                return
+            end
+            ArenaDispatch.HoldDownState()
+        end
+    end)
+end
 
 --- CATCHING THE MOMENT ITSELF, instead of finding out on the next sweep.
 ---

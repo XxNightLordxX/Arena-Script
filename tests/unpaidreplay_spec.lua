@@ -117,9 +117,10 @@ local function newArena(control)
         -- spins forever instead of yielding. betting.lua has exactly that:
         -- the loop that retries reading the money slate until it lands. With
         -- the database reachable it lands on the first pass and returns; with
-        -- the database OFF it never does, and loading the file never
-        -- returns. That cost a debugging session, and a hang is the worst
-        -- failure a suite can give you -- no output, no name, no line.
+        -- the database switched OFF the loop is no longer started at all, but
+        -- with it on and the read never landing it never returns. That cost a
+        -- debugging session, and a hang is the worst failure a suite can give
+        -- you -- no output, no name, no line.
         Wait = function()
             waits = waits + 1
             if waits > 10000 then
@@ -175,6 +176,8 @@ local function newArena(control)
             return n
         end,
         cash = function(src) return wallets[src].cash end,
+        --- How many times the resource has called Wait since it was loaded.
+        waits = function() return waits end,
         --- What the TABLE says is owed to one character, across every part.
         owedInTable = function(citizenid)
             local total = 0
@@ -295,8 +298,9 @@ t.test('THE DEFECT: with the database off, the same line says the debt dies at t
     -- SWITCHED OFF AFTER THE LOAD, not before it. betting.lua retries
     -- reading the slate in a `while true` loop until it lands, and this
     -- fixture's CreateThread runs a body to completion without yielding --
-    -- so loading the file with the database already off never returns. What
-    -- is being tested is the same either way: whether the console tells an
+    -- so loading the file with the database already off used to never
+    -- return (it does now; see the read-back thread tests below). What is
+    -- being tested is the same either way: whether the console tells an
     -- operator that this debt does not survive a restart.
     local s = newArena()
     s.env.Config.Database.enabled = false
@@ -312,6 +316,31 @@ t.test('and the slate says so when asked directly', function()
     s.env.Config.Database.enabled = false
     t.isFalse(s.betting.UnpaidIsSaved(),
         'the money slate claims to be saved on a server with no database at all')
+end)
+
+-- ========================================================================
+-- THE READ-BACK THREAD DOES NOT IDLE ON A SWITCH THAT IS OFF
+-- ========================================================================
+--
+-- loadUnpaid cannot succeed with Config.Database.enabled off, so the retry
+-- loop that waits for it used to wake every UNPAID_RETRY_MS for the whole
+-- uptime on the shipped config. It is now not started at all on that
+-- setting -- and still runs, unchanged, with the switch on.
+
+t.test('CONTROL: with the database on, the read-back thread runs until the slate is read', function()
+    local s = newArena()
+    t.isTrue(s.waits() >= 1,
+        'the read-back loop never waited, so the thread did not run and this proves nothing')
+    t.isTrue(s.betting.UnpaidIsSaved(), 'the read-back thread ran and never read the slate')
+end)
+
+t.test('with the database switched off, the read-back thread is not started at all', function()
+    -- BEFORE THE GATE THIS DID NOT RETURN: the fixture's Wait is bounded and
+    -- errors out after 10000 spins, which is what the old loop did here.
+    local ok, s = pcall(newArena, { databaseOff = true })
+    t.isTrue(ok, 'loading betting.lua with the database off spun the read-back loop: ' .. tostring(s))
+    t.equals(s.waits(), 0,
+        'the read-back loop woke up on a server whose database is switched off')
 end)
 
 -- ========================================================================

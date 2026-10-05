@@ -244,7 +244,7 @@ end)
 
 t.test('and NOT drawn to a player standing outside it', function()
     -- The other half, and the one that matters for every client on the
-    -- server: outside the radius this loop sleeps a full second, and a
+    -- server: outside the radius this loop sleeps a second or more, and a
     -- marker drawn regardless is a per-frame draw call on ninety-nine
     -- players who are nowhere near the lobby.
     local f = newLobby({ interaction = 'marker' })
@@ -325,6 +325,79 @@ t.test('the loop keeps running -- it is not a one-shot', function()
 
     t.equals(#f.markers, 3, 'the marker thread stopped after its first pass')
     t.equals(f.runner.aliveCount(), 1, 'the marker thread died instead of looping')
+end)
+
+-- ========================================================================
+-- AND HOW LONG IT SLEEPS
+--
+-- The owner's ask: nothing waking in the background when it has nothing to
+-- do. The loop used to wake once a second for every player wherever they
+-- were; far away it now sleeps longer -- but never so long that somebody
+-- driving up is seen later than they were, and never across the teleport
+-- that ends a round.
+-- ========================================================================
+
+--- How long the marker thread asked to sleep on one pass. It is the only
+--- live thread once newLobby has run the start-up, so the clock it moves is
+--- its own.
+local function sleptFor(f)
+    local before = f.runner.elapsed
+    f.step()
+    return f.runner.elapsed - before
+end
+
+t.test('far from the lobby the loop sleeps longer than the old second', function()
+    local f = newLobby({ interaction = 'marker' })
+    standAt(f, 2000.0)
+    t.isTrue(sleptFor(f) > 1000, 'a player two kilometres away is still being polled every second')
+end)
+
+t.test('but never longer than a fast car takes to reach the draw distance', function()
+    -- 50 m/s is 180 km/h. Whoever arrives at that or slower must cross the
+    -- line during a sleep of the old second at most, or the marker comes up
+    -- later than it used to.
+    local f = newLobby({ interaction = 'marker' })
+    local draw = f.env.Config.Lobby.marker.drawDistance
+
+    for _, margin in ipairs({ 0.5, 1, 30, 60, 100, 200, 300, 1000, 5000 }) do
+        standAt(f, draw + margin)
+        local slept = sleptFor(f)
+        local allowed = math.max(1000, margin / 50.0 * 1000)
+        t.isTrue(slept <= allowed,
+            ('%.1fm outside the draw distance it slept %dms -- a car at 180 km/h is there in %dms')
+                :format(margin, slept, math.floor(allowed)))
+    end
+end)
+
+t.test('and right outside the draw distance it is still the old second, inside it every frame', function()
+    local f = newLobby({ interaction = 'marker' })
+    local draw = f.env.Config.Lobby.marker.drawDistance
+
+    standAt(f, draw + 1.0)
+    t.equals(sleptFor(f), 1000, 'the edge of the draw distance is no longer polled every second')
+
+    standAt(f, draw - 1.0)
+    t.equals(sleptFor(f), 0, 'inside the draw distance the marker is no longer drawn every frame')
+end)
+
+t.test('a player in a round is polled every second however far away -- the round ends ON the marker', function()
+    -- leaveArena puts them down on Config.Lobby.returnCoords, which ships on
+    -- the marker: a kilometre in one frame, which no arrival speed covers.
+    local f = newLobby({ interaction = 'marker' })
+    local inRound = true
+    f.env.ArenaDispatch = { IsInArena = function() return inRound end }
+    standAt(f, 2000.0)
+    t.equals(sleptFor(f), 1000, 'a fighter is left on the marker for seconds after the round ends')
+
+    inRound = false
+    t.isTrue(sleptFor(f) > 1000, 'the long sleep never came back once the round was over')
+end)
+
+t.test('and so is a spectator, whose camera puts them back where they opened it', function()
+    local f = newLobby({ interaction = 'marker' })
+    f.env.ArenaSpectate = { IsActive = function() return true end }
+    standAt(f, 2000.0)
+    t.equals(sleptFor(f), 1000, 'a watcher is left on the marker for seconds after the camera stops')
 end)
 
 -- ========================================================================

@@ -200,13 +200,64 @@ local function doorHelpText(marker)
     return locale('match.hours_shut_help', opensAt)
 end
 
+-- THE MARKER LOOP SLEEPS LONGER THE FURTHER AWAY THE PLAYER IS, and never
+-- longer than it would take them to reach the draw distance.
+--
+-- It used to wake once a second for every player on the server, wherever
+-- they were, to learn that they were still nowhere near the lobby. Now the
+-- sleep is the time it takes to cover the gap to the draw distance at
+-- MARKER_ARRIVAL_SPEED -- a fast car, not a jog -- so whoever walks, runs or
+-- drives up is still seen inside the second they always were: the old one
+-- second is the FLOOR, and only someone hundreds of metres out is left alone
+-- for longer, up to MARKER_IDLE_MAX_MS. Inside the draw distance nothing has
+-- changed: it is still every frame.
+--
+-- A ROUND OR A SPECTATOR CAMERA KEEPS THE OLD SECOND, because both end with a
+-- teleport, not a walk. leaveArena puts a fighter down on
+-- Config.Lobby.returnCoords, which ships on the marker itself, and the
+-- camera puts a watcher back where they opened it -- both a kilometre in one
+-- frame, which no arrival speed covers. The loop that slept five seconds
+-- before that jump would leave the player standing on a marker that is not
+-- there, with no prompt, for most of it.
+local MARKER_IDLE_MIN_MS = 1000
+local MARKER_IDLE_MAX_MS = 5000
+local MARKER_ARRIVAL_SPEED = 60.0   -- metres per second; about 215 km/h
+
+--- Whether this player is in a round or watching one -- the two states that
+--- end with them teleported back to the lobby. Asked through type() checks
+--- because this file is loaded before client/match.lua and client/spectate.lua.
+--- @return boolean
+local function heldByARound()
+    if type(ArenaDispatch) == 'table'
+        and type(ArenaDispatch.IsInArena) == 'function'
+        and ArenaDispatch.IsInArena()
+    then
+        return true
+    end
+
+    return type(ArenaSpectate) == 'table'
+        and type(ArenaSpectate.IsActive) == 'function'
+        and ArenaSpectate.IsActive() == true
+end
+
+--- How long the marker loop may sleep with the player `distance` metres
+--- from the marker, outside its draw distance.
+--- @param distance number
+--- @param drawDistance number
+--- @return integer ms
+local function markerIdleMs(distance, drawDistance)
+    local ms = math.floor((distance - drawDistance) / MARKER_ARRIVAL_SPEED * 1000)
+    if ms <= MARKER_IDLE_MIN_MS or heldByARound() then return MARKER_IDLE_MIN_MS end
+    return math.min(MARKER_IDLE_MAX_MS, ms)
+end
+
 local function startMarkerThread()
     local marker = Config.Lobby.marker
     local center = vector3(marker.coords.x, marker.coords.y, marker.coords.z)
 
     CreateThread(function()
         while true do
-            local sleep = 1000
+            local sleep
             local distance = #(GetEntityCoords(PlayerPedId()) - center)
 
             if distance < marker.drawDistance then
@@ -231,6 +282,8 @@ local function startMarkerThread()
                         openPanel()
                     end
                 end
+            else
+                sleep = markerIdleMs(distance, marker.drawDistance)
             end
 
             Wait(sleep)

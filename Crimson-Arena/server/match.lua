@@ -44,6 +44,11 @@ ArenaMatch = {}
 
 local SWEEP_INTERVAL_MS = 1000
 
+--- Puts the sweep back on its once-a-second cadence if it is idling, and
+--- does nothing if it is not. Assigned at the foot of this file, beside the
+--- loop it wakes; see the note there for why the sweep idles at all.
+local wakeSweep
+
 --- THE MODE'S OWN KIT -- the team radio -- riding along with the supplies,
 --- on a COPY, so the player's saved pick never grows a radio. Used by BOTH
 --- the entry issue and the respawn top-up: ox drops a dead fighter's whole
@@ -2723,6 +2728,12 @@ function ArenaMatch.Begin(matchId, requestedBy)
     local countdown = math.max(0, Arena.ToInt(Config.Match.lobbyCountdownSeconds) or 0)
     match.state = 'countdown'
 
+    -- THE SWEEP SLEEPS WHILE NO ROUND IS IN PLAY, and this is one of the two
+    -- doors into play. Woken here, before the countdown thread below exists,
+    -- so it is already on its one-second cadence for the countdown's whole
+    -- length -- countdownOverran and the round after it both lean on that.
+    wakeSweep()
+
     match.countdownToken = (Arena.ToInt(match.countdownToken) or 0) + 1
     local token = match.countdownToken
     match.startsAt = os.time() + countdown + math.max(0, Arena.ToInt(Config.Match.startCountdownSeconds) or 0)
@@ -2847,6 +2858,9 @@ function ArenaMatch.Start(matchId)
     local lives = math.max(1, Arena.ToInt(match.lives) or 1)
 
     match.state = 'countdown'
+    -- The other door into play. A no-op on the ordinary path, where Begin
+    -- already woke the sweep; it matters to a Start reached from 'lobby'.
+    wakeSweep()
     match.winners = nil
     match.payouts = nil
 
@@ -4763,37 +4777,119 @@ end
 
 local hoursWereOpen = nil
 
-CreateThread(function()
-    while true do
-        Wait(SWEEP_INTERVAL_MS)
-
-        local hoursOpen = ArenaHoursOpen()
-        if hoursWereOpen ~= nil and hoursWereOpen ~= hoursOpen then
-            if not hoursOpen then
-                ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
-            end
-
-            ArenaLobby.Broadcast()
+--- ONE PASS OF THE SWEEP: the opening-hours edge, the buckets, then every
+--- match's own checks, in that order. It is the body the once-a-second loop
+--- has always run, word for word, lifted out so the loop below can ask
+--- afterwards whether anything is left to come back for.
+--- @return boolean idle -- no round counting down or live, nobody instanced
+local function sweepPass()
+    local hoursOpen = ArenaHoursOpen()
+    if hoursWereOpen ~= nil and hoursWereOpen ~= hoursOpen then
+        if not hoursOpen then
+            ArenaMatch.CloseWaitingLobbies('notify.hours_lobby_closed')
         end
-        hoursWereOpen = hoursOpen
 
-        syncMatchBuckets()
+        ArenaLobby.Broadcast()
+    end
+    hoursWereOpen = hoursOpen
 
-        for _, match in ipairs(ArenaLobby.All()) do
-            if match.state == 'live' then
-                runServerChecks(match)
+    syncMatchBuckets()
 
-                local winners, reason = evaluate(match)
-                if winners then
-                    ArenaMatch.End(match.id, reason, winners)
-                else
-                    pushHud(match)
-                end
-            elseif countdownOverran(match) then
-                ArenaLog('match %s was due to go live %d second(s) ago and never did -- something threw between the countdown and the first tick of the round. Calling it off and putting every stake back.',
-                    tostring(match.id), os.time() - (tonumber(match.startsAt) or 0))
-                ArenaMatch.Abort(match.id, 'match.aborted')
+    -- Read BEFORE each match's own checks, which can End or Abort it: a
+    -- round this pass saw running buys the pass after it at full speed,
+    -- and that is the pass that hands back whatever it left instanced.
+    local active = false
+
+    for _, match in ipairs(ArenaLobby.All()) do
+        if match.state == 'live' or match.state == 'countdown' then active = true end
+
+        if match.state == 'live' then
+            runServerChecks(match)
+
+            local winners, reason = evaluate(match)
+            if winners then
+                ArenaMatch.End(match.id, reason, winners)
+            else
+                pushHud(match)
             end
+        elseif countdownOverran(match) then
+            ArenaLog('match %s was due to go live %d second(s) ago and never did -- something threw between the countdown and the first tick of the round. Calling it off and putting every stake back.',
+                tostring(match.id), os.time() - (tonumber(match.startsAt) or 0))
+            ArenaMatch.Abort(match.id, 'match.aborted')
         end
     end
+
+    return not active and next(instanced) == nil
+end
+
+--- THE SWEEP SLEEPS WHILE NO ROUND IS COUNTING DOWN OR LIVE, AND THE ROUND
+--- THAT STARTS ONE WAKES IT.
+---
+--- Everything a pass does past the clock is for a match in 'countdown' or
+--- 'live': syncMatchBuckets wants nobody from any other state, the round
+--- checks and the HUD are 'live' only, and countdownOverran is 'countdown'
+--- only. A lobby waiting for its players, an ended round waiting to be
+--- destroyed, and an empty server give it nothing to do -- and doing that
+--- nothing once a second, for every hour the arena is not in play, is the
+--- background work this was changed to stop. While a round IS counting down
+--- or live, it ticks every SWEEP_INTERVAL_MS exactly as it always did.
+---
+--- IDLE ONLY ONCE `instanced` IS EMPTY TOO, which is what makes the last
+--- pass a real one. End, Abort and Destroy take the last round away between
+--- passes or in the middle of one, and it is the pass AFTER that --
+--- syncMatchBuckets with no round left to want anybody -- that hands back
+--- every bucket and flag the sweep was still holding. Until `instanced` is
+--- empty the one second cadence stays, so that pass always runs first.
+---
+--- THE ONE THING IT STILL WAKES FOR IS THE CLOCK, AND IT WAKES ON TIME.
+--- Opening hours are read to the minute (ArenaHoursNow is os.date's hour and
+--- minute, offset by whole hours), so the doors can only change at the top
+--- of a minute. The idle wait runs to just past the next one: a schedule
+--- window closing on a waiting lobby is still noticed within a second of
+--- it, as before, for one wake a minute instead of sixty. An admin's
+--- override never waited for the sweep -- server/main.lua closes the
+--- lobbies and broadcasts the moment it is set.
+---
+--- AND A ROUND DOES NOT WAIT FOR THE CLOCK. Begin and Start -- the only two
+--- places a match is put into 'countdown', and 'live' is only ever reached
+--- from there -- call wakeSweep, which starts a fresh loop that runs a pass
+--- on its first tick and every second after it. The sleeping loop finds its
+--- generation stale when its Wait returns and leaves without running a
+--- pass, so there is never more than one loop doing the work. A round that
+--- got going any other way is still picked up by the next idle pass:
+--- missing the wake costs a minute at most, never the sweep.
+local SWEEP_IDLE_MAX_MS = 60000
+
+local sweepGeneration = 0
+local sweepIdle = false
+
+--- @return integer ms -- to just past the top of the next minute
+local function idleWaitMs()
+    local now = os.date('*t')
+    local second = type(now) == 'table' and tonumber(now.sec) or 0
+    return math.max(SWEEP_INTERVAL_MS, math.min(SWEEP_IDLE_MAX_MS, (60 - second) * 1000))
+end
+
+--- @param generation integer -- the loop stops the moment this goes stale
+local function runSweep(generation)
+    while generation == sweepGeneration do
+        local idle = sweepPass()
+        sweepIdle = idle
+        Wait(idle and idleWaitMs() or SWEEP_INTERVAL_MS)
+    end
+end
+
+wakeSweep = function()
+    if not sweepIdle then return end
+    sweepIdle = false
+    sweepGeneration = sweepGeneration + 1
+
+    local generation = sweepGeneration
+    CreateThread(function() runSweep(generation) end)
+end
+
+CreateThread(function()
+    local generation = sweepGeneration
+    Wait(SWEEP_INTERVAL_MS)
+    runSweep(generation)
 end)

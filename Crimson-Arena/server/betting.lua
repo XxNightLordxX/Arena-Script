@@ -3379,6 +3379,18 @@ end
 --- entirely by refundRetrySeconds = 0, and whether the ledger is read has
 --- nothing to do with how often it is swept. DO NOT fold this into it.
 CreateThread(function()
+    -- NOT STARTED AT ALL WITH THE DATABASE SWITCHED OFF, which is how this
+    -- resource ships. loadUnpaid cannot succeed on that setting -- the very
+    -- first thing it asks is ArenaDbReady, which answers no on the switch
+    -- alone -- so this loop woke every UNPAID_RETRY_MS for the whole uptime
+    -- to be told no. Nothing in this resource flips the switch at runtime;
+    -- it is read from config.lua at start, so a server that turns it on is
+    -- a server that restarts and gets this thread back. The same gate
+    -- server/stats.lua puts round its flush thread. ONLY THE SWITCH is
+    -- tested here, never oxmysql: a database that is on and merely not up
+    -- YET is the exact case below, and must keep retrying.
+    if (Config.Database or {}).enabled ~= true then return end
+
     -- WRAPPED FOR THE SAME REASON THE WRITES ARE. A throw here would end
     -- the retry for the life of the process, which is the one thing this
     -- loop exists to prevent. DO NOT unwrap it.

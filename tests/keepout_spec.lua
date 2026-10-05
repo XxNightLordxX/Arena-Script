@@ -49,8 +49,24 @@ local function newClient(mutate)
     local moves, notes = {}, {}
     local pos = { x = 0.0, y = 0.0, z = 30.0 }
 
+    -- THE FENCE'S OWN THREADS, counted apart from the rest of the file's. The
+    -- barrier loop is started by SetKeepOut and by nothing else, so a thread
+    -- created while SetKeepOut is running is that loop -- and whether it is
+    -- still alive is what the loop-lifetime tests at the bottom read.
+    local fence = { started = 0, live = 0 }
+    local setting = false
+    local function createThread(fn)
+        if not setting then return runner.CreateThread(fn) end
+        fence.started = fence.started + 1
+        fence.live = fence.live + 1
+        runner.CreateThread(function()
+            fn()
+            fence.live = fence.live - 1
+        end)
+    end
+
     local env = Sandbox.newArenaEnv({
-        CreateThread = runner.CreateThread,
+        CreateThread = createThread,
         Wait = runner.Wait,
         SetTimeout = runner.SetTimeout,
         RegisterNetEvent = function() end,
@@ -114,7 +130,12 @@ local function newClient(mutate)
         at = function(x, y, z) pos = { x = x, y = y, z = z or 30.0 } end,
         pos = function() return pos end,
         step = runner.step,
-        setZones = function(zones) env.ArenaMatch.SetKeepOut(zones) end,
+        setZones = function(zones)
+            setting = true
+            env.ArenaMatch.SetKeepOut(zones)
+            setting = false
+        end,
+        fence = fence,
     }
 end
 
@@ -356,6 +377,98 @@ t.test('and a zone with NO height still fences its own ground', function()
     c.step(); c.step()
 
     t.isTrue(#c.moves > 0, 'a zone without a height fenced nobody at all')
+end)
+
+-- ========================================================================
+-- THE LOOP RUNS ONLY WHILE THERE IS A FENCE TO HOLD
+--
+-- It used to start with the resource and wake once a second for the whole
+-- session on every client, to find no zone sent -- which is almost every
+-- player almost all of the time. SetKeepOut is the one place the zones
+-- change, so it starts the loop there, and the loop ends itself when the
+-- list is empty.
+-- ========================================================================
+
+t.test('no zone sent, no loop running', function()
+    local c = newClient()
+    c.setZones({})
+    c.setZones(nil)
+    t.equals(c.fence.started, 0, 'an empty fence started a loop with nothing to hold')
+end)
+
+t.test('and the barrier switched off starts nothing, with zones sent', function()
+    local c = newClient(function(config) config.Match.keepOutBarrier.enabled = false end)
+    c.setZones({ ZONE })
+    t.equals(c.fence.started, 0, 'a loop was started for a barrier the operator switched off')
+end)
+
+t.test('a fence sent again and again runs ONE loop, not one per push', function()
+    -- The state is pushed on every change in the lobby, each carrying the
+    -- fence. One copy per push would be four teleports a tick by the third.
+    local c = newClient()
+    c.setZones({ ZONE }); c.setZones({ ZONE }); c.setZones({ ZONE })
+    c.at(ZONE.x + 10.0, ZONE.y)
+    c.step()
+
+    t.equals(c.fence.started, 1, ('%d loops were started for one fence'):format(c.fence.started))
+    t.equals(#c.moves, 1, ('one tick moved the player %d times'):format(#c.moves))
+end)
+
+t.test('the fence coming down ends the loop, and the next one starts it again', function()
+    local c = newClient()
+    c.setZones({ ZONE })
+    c.at(ZONE.x + 200.0, ZONE.y)
+    c.step()
+    t.equals(c.fence.live, 1, 'the loop did not survive its first tick with a zone still up')
+
+    c.setZones({})
+    c.step()
+    t.equals(c.fence.live, 0, 'the loop went on waking with no fence left to hold')
+
+    -- And the next round's fence still works: nobody is left able to walk
+    -- in because the loop that would have stopped them had finished.
+    c.setZones({ ZONE })
+    c.at(ZONE.x + 10.0, ZONE.y)
+    c.step()
+    t.equals(c.fence.started, 2, 'the second fence did not start the loop again')
+    t.isTrue(#c.moves > 0, 'the second fence let somebody walk straight in')
+end)
+
+t.test('a fence cleared and re-sent inside one sleep is carried on, not doubled', function()
+    -- The loop that was already asleep wakes to a list with zones in it and
+    -- keeps going. A second copy started beside it would push twice a tick.
+    local c = newClient()
+    c.setZones({ ZONE })
+    c.at(ZONE.x + 200.0, ZONE.y)
+    c.step()
+
+    c.setZones({})
+    c.setZones({ ZONE })
+    c.at(ZONE.x + 10.0, ZONE.y)
+    c.step()
+
+    t.equals(c.fence.started, 1, 'a second loop was started beside the one still asleep')
+    t.equals(c.fence.live, 1, 'the loop that was asleep ended with the fence back up')
+    t.equals(#c.moves, 1, 'the re-sent fence was not enforced on the next tick')
+end)
+
+t.test('a player in their own round keeps the loop alive, and is fenced again once out', function()
+    -- Nothing calls SetKeepOut on the way out of a round, so a loop that
+    -- stopped for the round would not be there when they stepped back out
+    -- among other people's zones.
+    local c = newClient()
+    local inRound = true
+    c.env.ArenaDispatch.IsInArena = function() return inRound end
+
+    c.setZones({ ZONE })
+    c.at(ZONE.x + 10.0, ZONE.y)
+    c.step(); c.step(); c.step()
+    t.equals(#c.moves, 0, 'a fighter was fenced out of his own round')
+    t.equals(c.fence.live, 1, 'the loop stopped while the fighter was in his round')
+
+    inRound = false
+    c.step()
+    t.isTrue(#c.moves > 0, 'out of his round, he was not fenced out of somebody else\'s')
 end)
 
 os.exit(t.summary())

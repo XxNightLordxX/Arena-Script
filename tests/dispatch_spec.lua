@@ -143,11 +143,11 @@ local function newFixture(dispatchConfig)
 
     -- THE HOLD THREAD IS PARKED IN THIS FIXTURE, on purpose. `Wait` here does
     -- not yield -- it returns immediately -- so a production `while true`
-    -- loop driven by step() would never come back. `0` ends that thread at
-    -- load, which is also the documented way an operator switches the hold
-    -- off, and ArenaDispatch.HoldDownState is what the tests below drive
-    -- instead: the loop is one line, the work is a function, and the work is
-    -- what is worth asserting.
+    -- loop driven by step() would never come back. `0` means ArenaDispatch.Set
+    -- starts no hold thread at all, which is also the documented way an
+    -- operator switches the hold off, and ArenaDispatch.HoldDownState is
+    -- what the tests below drive instead: the loop is one line, the work is
+    -- a function, and the work is what is worth asserting.
     env.Config.Dispatch = env.Config.Dispatch or {}
     local down = env.Config.Dispatch.downState
     if type(down) ~= 'table' then

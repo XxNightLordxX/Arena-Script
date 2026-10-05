@@ -1071,6 +1071,10 @@ function ArenaLobby.MarkPanelClosed(src)
     return true
 end
 
+--- Starts the idle-lobby sweep if it is not already running. Assigned at the
+--- foot of this file, beside the sweep it starts; see the note there.
+local armIdleSweep
+
 function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, account, roundTime,
     winCondition, tierPlan, scoreLimit)
     local host = tonumber(src)
@@ -1170,6 +1174,14 @@ function ArenaLobby.Create(src, arenaKey, modeKey, entryFee, lives, radar, accou
     end
 
     ArenaDebug('%s created match %s (%s / %s, fee %d)', hostName, id, arenaKey, wantedMode, fee)
+
+    -- THE IDLE SWEEP SLEEPS WHILE THERE IS NO LOBBY, AND THIS IS WHERE IT IS
+    -- STARTED, because this is the only door a lobby comes in through. Last,
+    -- once the lobby exists and its host is in it -- a Create that failed
+    -- above has nothing for it to watch. See the note above the loop, at the
+    -- foot of this file.
+    armIdleSweep()
+
     return id, nil
 end
 
@@ -2564,7 +2576,39 @@ local SWEEP_INTERVAL_MS = 30000
 
 local idleTimeout = math.max(0, Arena.ToInt(Config.Match.idleLobbyTimeoutSeconds) or 0)
 
-if idleTimeout > 0 then
+--- THE IDLE SWEEP RUNS ONLY WHILE THERE IS A LOBBY FOR IT TO CLOSE.
+---
+--- It used to start at load and wake every thirty seconds for the life of
+--- the server, with nothing to look at for every hour the arena stood empty.
+--- Now ArenaLobby.Create -- the only door a match comes in through -- starts
+--- it, it keeps its thirty-second cadence while it has work, and it returns
+--- on the first pass that finds no match in 'lobby' or 'countdown'.
+---
+--- 'countdown' KEEPS IT ALIVE, ON PURPOSE. A countdown is never swept, but
+--- it is the one state that turns back into a lobby WITHOUT passing Create:
+--- HoldCountdown here, and a refused start in server/match.lua's Begin and
+--- Start, all put it back. A sweep that had returned while the only match
+--- was counting down would never see that lobby again. 'live' and 'ended'
+--- never go back to 'lobby', so a server with only rounds in play lets it go.
+---
+--- ONE COPY. `idleSweepRunning` goes up before the thread exists and comes
+--- down in the same pass that returns, with no Wait between the check and
+--- the return -- so Create can never find it down while a copy is still
+--- running, nor up when none is.
+local idleSweepRunning = false
+
+--- @return boolean
+local function anyLobbyCanIdle()
+    for _, match in pairs(matches) do
+        if match.state == 'lobby' or match.state == 'countdown' then return true end
+    end
+    return false
+end
+
+armIdleSweep = function()
+    if idleTimeout <= 0 or idleSweepRunning then return end
+    idleSweepRunning = true
+
     CreateThread(function()
         while true do
             Wait(SWEEP_INTERVAL_MS)
@@ -2582,6 +2626,11 @@ if idleTimeout > 0 then
 
             for _, id in ipairs(expired) do
                 ArenaLobby.Destroy(id, 'notify.lobby_timed_out')
+            end
+
+            if not anyLobbyCanIdle() then
+                idleSweepRunning = false
+                return
             end
         end
     end)

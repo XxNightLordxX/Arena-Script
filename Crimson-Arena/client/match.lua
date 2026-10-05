@@ -1605,9 +1605,15 @@ local keepOut = {}
 
 local warnedZone = nil
 
+-- The barrier loop below, started from here. Declared ahead of it because
+-- SetKeepOut is the one place keepOut changes, and so the one place the loop
+-- can be needed again.
+local startKeepOutBarrier
+
 function ArenaMatch.SetKeepOut(zones)
     keepOut = type(zones) == 'table' and zones or {}
     if #keepOut == 0 then warnedZone = nil end
+    startKeepOutBarrier()
 end
 
 --- The zone a point is inside, or nil.
@@ -1705,48 +1711,93 @@ local function inOwnRound()
     return false
 end
 
-CreateThread(function()
-    while true do
-        local barrier = (Config.Match or {}).keepOutBarrier
-        local on = type(barrier) == 'table' and barrier.enabled == true
+--- Whether the barrier has anything to do at all: switched on, and at least
+--- one zone sent. A player in their own round is NOT this question -- see
+--- the loop.
+--- @return table|nil barrier -- the config block when it does
+local function barrierWanted()
+    local barrier = (Config.Match or {}).keepOutBarrier
+    if type(barrier) ~= 'table' or barrier.enabled ~= true then return nil end
+    if #keepOut == 0 then return nil end
+    return barrier
+end
 
-        if not on or #keepOut == 0 or inOwnRound() then
-            warnedZone = nil
-            Wait(1000)
-        else
-            local ped = PlayerPedId()
-            local coords = GetEntityCoords(ped)
-            local zone, distance = zoneAt(coords.x, coords.y, coords.z)
+-- THE LOOP RUNS ONLY WHILE THERE IS A FENCE TO HOLD, and SetKeepOut starts it.
+--
+-- It used to start with the resource and wake once a second for the rest of
+-- the session, on every client, to find the setting off or no zone sent --
+-- which is how almost every player spends almost all of their time, because
+-- a zone exists only while somebody else's round is live. keepOut changes in
+-- SetKeepOut and nowhere else, and the setting does not change after load,
+-- so the loop can never be needed without SetKeepOut having just been
+-- called: it starts there, ends itself the first time it wakes to an empty
+-- list, and the next fence starts it again.
+--
+-- ONE COPY, EVER. `keepOutBarrierRunning` goes up before the thread is
+-- created and comes down in the same pass that decides to return, with no
+-- yield between them, so a SetKeepOut landing while the loop sleeps finds it
+-- running and leaves it to pick the new list up on its next tick -- a fence
+-- cleared and re-sent inside one sleep is carried on by the loop that was
+-- already there, not doubled.
+--
+-- A PLAYER IN THEIR OWN ROUND KEEPS IT ALIVE, at the old once a second. The
+-- zones are still there, only not to be enforced against them, and nothing
+-- calls SetKeepOut on the way out of a round -- so the loop that stopped for
+-- inOwnRound would not be running when they stepped back out among them.
+local keepOutBarrierRunning = false
 
-            if zone then
-                local radius = tonumber(zone.radius) or 0
-                local push = math.max(1.0, tonumber(barrier.pushBackMetres) or 6.0)
+-- Assigned, not `function startKeepOutBarrier()`: it is the local declared
+-- above SetKeepOut, not a function of this file's public surface.
+startKeepOutBarrier = function()
+    if keepOutBarrierRunning or not barrierWanted() then return end
+    keepOutBarrierRunning = true
 
-                local dx, dy = coords.x - zone.x, coords.y - zone.y
-                local length = math.max(0.01, distance or 0.01)
-                if (distance or 0) < 0.5 then dx, dy, length = 1.0, 0.0, 1.0 end
+    CreateThread(function()
+        while true do
+            local barrier = barrierWanted()
 
-                local target = radius + push
-                local nx = zone.x + (dx / length) * target
-                local ny = zone.y + (dy / length) * target
-
-                local found, groundZ = GetGroundZFor_3dCoord(nx, ny, coords.z + 200.0, false)
-                local nz = (found and groundZ and groundZ > -190.0) and (groundZ + 0.15) or coords.z
-
-                SetEntityCoordsNoOffset(ped, nx, ny, nz, false, false, false)
-
-                if barrier.notify ~= false and warnedZone ~= zone.label then
-                    warnedZone = zone.label
-                    notify('match.keep_out', 'error', zone.label or '')
-                end
-            else
+            if not barrier then
                 warnedZone = nil
-            end
+                keepOutBarrierRunning = false
+                return
+            elseif inOwnRound() then
+                warnedZone = nil
+                Wait(1000)
+            else
+                local ped = PlayerPedId()
+                local coords = GetEntityCoords(ped)
+                local zone, distance = zoneAt(coords.x, coords.y, coords.z)
 
-            Wait(math.max(50, Arena.ToInt(barrier.tickMs) or 250))
+                if zone then
+                    local radius = tonumber(zone.radius) or 0
+                    local push = math.max(1.0, tonumber(barrier.pushBackMetres) or 6.0)
+
+                    local dx, dy = coords.x - zone.x, coords.y - zone.y
+                    local length = math.max(0.01, distance or 0.01)
+                    if (distance or 0) < 0.5 then dx, dy, length = 1.0, 0.0, 1.0 end
+
+                    local target = radius + push
+                    local nx = zone.x + (dx / length) * target
+                    local ny = zone.y + (dy / length) * target
+
+                    local found, groundZ = GetGroundZFor_3dCoord(nx, ny, coords.z + 200.0, false)
+                    local nz = (found and groundZ and groundZ > -190.0) and (groundZ + 0.15) or coords.z
+
+                    SetEntityCoordsNoOffset(ped, nx, ny, nz, false, false, false)
+
+                    if barrier.notify ~= false and warnedZone ~= zone.label then
+                        warnedZone = zone.label
+                        notify('match.keep_out', 'error', zone.label or '')
+                    end
+                else
+                    warnedZone = nil
+                end
+
+                Wait(math.max(50, Arena.ToInt(barrier.tickMs) or 250))
+            end
         end
-    end
-end)
+    end)
+end
 
 -- ======================================================================
 -- FIGHTER BLIPS
@@ -2225,8 +2276,72 @@ function ArenaMatch.SetRadar(on)
     if not radarForMatch then removeAllPlayerBlips() end
 end
 
+--- WHETHER A PASS OF THE LOOP BELOW COULD EVER DRAW ANYTHING THIS ROUND.
+---
+--- A pass draws two kinds of thing, and each has exactly one way in:
+---
+---   ANYBODY NOT ON YOUR SIDE   a dot, and only when refreshBlips is asked to
+---                              include enemies -- which the loop does for
+---                              permanentEnemyBlips() and for a lit radar
+---                              sweep, and for nothing else. Without one of
+---                              those, blipColorFor's enemy branch reads
+---                              showEnemyBlips, which IS permanentEnemyBlips().
+---   YOUR OWN SIDE              the dot, the haze and the marker. All three
+---                              want a row on this player's team, and there
+---                              is no such row unless the mode has teams AND
+---                              this client was told which one it is on --
+---                              the same pair all three of them gate on.
+---
+--- EVERY INPUT HERE IS FIXED FOR THE ROUND, which is the only reason the
+--- answer may be taken once at go-live rather than on every pass. Config is
+--- read once at load and nothing writes it back. modeKey and teamKey are
+--- written into currentMatch by enterArena and nowhere else. radarForMatch
+--- is written by SetRadar, whose one caller is enterArena, before the round
+--- goes live -- and a later enterArena is a new round with a new token, so a
+--- new go-live and a new answer.
+---
+--- THE ROSTER IS THE ONE INPUT THAT DOES MOVE MID-ROUND, and it is not
+--- asked, on purpose: with no side of one's own and no enemy branch open,
+--- there is no row on any board this loop would draw.
+---
+--- DO NOT add a mid-round caller to SetRadar without starting the loop from
+--- it. A radar switched on after go-live in a round that skipped the loop
+--- would sweep nothing, silently.
+--- @return boolean
+local function blipLoopCanDraw()
+    if permanentEnemyBlips() or radarOn() then return true end
+
+    return Arena.ModeUsesTeams(currentMatch.modeKey) and Arena.IsKey(currentMatch.teamKey)
+end
+
 local function startBlipThread()
     if not currentMatch then return end
+
+    -- NO LOOP FOR A ROUND IT COULD NEVER DRAW IN.
+    --
+    -- A free-for-all with the radar off and enemy dots off -- or a team mode
+    -- this client reached without a side -- woke this loop every second for
+    -- the whole round, on every fighter, to work out three times over that
+    -- there was nobody to draw. See blipLoopCanDraw for why that answer
+    -- cannot change before the round does.
+    --
+    -- NOTHING IS LEFT FOR ITS EXIT TO CLEAN. The three lines under the loop
+    -- take down what the loop lit, and a loop that never ran lit nothing --
+    -- the matchHud handler's refreshTeamMarks is the only other writer that
+    -- runs mid-round, and with no side it only ever writes an empty list.
+    -- Whatever a PREVIOUS round drew still belongs to that round's loop,
+    -- which ends on the token change and clears it on the way out, and to
+    -- leaveArena.
+    --
+    -- ONE refreshOutlines ON THE WAY PAST, and only for what it SAYS. The
+    -- first pass is where Config.Debug used to hear why there is no haze
+    -- this round ("has no teams", "was not told which team"); without it an
+    -- operator chasing a missing outline in such a round gets no line at
+    -- all. It outlines nobody here, by the same argument as above.
+    if not blipLoopCanDraw() then
+        refreshOutlines()
+        return
+    end
 
     local token = matchToken
     local permanent = permanentEnemyBlips()

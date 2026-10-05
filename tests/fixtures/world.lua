@@ -273,6 +273,7 @@ function World.new(opts)
         end,
         SetEntityInvincible = function() end,
         SetPlayerInvincible = function() end,
+        GetPlayerInvincible = function() return false end,
 
         -- RECORDED RATHER THAN SWALLOWED. A native stubbed to an empty
         -- function is one no test can assert, and this world has been burned

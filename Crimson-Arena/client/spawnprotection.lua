@@ -97,6 +97,12 @@ function ArenaSpawnProtection.Start(stillWanted)
     local seconds = math.max(0, math.min(30, tonumber(type(cfg) == 'table' and cfg.seconds or 0) or 0))
     if seconds <= 0 then return end
 
+    -- ADMIN GOD MODE IS LEFT ALONE. A player who is already invincible and
+    -- not through a window of ours (an admin menu turned it on) needs no
+    -- protection, and nothing here may switch theirs off -- so no window is
+    -- opened at all and neither Start nor Stop writes a flag.
+    if not activePed and GetPlayerInvincible(PlayerId()) then return end
+
     token = token + 1
     local mine = token
     activePed = PlayerPedId()

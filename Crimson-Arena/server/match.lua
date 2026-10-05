@@ -100,7 +100,7 @@ local function teamRadioChannel(match, teamKey)
     match.radioChannels = match.radioChannels or {}
     if match.radioChannels[teamKey] then return match.radioChannels[teamKey] end
 
-    local first = math.max(1, Arena.ToInt(cfg.firstChannel) or 500)
+    local first = math.max(1, Arena.ToInt(cfg.firstChannel) or 400)
     local last = math.max(first, Arena.ToInt(cfg.lastChannel) or first)
     if not nextRadioChannel or nextRadioChannel < first or nextRadioChannel > last then
         nextRadioChannel = first
@@ -926,7 +926,10 @@ local function decideOnLadder(match)
     end
 
     if bestTier <= 0 then return {} end
-    if #leaders ~= 1 then return {} end
+    -- LEVEL LEADERS IN A TEAM LADDER are handed back together: two team-mates
+    -- level at the top are one side's win, and sideOfLadder calls it a draw
+    -- only when the leaders are on different sides.
+    if #leaders ~= 1 and not Arena.ModeUsesTeams(match.modeKey) then return {} end
     return leaders
 end
 

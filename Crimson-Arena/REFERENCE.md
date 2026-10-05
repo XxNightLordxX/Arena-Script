@@ -59,10 +59,10 @@ instancing really happened rather than assuming it did.
 
 - **Player-run lobbies.** Any player who passes `Config.Permissions.createJobs`
   opens a match from the panel; others browse and join. No admin has to be online.
-- **Free-for-all, team deathmatch and gun game**, all three enabled. A mode decides whether teams exist,
+- **Free-for-all, team deathmatch and gun game**, all three enabled; **team gun game** ships off. A mode decides whether teams exist,
   whether friendly fire lands, and what ends the round.
-- **Uneven teams are allowed on purpose.** The startability rule is that every
-  enabled team has somebody in it, not that the sides are equal.
+- **Uneven teams are allowed on purpose.** The startability rule is that at least
+  two sides have somebody in them (requireBothTeamsOccupied), not that the sides are equal.
 - **Lives, not one death.** The host picks how many, inside a band the operator
   sets. Losing your last one eliminates you; losing one before that respawns you
   at the point furthest from everyone still alive.
@@ -202,12 +202,12 @@ instancing really happened rather than assuming it did.
 |---|---|---|
 | Arenas | **The Skydome** (`skydome`), **Trailer Park** (`trailerpark`) | — |
 | Modes | **Free For All** (`ffa`, the default), **Team Deathmatch** (`tdm`), **Gun Game** (`gungame`) | Team Gun Game (`teamgungame`) |
-| Teams | **Crimson** (`crimson`), **Ash** (`ash`) | Bone (`bone`), Ember (`ember`) |
+| Teams | **Crimson** (`crimson`), **Ash** (`ash`), **Bone** (`bone`), **Ember** (`ember`) | — |
 | Weapons | **81 of 92** — heavy: firework launcher and flamethrower only | Navy Revolver, RPG, homing / grenade / compact grenade / compact EMP launchers, minigun, railgun, railgun XM3, Unholy Hellbringer, Widowmaker |
 
 Other shipped defaults worth knowing: betting **on** (entry fees, spectator bets
 and fighter bets all on), the database **off** (so the board, and the record of what
-players still owe the arena, both cover the current server run only), webhooks **off**, `Config.Debug` **on**, loadouts chosen by
+players still owe the arena, both cover the current server run only), webhooks **off**, `Config.Debug` **off** (a quiet console: kills, rounds, payouts and kit lines are debug-only), loadouts chosen by
 the **host**, ammunition items **on**, the inventory door **on**, minimum 2 players,
 no maximum, no cap on concurrent matches, and `last_standing` as the win condition.
 
@@ -381,10 +381,10 @@ line-number map that is regenerated whenever the file changes.
 |---|---|
 | `Config.ResourceLabel`, `Config.Debug`, `Config.NotifyTitle` | Naming and the debug channel. |
 | `Config.Lobby` | The lobby ped, the ground marker, the blip, how players interact with it, and where they are returned to. |
-| `Config.Schedule` | Opening hours. Ships **on**, with four windows, on the server's own real clock rather than the city's — outside them nobody may create a match and nobody may join one. `offsetHours` shifts them if the box does not run in your players' timezone. |
+| `Config.Schedule` | Opening hours. Ships **on**, with three windows (0-12, 12-14, 18-21 — shown as 00:00-14:00 and 18:00-21:00), on the server's own real clock rather than the city's — outside them nobody may create a match and nobody may join one. `offsetHours` shifts them if the box does not run in your players' timezone. |
 | `Config.Match` | Player counts, lives, countdowns, win conditions, respawn timing, spawn scatter, the keep-out barrier, the crossfire guard, the radar, the server-side position and death checks, and the rules about being dead or in a vehicle. |
 | `Config.Teams` | The team list, their colours and their order. |
-| `Config.Modes`, `Config.DefaultMode` | Free-for-all, team deathmatch and gun game: whether teams exist, what ends a round, and the gun-game ladder. |
+| `Config.Modes`, `Config.DefaultMode` | Free-for-all, team deathmatch, gun game and team gun game (off): whether teams exist, what ends a round, and the gun-game ladder. |
 | `Config.Betting` | Entry fees, spectator bets, fighter bets, payout mode, house cut, which accounts may be used, and every refund rule. |
 | `Config.UI` | Panel title, subtitle, logo, theme, sounds, and whether the in-match HUD is drawn. |
 | `Config.Permissions` | Admin groups, and the jobs allowed to create or join matches. |

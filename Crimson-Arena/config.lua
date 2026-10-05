@@ -21,17 +21,17 @@
       166   Schedule      Opening hours: when the door is actually open
       217   Match         Lives, timers, player counts, win condition
       572   Teams         The sides, and whether they may be uneven
-      742   Modes         Free-for-all, team deathmatch and gun game
-     1167   DefaultMode   Which of them a new lobby opens on
-     1186   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1430   UI            Panel colours, logo and title
-     1498   Permissions   Who may open a match, who may force-stop one
-     1584   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2018   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2616   Database      Optional: four tables the arena owns. Ships OFF
-     2647   Leaderboard   Which matches count towards the board, and which do not
-     2713   Webhook       Optional: a Discord line per finished match
-     2745   Dispatch      Optional: keeping police and EMS out of the arena
+      742   Modes         Free-for-all, team deathmatch, gun game, team gun game (off)
+     1168   DefaultMode   Which of them a new lobby opens on
+     1187   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1431   UI            Panel colours, logo and title
+     1499   Permissions   Who may open a match, who may force-stop one
+     1585   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2019   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2617   Database      Optional: four tables the arena owns. Ships OFF
+     2648   Leaderboard   Which matches count towards the board, and which do not
+     2714   Webhook       Optional: a Discord line per finished match
+     2746   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -76,8 +76,8 @@ Config.ResourceLabel = 'Crimson Arena'
 
 --- Extra console logging, for working out why a round went the way it did.
 ---
---- SHIPS ON, DELIBERATELY. Nothing here reaches a player, and the console is
---- how a strange round gets explained rather than guessed at.
+--- SHIPS OFF. Turn it on to work out why a round went the way it did --
+--- nothing here reaches a player.
 ---
 --- OFF = A QUIET CONSOLE. Every routine line -- each kill, team-kill and
 --- death, a round created, ended or aborted, a pot paid out, kit issued,
@@ -155,7 +155,7 @@ Config.Lobby = {
 -- ======================================================================
 -- OPENING HOURS -- when the door in Config.Lobby is actually open
 --
--- Ships on, with four windows. Outside them nobody may open a match and
+-- Ships on, with three windows. Outside them nobody may open a match and
 -- nobody may join one.
 --
 -- THESE ARE REAL HOURS ON THE SERVER'S OWN CLOCK -- not the city clock, and
@@ -781,8 +781,8 @@ Config.Modes = {
         -- picked, and taken back at the exit like the rest of the kit. By
         -- ox_inventory ITEM NAME, not supply key: these are not supplies and
         -- are never offered on the loadout screen. Only the item is given --
-        -- no channel is set, the team agrees one. An item this server does
-        -- not have is skipped and named once in the console.
+        -- teamRadio below puts each side on its own channel. An item this
+        -- server does not have is skipped and named once in the console.
         extraItems = {
             { item = 'radio', count = 1 },
         },
@@ -793,7 +793,8 @@ Config.Modes = {
         -- channels from firstChannel..lastChannel, locked so only that side
         -- can join -- the other team cannot tune in. Pick a range no job or
         -- player uses. Needs pma-voice; without it nothing happens.
-        teamRadio = { enabled = true, firstChannel = 500, lastChannel = 599 },
+        -- mm_radio refuses channels above its Shared.MaxFrequency (500).
+        teamRadio = { enabled = true, firstChannel = 400, lastChannel = 499 },
     },
 
     -- ==================================================================

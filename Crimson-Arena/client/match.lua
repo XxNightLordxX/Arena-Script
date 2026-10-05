@@ -3580,16 +3580,12 @@ AddEventHandler('ox_inventory:itemCount', function(name, count)
     end
 end)
 
---- Puts the world back the way we found it. Synchronous on purpose: it is
---- also the resource-stop path, and a stop handler that yields is a stop
---- handler that does not finish.
---- @param returnCoords table|nil
---- Puts this client on its team's radio channel. THROUGH mm_radio WHEN IT
---- OFFERS A JOIN EXPORT, so the channel shows on the radio itself; straight
---- through pma-voice otherwise (voice works, the radio screen is not told).
+--- Puts this client on its team's radio channel. THROUGH mm_radio's own
+--- ForceJoinRadio when it is running, so the channel shows on the radio and
+--- its member list; straight through pma-voice otherwise.
 local function joinTeamRadio(channel)
     local shown = type(GetResourceState) == 'function' and GetResourceState('mm_radio') == 'started'
-        and pcall(function() exports.mm_radio:JoinChannel(channel) end)
+        and select(2, pcall(function() return exports.mm_radio:ForceJoinRadio(channel) end)) == true
     if not shown then
         pcall(function()
             exports['pma-voice']:setVoiceProperty('radioEnabled', true)
@@ -3600,10 +3596,14 @@ end
 
 local function leaveTeamRadio()
     local left = type(GetResourceState) == 'function' and GetResourceState('mm_radio') == 'started'
-        and pcall(function() exports.mm_radio:LeaveChannel() end)
+        and pcall(function() exports.mm_radio:LeaveRadio() end)
     if not left then pcall(function() exports['pma-voice']:setRadioChannel(0) end) end
 end
 
+--- Puts the world back the way we found it. Synchronous on purpose: it is
+--- also the resource-stop path, and a stop handler that yields is a stop
+--- handler that does not finish.
+--- @param returnCoords table|nil
 local function leaveArena(returnCoords)
     clearArenaScenery()
 

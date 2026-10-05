@@ -2232,6 +2232,20 @@ local function handBack(ox, src, stash, allowed, manifest)
         end
     end
 
+    -- PUT BACK ON EVERY WAY OUT OF THE LOOP BELOW, the jam's early return
+    -- included -- a return that skipped it would lose the winnings outright.
+    local function putCashBack()
+        for _, cash in ipairs(cashAside) do
+            local landed, why, answer = oxGave(function() return ox:AddItem(src, cash.name, cash.count) end)
+            if not landed then
+                ArenaLog('door: %s x%d was lifted out of %s\'s pockets so their belongings could go back '
+                    .. 'in their own slots, and could NOT be put back -- %s. Give it to them by hand.',
+                    cash.name, cash.count, tostring(src), gaveWhy(why, answer))
+            end
+        end
+        cashAside = {}
+    end
+
     local failures, returned = 0, 0
     for _, item in ipairs(rows) do
         -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
@@ -2330,6 +2344,7 @@ local function handBack(ox, src, stash, allowed, manifest)
                 .. 'that stash -- open it with /arenaadmin, compare it against what they are '
                 .. 'carrying, and settle it by hand.',
                 tostring(src), tostring(item.name), tostring(item.count), tostring(stash))
+            putCashBack()
             return true, failures, returned
         end
 
@@ -2338,14 +2353,7 @@ local function handBack(ox, src, stash, allowed, manifest)
         ::nextItem::
     end
 
-    for _, cash in ipairs(cashAside) do
-        local landed, why, answer = oxGave(function() return ox:AddItem(src, cash.name, cash.count) end)
-        if not landed then
-            ArenaLog('door: %s x%d was lifted out of %s\'s pockets so their belongings could go back '
-                .. 'in their own slots, and could NOT be put back -- %s. Give it to them by hand.',
-                cash.name, cash.count, tostring(src), gaveWhy(why, answer))
-        end
-    end
+    putCashBack()
 
     return true, failures, returned
 end

@@ -44,7 +44,7 @@ Everything below is in the shipped code. Where something is off by default, or i
 
 - Players pick their own side (`Config.Teams.allowChoose`).
 - **Uneven teams are legal by default** (`allowUnequal = true`). 7v1 starts. The pot splits evenly across the winning team, so stacking a side dilutes what winning on it is worth rather than guaranteeing it.
-- Four teams ship; two are enabled. Enabling a third needs no code change — give it spawn points in each arena's `teamSpawns` or it falls back to the shared list.
+- Four teams ship, all four enabled (crimson, ash, bone, ember). Enabling a third needs no code change — give it spawn points in each arena's `teamSpawns` or it falls back to the shared list.
 - `Config.Teams.friendlyFire` does **not** block the damage. It decides whether a teammate's kill is *credited*: with it off the victim still dies and still spends a life, but nobody scores.
 - `showTeamBlips` and `showEnemyBlips` put blips on the living fighters of your own match, tinted with the team's `blipColor`. They ship on and off respectively. A free-for-all has no teammates, so `showEnemyBlips` alone decides there.
 
@@ -419,14 +419,13 @@ Component names are only meaningful on MK II weapons. Adding a `component` to a 
 
 ### Opening hours
 
-`Config.Schedule` decides when the arena is open at all. It ships **on**, with four windows:
+`Config.Schedule` decides when the arena is open at all. It ships **on**, with three windows (the first two touch, so it reads as 00:00-14:00 and 18:00-21:00):
 
 ```lua
 windows = {
-    { from = 0,  to = 4 },   -- midnight to 4am
-    { from = 5,  to = 7 },   -- 5am to 7am
+    { from = 0,  to = 12 },  -- midnight to noon
     { from = 12, to = 14 },  -- noon to 2pm
-    { from = 18, to = 20 },  -- 6pm to 8pm
+    { from = 18, to = 21 },  -- 6pm to 9pm
 },
 ```
 
@@ -469,7 +468,7 @@ entryFee = {
 
 ### Adding a team
 
-Set `enabled = true` on one of the two that ship switched off, or add your own to `Config.Teams.list`:
+All four shipped teams are enabled; add your own to `Config.Teams.list`:
 
 ```lua
 ['bone'] = {
@@ -886,7 +885,7 @@ come back looking for it before concluding a setting is broken.
 
 ### Kit a mode hands out, and the weapon on spawn
 
-- **Team deathmatch gives every fighter a `radio`**, from `extraItems` on the mode in `Config.Modes`. It is the ox_inventory item only — no channel is set; the team agrees one. It is taken back at the exit like the rest of the kit. Any mode can list items there by ox item name; delete the list to hand out nothing. An item your server does not have is skipped and logged.
+- **Team deathmatch gives every fighter a `radio`**, from `extraItems` on the mode in `Config.Modes`. With `teamRadio` on (channels 400–499) each side is also put on its own pma-voice channel as the round starts — through mm_radio when it runs, so the channel shows on the radio — locked so only that side can join, pulled back within a second if they change channel, and taken off it at the exit. mm_radio refuses channels above its `Shared.MaxFrequency` (500), so keep the range under it. The item is taken back at the exit like the rest of the kit. Any mode can list items there by ox item name; delete the list to hand out nothing. An item your server does not have is skipped and logged.
 - **The arena weapon is in hand at match start and after every revive** (`Config.Match.drawWeaponOnSpawn`, `Config.Match.drawWeaponOnRespawn`): drawn through ox_inventory, instantly — a gun if they have one, otherwise a knife or other melee weapon. Anybody who already has something in hand keeps it.
 - **Five seconds of invulnerability after a revive** (`Config.Match.spawnProtection.seconds`, 0 = off). It ends early the moment the revived fighter attacks — a shot, a melee swing, or a fire key (cover, reload and sprint do not count). If your anticheat flags god mode, add its exemption call to `client/spawnprotection.lua` and/or `server/spawnprotection.lua` — `client/spawnprotection.lua` has an OnStart/OnEnd pair called when the window opens and closes; `server/spawnprotection.lua` has an OnStart only, called at the revive, so treat its `seconds` as the longest the window can last. With **FiniAC** running, the arena also registers a FiniAC detection hook that cancels god-mode-type detections (`finiDetections`) for a player only inside their revive window (the seconds, plus up to 5 s the revive may spend loading the ground, plus `finiGraceSeconds`; shrunk to `finiGraceSeconds` the moment they leave the round or are eliminated, so a detection already in flight is still covered). The FiniAC window runs its full length even if the fighter attacks and loses their invulnerability early: the server cannot see the attack, and a client's word for it could be forged, logging every cancel to the server console; `finiHook = false` turns it off.
 - **Item pop-ups stay off the crosshair in a round** (`Config.UI.itemRow`): ox_inventory's own cards are switched off while a player is in a round, and the arena shows a small row along the bottom-left instead, newest on the right. Needs an ox_inventory with the `suppressItemNotifications` export; with an older one ox keeps its own cards. If `inventory:itemnotify` is off, the row stays off too. It sits above the minimap.
@@ -958,7 +957,7 @@ setting to make it try.
 
 3. **The stake is taken at the door.** Joining takes the entry fee *before* the player is added to the match. A stake that cannot be taken aborts the join and leaves nothing behind: no seat, no place in the join order, nothing to unwind.
 
-4. **Pick a side, pick a loadout.** In a team mode the team picker is shown and any split is legal. In the Loadout screen up to `slots` weapons are chosen — guns and melee count against the same total, so the split is the player's — with an ammo amount for each. **As shipped that choice is the host's**: `Config.Loadouts.chooser` is `'host'`, so everyone fights with the host's kit and the others are shown what they will be carrying rather than a picker they cannot use. Armour is not part of the choice at all — everyone starts every life on full health and a full plate, by rule. What you may choose is the **spare kit you carry in**: extra plates and bandages, up to a shared ceiling. What the panel shows and what the server will allow come from the same file, so the preview and the real thing cannot disagree.
+4. **Pick a side, pick a loadout.** In a team mode the team picker is shown and any split is legal. In the Loadout screen up to `slots` weapons are chosen — guns and melee count against the same total, so the split is the player's — with an ammo amount for each. **As shipped that choice is the host's**: `Config.Loadouts.chooser` is `'host'`, so everyone fights with the host's kit and the others are shown what they will be carrying rather than a picker they cannot use. Armour is not part of the choice at all — everyone starts every life on full health and a full plate, by rule. What you may choose is the **spare kit you carry in**: extra plates and bandages, up to each item's own maximum (no shared ceiling as shipped, totalItems = 0). What the panel shows and what the server will allow come from the same file, so the preview and the real thing cannot disagree.
 
 5. **Ready up.** With `autoStartWhenAllReady = true` the match starts on its own once everyone has readied and `minPlayers` is met. Otherwise the host presses start (`onlyHostCanStart`).
 
@@ -1347,7 +1346,7 @@ Like everything else an admin can reach, it is gated on `Config.Permissions.admi
 
 ### Nothing else fits
 
-Set `Config.Debug = true` and restart. It is chatty by design — every stake, refund, payout, join and elimination is printed. Turn it back off on a live server.
+`Config.Debug` ships off, so kills, team-kills, deaths, rounds created/ended, stakes, payouts and kit lines are silent. Set it to `true` and restart to see them; errors, money owed, forfeits and exploit refusals print either way.
 
 ---
 

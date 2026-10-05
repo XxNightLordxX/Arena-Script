@@ -5342,6 +5342,23 @@ t.test('CONTROL: with the cap off, as shipped, every gun kill still spares and s
     t.equals(s.row(3).tier, before + 1, 'with no cap, the killer did not climb')
 end)
 
+t.test('TEAM GUN GAME: two team-mates level at the top when time runs out win it for their side', function()
+    local s = newServer(function(config) config.Modes.gungame.teams = true end)
+    s.play(4, nil, function()
+        for src = 1, 4 do
+            s.fire('setTeam', src, { teamKey = (src % 2 == 1) and 'crimson' or 'ash' })
+        end
+    end)
+    -- Fighters 1 and 3 (crimson) each climb one rung, level.
+    s.trade(2, 1)
+    s.trade(4, 3)
+    s.match_().endsAt = os.time() - 1
+    s.settle(3)
+    t.isTrue(s.resultFor(1) ~= nil and s.resultFor(1).won == true, 'a level team-mate pair was called a draw')
+    t.isTrue(s.resultFor(3) ~= nil and s.resultFor(3).won == true)
+    t.isTrue(s.resultFor(2) ~= nil and s.resultFor(2).won ~= true)
+end)
+
 t.test('TEAM GUN GAME ships off, and switched on is the Gun Game ladder with teams', function()
     local off = newServer()
     t.isNil(off.env.Arena.GetModeByKey('teamgungame'), 'Team Gun Game is offered on the shipped config')

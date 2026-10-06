@@ -1204,6 +1204,13 @@ t.test('seconds = 0 switches it off', function()
     t.isTrue(c.world.invincible ~= true)
 end)
 
+t.test('enabled = false switches it off', function()
+    local c = newClient({ mutate = function(Config) Config.Match.spawnProtection.enabled = false end })
+    c.enter()
+    revive(c)
+    t.isTrue(c.world.invincible ~= true, 'god mode was given with spawnProtection.enabled = false')
+end)
+
 t.test('the anticheat hooks are called at the start and the end of the window', function()
     local c = newClient()
     local calls = {}

@@ -131,6 +131,15 @@ t.test('finiHook = false registers nothing', function()
     t.equals(#f.hooks, 0)
 end)
 
+t.test('enabled = false: no server hook call, no FiniAC hook', function()
+    local f = load(function(Config) Config.Match.spawnProtection.enabled = false end)
+    t.equals(#f.hooks, 0, 'the FiniAC hook was registered with protection switched off')
+    local called = false
+    f.env.ArenaSpawnProtection.OnStart = function() called = true end
+    f.env.ArenaSpawnProtection.Revived(7)
+    t.isTrue(not called, 'OnStart ran with protection switched off')
+end)
+
 t.test('protection off (seconds = 0) registers nothing', function()
     local f = load(function(Config) Config.Match.spawnProtection.seconds = 0 end)
     t.equals(#f.hooks, 0)

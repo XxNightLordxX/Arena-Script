@@ -31,6 +31,7 @@ local function config()
 end
 
 local function windowSeconds()
+    if config().enabled == false then return 0 end
     return math.max(0, math.min(30, tonumber(config().seconds) or 0))
 end
 

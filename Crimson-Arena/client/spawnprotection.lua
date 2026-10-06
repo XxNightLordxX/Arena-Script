@@ -102,7 +102,8 @@ end
 function ArenaSpawnProtection.Start(stillWanted)
     local cfg = (Config.Match or {}).spawnProtection
     local seconds = math.max(0, math.min(30, tonumber(type(cfg) == 'table' and cfg.seconds or 0) or 0))
-    if seconds <= 0 then trace('off (spawnProtection.seconds is 0)') return end
+    if type(cfg) == 'table' and cfg.enabled == false then seconds = 0 end
+    if seconds <= 0 then trace('off (spawnProtection.enabled is false or seconds is 0)') return end
 
     -- ADMIN GOD MODE IS LEFT ALONE. A player who is already invincible and
     -- not through a window of ours (an admin menu turned it on) needs no

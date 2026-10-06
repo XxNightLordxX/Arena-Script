@@ -20,18 +20,18 @@
        96   Lobby         The NPC players walk up to
       166   Schedule      Opening hours: when the door is actually open
       217   Match         Lives, timers, player counts, win condition
-      572   Teams         The sides, and whether they may be uneven
-      742   Modes         Free-for-all, team deathmatch, gun game, team gun game (off)
-     1168   DefaultMode   Which of them a new lobby opens on
-     1187   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1431   UI            Panel colours, logo and title
-     1499   Permissions   Who may open a match, who may force-stop one
-     1585   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2019   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2617   Database      Optional: four tables the arena owns. Ships OFF
-     2648   Leaderboard   Which matches count towards the board, and which do not
-     2714   Webhook       Optional: a Discord line per finished match
-     2746   Dispatch      Optional: keeping police and EMS out of the arena
+      575   Teams         The sides, and whether they may be uneven
+      745   Modes         Free-for-all, team deathmatch, gun game, team gun game (off)
+     1171   DefaultMode   Which of them a new lobby opens on
+     1190   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1434   UI            Panel colours, logo and title
+     1502   Permissions   Who may open a match, who may force-stop one
+     1588   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2022   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2620   Database      Optional: four tables the arena owns. Ships OFF
+     2651   Leaderboard   Which matches count towards the board, and which do not
+     2717   Webhook       Optional: a Discord line per finished match
+     2749   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this
@@ -352,6 +352,9 @@ Config.Match = {
     -- 0 switches it off. It ends early the moment the revived fighter
     -- attacks (gun, melee or an attack key) -- protection is for arriving.
     spawnProtection = {
+        -- THE ON/OFF SWITCH. false: no god mode after a revive at all, and no
+        -- FiniAC hook either (the same as seconds = 0).
+        enabled = true,
         seconds = 5,
 
         -- FiniAC (owner's own anticheat). When the FiniAC resource is

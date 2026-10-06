@@ -104,6 +104,8 @@ local function newServer(ids, mutate, extra, opts)
     --- ordinary one.
     local unresolvable = {}
     local refusingAdds = {}
+    --- Per inventory, item names it refuses while accepting everything else.
+    local refusingItems = {}
 
     --- Inventories that ACCEPT everything and answer nothing.
     local lyingAdds = {}
@@ -173,6 +175,10 @@ local function newServer(ids, mutate, extra, opts)
     --- stub used to throw it away, which made every question about who the
     --- guard applies to unanswerable from in here.
     local hook
+    --- AND THE usingItem HOOK, for the same reason: it asks the same "are
+    --- they in the arena" question, and a player locked out of using their
+    --- own phone in the city is the half of a lockout a move cannot show.
+    local usingHook
 
     --- Which container inventories ox_inventory is currently holding. A
     --- container is NOT reachable by id until something wakes it -- see
@@ -328,6 +334,10 @@ local function newServer(ids, mutate, extra, opts)
             -- single most ordinary refusal at the exit, a full inventory,
             -- untested.
             if refusingAdds[id] then return false end
+            -- ONE ITEM REFUSED, the rest accepted: a hand-back that only
+            -- partly lands, which is what a weight limit does to one heavy
+            -- row. See server.refuseItem.
+            if refusingItems[id] and refusingItems[id][name] then return false end
             -- TAKES IT AND ANSWERS NOTHING. ox_inventory has code paths that
             -- return nil where a true belongs, and oxGave deliberately reads
             -- nil as "no" -- the right rule when "no" means leave the item
@@ -352,8 +362,43 @@ local function newServer(ids, mutate, extra, opts)
                     return true
                 end
             end
+            -- `opts.countsItems`: A REMOVAL BY NAME TAKES FROM ANY STACK, as
+            -- ox_inventory's does -- five bandages of their own answer a
+            -- request for two. Off by default, because the exact-stack match
+            -- above is what every other test here was written against; on,
+            -- it is the one shape that lets an exit take a player's OWN stock
+            -- by the issued count, which an exact match can never show.
+            if opts.countsItems and type(id) == 'number' then
+                local want = tonumber(count) or 0
+                local have = 0
+                for _, item in ipairs(from) do
+                    if item.name == name then have = have + (tonumber(item.count) or 0) end
+                end
+                if want <= 0 or have < want then return false end
+                for index = #from, 1, -1 do
+                    if want <= 0 then break end
+                    local item = from[index]
+                    if item.name == name then
+                        local take = math.min(want, tonumber(item.count) or 0)
+                        item.count = item.count - take
+                        want = want - take
+                        if item.count <= 0 then table.remove(from, index) end
+                    end
+                end
+                return true
+            end
             return false
         end,
+        -- ONLY WITH `opts.countsItems`. Left nil otherwise, so the door's
+        -- pcall around it fails and every count falls back exactly as it
+        -- always has in this file.
+        GetItemCount = opts.countsItems and function(_self, id, name)
+            local total = 0
+            for _, item in ipairs(bucket(id)) do
+                if item.name == name then total = total + (tonumber(item.count) or 0) end
+            end
+            return total
+        end or nil,
         -- MODELS ox_inventory's REAL SIGNATURE: ClearInventory(inv, keep),
         -- where `keep` is a list of item names that survive the clear. The
         -- stub used to drop the second argument, so a resource that passed
@@ -433,6 +478,7 @@ local function newServer(ids, mutate, extra, opts)
         end,
         registerHook = function(_self, name, fn)
             if name == 'swapItems' then hook = fn end
+            if name == 'usingItem' then usingHook = fn end
             return true
         end,
     }
@@ -691,6 +737,13 @@ local function newServer(ids, mutate, extra, opts)
         refusingAdds[id] = (on ~= false) or nil
     end
 
+    --- Makes one inventory refuse ONE item by name and take everything else,
+    --- so a hand-back only partly lands. `false` lets it accept again.
+    function server.refuseItem(id, name, on)
+        refusingItems[id] = refusingItems[id] or {}
+        refusingItems[id][name] = (on ~= false) or nil
+    end
+
     --- The metadata on the first item of that name inside a bag.
     function server.bagMetaOf(key, name)
         for _, item in ipairs(stashes[key] or {}) do
@@ -917,6 +970,13 @@ local function newServer(ids, mutate, extra, opts)
     function server.mayMove(src, from, to)
         if hook == nil then error('the resource registered no swapItems hook', 2) end
         return hook({ source = src, fromInventory = from, toInventory = to, count = 1 }) ~= false
+    end
+
+    --- Asks the usingItem hook whether `src` may use one item by name.
+    --- @return boolean
+    function server.mayUse(src, name)
+        if usingHook == nil then error('the resource registered no usingItem hook', 2) end
+        return usingHook({ source = src, item = { name = name, count = 1 } }) ~= false
     end
 
     return server
@@ -1413,6 +1473,159 @@ t.test('and an inventory ox cannot read at all is not written off either', funct
     t.equals(server.carrying(2), INTACT, 'the ordinary exit stopped working')
 end)
 
+--- What OWN plus five bandages of their own looks like once formatted.
+local INTACT_AND_BANDAGES = 'ammo-rifle-apx40,bandagex5,burgerx3,phonex1'
+
+t.test('THE CHASE AFTER A DEAF CLEAR TOOK THEIR OWN BANDAGES, counted against a floor of zero',
+    function()
+        -- When the clear does not land the arena's kit is taken back BY
+        -- COUNT, as "what they hold minus what they walked in with". What
+        -- they walked in with was read after stow() had emptied them, so it
+        -- is zero -- and the hand-back had just put their own five bandages
+        -- back in those pockets. The two arena bandages were used up in the
+        -- round, so the chase took two of THEIRS, without a word.
+        --
+        -- `countsItems` is what makes this visible at all: without a counter
+        -- the door falls back to removing the issued stack by exact count,
+        -- and this fixture's exact-match removal can never hit theirs.
+        local server, matchId = liveMatch({ 1, 2 }, { { name = 'bandage', count = 5 } }, nil,
+            { countsItems = true })
+        t.contains(server.carrying(1), 'bandagex2', 'the arena issued no bandages, so this proves nothing')
+        t.contains(server.stashed(1), 'bandagex5', 'their own bandages were not stashed, so this proves nothing')
+
+        -- Both arena bandages used, then the clear goes deaf.
+        t.isTrue(server.env.exports.ox_inventory:RemoveItem(1, 'bandage', 2) == true)
+        server.deafenClears(1)
+        server.match.End(matchId, 'match.ended')
+
+        t.contains(server.log(), 'did not refuse the clear',
+            'the clear was not reported as deaf, so this is not the path being tested')
+        t.equals(server.carrying(1), INTACT_AND_BANDAGES,
+            ('a deaf clear left player 1 carrying %s -- their own bandages are short'):format(
+                server.carrying(1)))
+        -- AND THE CONTROL: the same round, an ordinary clear.
+        t.equals(server.carrying(2), INTACT_AND_BANDAGES)
+    end)
+
+t.test('and the same on the SECOND pass, after a hand-back that only partly landed', function()
+    -- The first pass hands back everything but the burger, so the record is
+    -- kept; the next Reclaim -- a resource restart, here -- chases the kit
+    -- by count BEFORE handing back the rest. Their bandages came back on
+    -- the first pass and the floor still said zero.
+    local server, matchId = liveMatch({ 1, 2 }, { { name = 'bandage', count = 5 } }, nil,
+        { countsItems = true })
+    t.isTrue(server.env.exports.ox_inventory:RemoveItem(1, 'bandage', 2) == true)
+    server.deafenClears(1)
+    server.refuseItem(1, 'burger')
+    server.match.End(matchId, 'match.ended')
+
+    t.isTrue(isHolding(server.ammo, 1), 'the first hand-back did not stop short, so this proves nothing')
+    t.contains(server.carrying(1), 'armourx1',
+        'the arena armour is not still on them, so the second pass has nothing to chase')
+
+    server.refuseItem(1, 'burger', false)
+    server.ammo.Reclaim(1, 'resource stopping')
+
+    t.equals(server.carrying(1), INTACT_AND_BANDAGES,
+        ('the second pass left player 1 carrying %s'):format(server.carrying(1)))
+    t.isFalse(isHolding(server.ammo, 1), 'and the record was not settled')
+end)
+
+t.test('and the arena\'s own unused bandages ARE still taken back after a deaf clear', function()
+    -- The floor goes up by what was handed back and not a bandage more: two
+    -- issued and never used are the arena's, and the chase still finds them.
+    local server, matchId = liveMatch({ 1, 2 }, { { name = 'bandage', count = 5 } }, nil,
+        { countsItems = true })
+    server.deafenClears(1)
+    server.match.End(matchId, 'match.ended')
+
+    t.equals(server.carrying(1), INTACT_AND_BANDAGES,
+        ('player 1 walked out of a deaf clear carrying %s'):format(server.carrying(1)))
+end)
+
+--- A three-fighter round in which fighter 3 walks out while ox_inventory is
+--- DOWN, then ox_inventory comes back. The round carries on without them.
+--- @return table server, string matchId
+local function leftWhileOxWasDown(extra, opts)
+    opts = opts or {}
+    local server, matchId = liveMatch({ 1, 2, 3 }, extra, nil, opts)
+    opts.oxStarted = false
+    server.fire('leaveMatch', 3)
+    opts.oxStarted = nil
+    t.isTrue(isHolding(server.ammo, 3), 'the exit finished with ox_inventory down, so this proves nothing')
+    t.contains(server.log(), 'ox_inventory is gone', 'the exit never found ox_inventory down')
+    return server, matchId
+end
+
+t.test('THE SECOND CLEAR: ox_inventory down at the exit, and the NEXT pass wiped what they picked up since',
+    function()
+        -- restore() returned before the block that marks the clear as spent,
+        -- so the record left the exit still owing it. The next Reclaim on
+        -- that id -- here the resource stopping, which reclaims every record
+        -- it holds -- ran ClearInventory on pockets that by then held what
+        -- they had picked up in the city. Gone, with no message.
+        local server = leftWhileOxWasDown()
+        server.forgetStash(3)
+        server.give(3, 'lockpick', 5)
+
+        server.ammo.Reclaim(3, 'resource stopping')
+
+        t.equals(server.carrying(3), 'lockpickx5',
+            ('after the second pass player 3 is carrying "%s" -- the lockpick they picked up after '
+                .. 'leaving should still be there and the arena kit should not'):format(server.carrying(3)))
+        t.isTrue(isHolding(server.ammo, 3), 'and the record that points at their stash was dropped')
+    end)
+
+t.test('and the same when the next pass is the end of the round they went on to WATCH', function()
+    local server, matchId = leftWhileOxWasDown()
+    server.forgetStash(3)
+    server.give(3, 'lockpick', 5)
+
+    server.fire('spectateMatch', 3, { matchId = matchId })
+    server.match.End(matchId, 'match.ended')
+
+    t.equals(server.carrying(3), 'lockpickx5',
+        ('the end of a round they only watched left player 3 carrying "%s"'):format(server.carrying(3)))
+end)
+
+t.test('and what a PARTIAL sweep handed back is not destroyed by the next pass', function()
+    -- The sweep hands back everything but the phone (no room), so the record
+    -- is kept. The next pass cleared the lot: their burger and rounds were
+    -- gone, and the record went as a clean exit.
+    local server = leftWhileOxWasDown()
+    server.refuseItem(3, 'phone')
+    server.ammo.SweepReturns()
+    t.contains(server.carrying(3), 'burgerx3', 'the sweep handed nothing back, so this proves nothing')
+    t.isTrue(isHolding(server.ammo, 3), 'the sweep did not stop short, so this proves nothing')
+    server.refuseItem(3, 'phone', false)
+    server.give(3, 'lockpick', 5)
+
+    server.ammo.Reclaim(3, 'resource stopping')
+
+    t.equals(server.carrying(3), 'ammo-rifle-apx40,burgerx3,lockpickx5,phonex1',
+        ('the pass after a partial sweep left player 3 carrying "%s"'):format(server.carrying(3)))
+end)
+
+t.test('and not taken BY COUNT either: the sweep\'s hand-back raises the floor too', function()
+    -- The pass after it now chases the arena kit by count instead of
+    -- clearing -- and the count is "held minus floor". The sweep had just
+    -- put their own five bandages back, the floor said zero, and the two the
+    -- arena issued were used in the round: two of THEIRS went.
+    local server = leftWhileOxWasDown({ { name = 'bandage', count = 5 } }, { countsItems = true })
+    t.contains(server.carrying(3), 'bandagex2', 'the arena issued no bandages, so this proves nothing')
+    t.isTrue(server.env.exports.ox_inventory:RemoveItem(3, 'bandage', 2) == true)
+
+    server.refuseItem(3, 'phone')
+    server.ammo.SweepReturns()
+    t.contains(server.carrying(3), 'bandagex5', 'the sweep did not hand their bandages back')
+    server.refuseItem(3, 'phone', false)
+
+    server.ammo.Reclaim(3, 'resource stopping')
+
+    t.equals(server.carrying(3), INTACT_AND_BANDAGES,
+        ('the pass after a partial sweep left player 3 carrying "%s"'):format(server.carrying(3)))
+end)
+
 t.test('and the match stops being owed anything once everyone is out', function()
     -- The bookkeeping half. Clearing the records is right -- it just has to
     -- happen after the reclaims that read them, not before.
@@ -1699,6 +1912,88 @@ t.test('and a fighter who is genuinely mid-round is still refused', function()
         'a fighter can empty the arena kit into a stash mid-round')
     t.isFalse(server.mayMove(1, 'a_corpse', 1),
         'a fighter can loot into their own pockets mid-round')
+end)
+
+t.test('THE LOCKOUT, WHILE THE ROUND RUNS: walking out of a live round with a failed hand-back',
+    function()
+        -- The narrowing above asked whether the record's MATCH still exists,
+        -- which answers "no" only once the round has been torn down. A
+        -- fighter who walks out of a round that carries on without them
+        -- keeps their record when the hand-back fails -- that is what the
+        -- sweep retries from -- and the match it names is very much alive.
+        -- So they were back in the city, kit_held toast on screen, refused
+        -- every move into or out of their own house stash and every item
+        -- they tried to use, until a round they had LEFT happened to end.
+        local server, matchId = liveMatch({ 1, 2, 3 })
+        server.forgetStash(3)
+        server.fire('leaveMatch', 3)
+
+        local match = server.lobby.Get(matchId)
+        t.isNotNil(match, 'the round ended when one of three walked out, so this proves nothing')
+        t.isNil(match.players[3], 'the leaver is still on the roster, so this proves nothing')
+        t.isTrue(isHolding(server.ammo, 3), 'the hand-back did not fail, so this proves nothing')
+        t.equals(server.bucketOf(3), 0, 'the leaver was never sent back to the open world')
+
+        t.isTrue(server.mayMove(3, 3, 'house_stash_theirs'),
+            'a player who LEFT a live round cannot put anything in their own house stash')
+        t.isTrue(server.mayMove(3, 'house_stash_theirs', 3),
+            'nor take anything out of it')
+        t.isTrue(server.mayUse(3, 'burger'),
+            'nor use their own things in the city')
+
+        -- AND THE ROUND THEY LEFT IS STILL GUARDED for the people in it.
+        t.isFalse(server.mayMove(1, 1, 'some_other_stash'),
+            'a fighter still in the round can empty the arena kit into a stash')
+        t.isFalse(server.mayUse(1, 'burger'),
+            'a fighter still in the round can use something the arena never issued')
+    end)
+
+t.test('and the same for a fighter eliminated and SENT HOME while the round runs', function()
+    -- spectateOnElimination off: the row stays, marked `leftArena`, because
+    -- the results board and the payout read it. That row is still "in the
+    -- match", and it must not read as "in the arena".
+    local server, matchId = liveMatch({ 1, 2, 3 }, nil, function(config)
+        config.Match.spectateOnElimination = false
+        config.Match.lives = 1
+        config.Match.respawnDelaySeconds = 0
+    end)
+    server.forgetStash(3)
+    server.match.OnDeath(3, 1)
+
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the round ended on one elimination of three, so this proves nothing')
+    t.isTrue(match.players[3] ~= nil and match.players[3].leftArena == true,
+        'the eliminated fighter was not sent home, so this proves nothing')
+    t.isTrue(isHolding(server.ammo, 3), 'the hand-back did not fail, so this proves nothing')
+
+    t.isTrue(server.mayMove(3, 3, 'house_stash_theirs'),
+        'a fighter sent home from a live round cannot put anything in their own house stash')
+    t.isTrue(server.mayMove(3, 'house_stash_theirs', 3), 'nor take anything out of it')
+    t.isTrue(server.mayUse(3, 'burger'), 'nor use their own things in the city')
+
+    t.isFalse(server.mayMove(1, 1, 'some_other_stash'),
+        'a fighter still in the round can empty the arena kit into a stash')
+end)
+
+t.test('and an eliminated fighter who stayed to WATCH is still refused', function()
+    -- The shipped setting. Their row is unmarked and they are still in the
+    -- arena's instance, so the guard stays on them -- the fix is about who
+    -- has gone home, not about who has stopped fighting.
+    local server, matchId = liveMatch({ 1, 2, 3 }, nil, function(config)
+        config.Match.lives = 1
+        config.Match.respawnDelaySeconds = 0
+    end)
+    server.match.OnDeath(3, 1)
+
+    local match = server.lobby.Get(matchId)
+    t.isNotNil(match, 'the round ended on one elimination of three, so this proves nothing')
+    t.isTrue(match.players[3] ~= nil and server.env.Arena.IsEliminated(match.players[3]),
+        'the fighter was not eliminated, so this proves nothing')
+    t.isTrue(match.players[3].leftArena ~= true,
+        'the eliminated fighter was sent home on the shipped setting, so this proves nothing')
+
+    t.isFalse(server.mayMove(3, 3, 'some_other_stash'),
+        'a fighter watching their own round can empty the arena kit into a stash')
 end)
 
 -- ======================================================================

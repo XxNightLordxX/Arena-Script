@@ -651,6 +651,50 @@ t.test('the camera thread stops itself when the watch ends', function()
     t.equals(f.camCoords, before, 'the camera thread kept running after the watch ended')
 end)
 
+-- ========================================================================
+-- AND IT DOES NOT RUN ONE MORE FRAME AFTER IT IS STOPPED
+--
+-- The loop condition was the only check, and it is read BEFORE the
+-- Wait(0) the thread is parked at on every steady frame. A Stop() from an
+-- event handler -- the round ending, the server's state push, the panel's
+-- Stop Watching -- lands while the thread is parked there, so the body ran
+-- once more over targets Stop() had just emptied: "Nobody left to watch."
+-- under every results screen, and a stray stopSpectating to the server.
+-- ========================================================================
+
+--- Whether anything the stopped camera thread could say reached the player
+--- or the server.
+local function strayFrame(f, notesBefore, eventsBefore)
+    local said, told = {}, {}
+    for i = notesBefore + 1, #f.notes do said[#said + 1] = f.notes[i] end
+    for i = eventsBefore + 1, #f.serverEvents do told[#told + 1] = f.serverEvents[i] end
+    return table.concat(said, ' | '), table.concat(told, ', ')
+end
+
+for _, case in ipairs({
+    { 'the round ending (exitArena)', function(f) f.fire('crimson_arena:client:exitArena') end },
+    { 'a state push that no longer lists them', function(f)
+        f.fire('crimson_arena:client:state', { player = {}, matches = {} })
+    end },
+    { 'an eliminated fighter sent home', function(f) f.inArena = false; f.spectate.Stop() end, { inArena = true } },
+}) do
+    t.test('DEFECT: a watch stopped by ' .. case[1] .. ' says nothing more and tells the server nothing', function()
+        local f = watching(case[3])
+        f.step()
+        t.isTrue(f.spectate.IsActive(), 'the fixture is not watching anything, so this proves nothing')
+        local notesBefore, eventsBefore = #f.notes, #f.serverEvents
+
+        case[2](f)
+        t.isFalse(f.spectate.IsActive(), 'the watch did not stop')
+        f.step()
+        f.step()
+
+        local said, told = strayFrame(f, notesBefore, eventsBefore)
+        t.equals(said, '', 'the stopped camera ran another frame and told the player')
+        t.equals(told, '', 'the stopped camera ran another frame and told the server')
+    end)
+end
+
 
 -- ========================================================================
 -- THE ARGUMENTS PAST THE FIRST

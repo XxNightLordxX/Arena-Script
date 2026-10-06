@@ -2031,12 +2031,42 @@ local function stow(src, citizenid)
     return true, stowed, rows, bagKeys, settled, stashBags
 end
 
+--- What each fighter walked into a match already holding of each issued
+--- item: { [matchId] = { [src] = { [item] = count } } }. floorFor below is
+--- the reader and says why a missing entry is not a zero.
+---
+--- DECLARED UP HERE, ABOVE restore(), because restore() now writes to it --
+--- see "THE FLOOR GOES UP BY WHAT WAS HANDED BACK" there. Nothing between
+--- here and floorFor touches it otherwise.
+local heldBefore = {}
+
+--- Raises one fighter's floors by what a hand-back put back in their pockets.
+---
+--- Only a floor that was READ is raised: a nil one stays nil, so takeBack
+--- and oweStock keep refusing to act on it. Callers say when it applies --
+--- see restore() and ArenaAmmo.ReturnLeftovers.
+--- @param matchId string
+--- @param src number
+--- @param returnedBy table|nil -- { [item] = count }, handBack's fourth answer
+local function raiseFloor(matchId, src, returnedBy)
+    if type(returnedBy) ~= 'table' then return end
+    local byMatch = heldBefore[matchId]
+    local mine = byMatch and byMatch[src]
+    if mine == nil then return end
+    for name, count in pairs(returnedBy) do
+        if mine[name] ~= nil then mine[name] = mine[name] + count end
+    end
+end
+
 --- @param allowed integer|nil -- how many rows the door itself put in this
 ---   stash, or nil when nothing knows (the sweep after a restart), which is
 ---   the one case that must stay uncapped.
 --- @param manifest table|nil -- slot -> { name } as the stash stood when the
 ---   door shut it, used to choose WHICH rows are refused when there are too
 ---   many. Advisory only: it never changes how many go back.
+--- @return boolean readable, integer failures, integer returned, table returnedBy
+--- `returnedBy` is { [item name] = count } of what went into their pockets AND
+--- came cleanly out of the stash -- exactly the rows `returned` counts.
 local function handBack(ox, src, stash, allowed, manifest)
     -- AND NOT BEFORE THIS PROCESS KNOWS WHICH STASHES ARE JAMMED.
     --
@@ -2247,6 +2277,7 @@ local function handBack(ox, src, stash, allowed, manifest)
     end
 
     local failures, returned = 0, 0
+    local returnedBy = {}
     for _, item in ipairs(rows) do
         -- PROOF, NOT MERELY THE ABSENCE OF A DENIAL, and this is the one
         -- call in the file that has to be read that way.
@@ -2345,17 +2376,18 @@ local function handBack(ox, src, stash, allowed, manifest)
                 .. 'carrying, and settle it by hand.',
                 tostring(src), tostring(item.name), tostring(item.count), tostring(stash))
             putCashBack()
-            return true, failures, returned
+            return true, failures, returned, returnedBy
         end
 
         returned = returned + 1
+        returnedBy[item.name] = (returnedBy[item.name] or 0) + (Arena.ToInt(item.count) or 0)
 
         ::nextItem::
     end
 
     putCashBack()
 
-    return true, failures, returned
+    return true, failures, returned, returnedBy
 end
 
 local function restore(src, record)
@@ -2363,6 +2395,31 @@ local function restore(src, record)
     if not ox then
         ArenaLog('door: ox_inventory is gone, so %s keeps the arena kit and their own is still stashed at %s.',
             tostring(src), record.stash)
+
+        -- AND THE CLEAR IS SPENT HERE TOO, though it never ran -- or the
+        -- next pass runs it on pockets that are no longer the arena's.
+        --
+        -- This returned before the `cleared` block below, so the record left
+        -- the exit still saying "the wholesale clear is owed". The player has
+        -- gone home; the sweep hands their own things back over the next
+        -- minutes and they pick up more in the city. The NEXT Reclaim on this
+        -- server id -- a resource restart, the end of a round they went on to
+        -- watch, a lobby closing -- then reached this function with `cleared`
+        -- unset and ran ClearInventory on all of it: MEASURED, a lockpick
+        -- picked up after leaving and the burger and rounds a partial sweep
+        -- had already handed back, destroyed with no message, and the record
+        -- dropped as a clean exit. The exact second clear the block below
+        -- exists to prevent.
+        --
+        -- So it is marked as a clear that did NOT wipe, which is the truth:
+        -- the next pass takes Reclaim's second-pass branch, chases the
+        -- arena's kit back by serial and by count, and only hands back the
+        -- stash. ONLY when unset -- a record whose clear already ran keeps
+        -- its own `wiped`, and DO NOT downgrade a true one here.
+        if not record.cleared then
+            record.cleared = true
+            record.wiped = false
+        end
         return false
     end
 
@@ -2492,8 +2549,30 @@ local function restore(src, record)
         record.wiped = wiped
     end
 
-    local readable, failures, returned =
+    local readable, failures, returned, returnedBy =
         handBack(ox, src, record.stash, record.allowed, record.manifest)
+
+    -- THE FLOOR GOES UP BY WHAT WAS HANDED BACK, WHEN THE KIT IS STILL ON
+    -- THEM -- or the reclaim that follows takes the player's own stock.
+    --
+    -- The floor is what heldBefore read at issue, and stow() had already
+    -- emptied the pockets by then, so for every round, plate and bandage the
+    -- arena hands out it is ZERO. That is right while the clear wipes: the
+    -- kit is gone and nothing measures against it. When the clear did NOT
+    -- land (`wiped` false -- refused, or answered nil with the pockets still
+    -- full), the arena's kit is taken back afterwards by count, and every
+    -- count is "what they hold now, minus the floor". The line above has
+    -- just put their OWN stock back in those pockets, so a floor of zero
+    -- reads all of it as the arena's. MEASURED: bandage x5 of their own,
+    -- issued x2 and used both, deaf clear -- they walked out with x3, and
+    -- nothing said so. The same on a second pass after a partial return,
+    -- and on the sweep's oweStock, which reads the same floor.
+    --
+    -- Only what really went into their pockets AND out of the stash is
+    -- added, and only to a floor that was READ: a nil floor stays nil, so
+    -- takeBack keeps refusing on it. A wiped exit is untouched.
+    if record.wiped == false then raiseFloor(record.matchId, src, returnedBy) end
+
     if not readable then return false, wiped end
 
     -- A STASH THAT READ EMPTY IS NOT A STASH THAT WAS EMPTY.
@@ -2559,8 +2638,6 @@ local issuedWeapons = {}
 local issuedAmmo = {}
 
 local issuedSupplies = {}
-
-local heldBefore = {}
 
 --- What this fighter walked into the match already holding of one item, or
 --- NIL when nobody ever managed to read it.
@@ -7084,9 +7161,9 @@ function ArenaAmmo.ReturnLeftovers(src)
         end
     end
 
-    local readable, failures, returned = true, 0, 0
+    local readable, failures, returned, returnedBy = true, 0, 0, nil
     if holding then
-        readable, failures, returned = handBack(ox, src, stash)
+        readable, failures, returned, returnedBy = handBack(ox, src, stash)
         if not readable then return false, 0, false, 'their stash could not be read' end
     end
 
@@ -7199,6 +7276,25 @@ function ArenaAmmo.ReturnLeftovers(src)
     end
 
     if failures > 0 then
+        -- AND THE FLOOR GOES UP BY WHAT DID GO BACK, for the same reason it
+        -- does in restore(): the record is kept, so the arena's kit is still
+        -- chased BY COUNT later -- the next Reclaim on this id, or this sweep
+        -- again -- and every count is "what they hold minus the floor". A
+        -- floor of zero read the player's own stock this pass just handed
+        -- back as the arena's. MEASURED: ox_inventory down at the exit, a
+        -- sweep returned all but the phone, and the next Reclaim took two of
+        -- their own five bandages for the two the arena issued and they used.
+        --
+        -- HERE AND NOT ABOVE, because the settled branch below bills from
+        -- the snapshot taken BEFORE this hand-back, and a floor raised under
+        -- it would forgive rounds the arena is owed. Only the record on THIS
+        -- id: its floor is the one that measures these pockets. Only a clear
+        -- that did not wipe, as in restore().
+        local mine = stashed[src]
+        if mine ~= nil and mine.citizenid == citizenid and mine.wiped == false then
+            raiseFloor(mine.matchId, src, returnedBy)
+        end
+
         owed[citizenid] = stash
         return false, returned, true
     end
@@ -8022,12 +8118,31 @@ local function inArenaNow(src)
     -- registry -- and asked for rather than assumed, since it loads
     -- after this file, in which case the older and stricter answer is
     -- kept.
+    --
+    -- AND THE PLAYER IS STILL IN IT, which "the match exists" did not ask.
+    -- A fighter who walks out of a live round, or is eliminated and sent
+    -- home with spectateOnElimination off, keeps their record whenever the
+    -- exit's hand-back did not finish -- the stash read empty, was jammed,
+    -- an AddItem was refused -- because that record is what the sweep
+    -- retries from. Their round runs on without them, so the match still
+    -- existed and they read as IN IT: back in the city with the kit_held
+    -- toast, refused every move into or out of their own house stash,
+    -- glovebox or trunk and every item they tried to use, for the rest of
+    -- a round they were no longer part of. The roster row is the question:
+    -- Leave takes it away and sendPlayerHome marks it `leftArena` (BEFORE
+    -- the reclaim), while a live fighter and an eliminated one who stayed
+    -- to watch keep it unmarked. Anybody else the arena genuinely holds --
+    -- a watcher, including one sent home who came back to watch -- carries
+    -- the dispatch flag below, which is raised before the door shuts and
+    -- cleared by every exit.
     local record = ownRecord(src)
     local inArena = false
     if record ~= nil then
         if type(ArenaLobby) == 'table' and type(ArenaLobby.Get) == 'function' then
-            inArena = Arena.IsKey(record.matchId)
-                and ArenaLobby.Get(record.matchId) ~= nil
+            local match = Arena.IsKey(record.matchId) and ArenaLobby.Get(record.matchId) or nil
+            local row = type(match) == 'table' and type(match.players) == 'table'
+                and match.players[src] or nil
+            inArena = type(row) == 'table' and row.leftArena ~= true
         else
             inArena = true
         end

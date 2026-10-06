@@ -847,6 +847,62 @@ t.test('a catalogue weapon switched OFF is still ox\'s, and is not handed back n
     t.equals(c.ped.weapons.WEAPON_CARBINERIFLE, nil, 'and it is on the ped')
 end)
 
+-- ======================================================================
+-- A SWITCHED-OFF CATALOGUE WEAPON THEY WALKED IN WITH, HOLSTERED
+--
+-- The capture recorded the selected weapon plus the ENABLED catalogue, and
+-- the exit takes off more than that -- every catalogue weapon on an ox
+-- server, everything without one. So a holstered gun with `enabled = false`
+-- came off and was never recorded: gone, on exactly the servers where a
+-- native gun is a real possession.
+-- ======================================================================
+
+local function switchedOffCarbine(config)
+    for _, weapon in ipairs(config.Loadouts.weapons) do
+        if weapon.weapon == 'WEAPON_CARBINERIFLE' then weapon.enabled = false end
+    end
+end
+
+t.test('DEFECT: without ox a holstered, switched-off catalogue gun comes back with its ammo', function()
+    local c = newClient({ ox = 'missing', mutate = switchedOffCarbine })
+    c.ped.weapons.WEAPON_CARBINERIFLE = 60      -- holstered: not in hand
+    c.enter()
+    c.exit()
+
+    t.equals(c.ped.wipes, 1, 'the fixture is wrong: the exit did not wipe the ped')
+    t.equals(c.ped.weapons.WEAPON_CARBINERIFLE, 60,
+        'a gun the player walked in with was taken off at the exit and never given back')
+end)
+
+t.test('DEFECT: with ox tolerating natives, a holstered switched-off native gun comes back too', function()
+    -- inventory:weaponmismatch off: a native catalogue weapon is a real
+    -- possession ox never strips, and restoreOwnLoadout's own comment
+    -- promises it "comes back as it always did".
+    local c = newClient({ mutate = switchedOffCarbine })
+    local plain = c.env.GetConvar
+    c.env.GetConvar = function(name, default)
+        if name == 'inventory:weaponmismatch' then return 'false' end
+        return plain(name, default)
+    end
+    c.ped.weapons.WEAPON_CARBINERIFLE = 60
+    c.enter()
+    c.exit()
+
+    t.equals(c.ped.weapons.WEAPON_CARBINERIFLE, 60,
+        'a tolerated native the player walked in with was stripped at the exit and never given back')
+end)
+
+t.test('and on a default ox server it is still not handed back natively', function()
+    -- The control. Recording the whole catalogue must not undo the item-less
+    -- gun fix: an ox server hands nothing it owns back natively.
+    local c = newClient({ mutate = switchedOffCarbine })
+    c.ped.weapons.WEAPON_CARBINERIFLE = 60
+    c.enter()
+    c.exit()
+    t.isTrue(not c.gaveNatively('WEAPON_CARBINERIFLE'), 'a switched-off ox weapon was handed back with no item')
+    t.equals(c.ped.weapons.WEAPON_CARBINERIFLE, nil, 'and it is on the ped')
+end)
+
 t.test('a hash in the ignore list is honoured the way ox honours it', function()
     local c = newClient({ ignore = '[12345]' })
     local plain = c.env.joaat
@@ -985,6 +1041,20 @@ t.test('after a ped swap the prop left on the old ped is found too', function()
     c.env.PlayerPedId = function() return 12 end
     sweepWindow(c)
     t.equals(c.world.objects[orphan], nil, 'the orphan on the ped the player had at the exit was never looked at')
+end)
+
+t.test('DEFECT: a restart mid-round still sweeps the back -- the new copy asks for it at start', function()
+    -- The old copy's exit sweep waits five seconds before its first pass and
+    -- is stopped well inside that wait, so it never runs. What is loaded here
+    -- IS the new copy: no round, no exit, nothing from the server -- only an
+    -- orphan the entry left on their back and an inventory the restart's
+    -- reclaim has already emptied.
+    local c = newClient()
+    c.ox.items = {}
+    local orphan = c.prop('WEAPON_CARBINERIFLE')
+    sweepWindow(c)
+    t.equals(c.world.objects[orphan], nil,
+        'the orphan arena carbine is still on their back after the restart')
 end)
 
 t.test('without ox the sweep does nothing at all', function()

@@ -90,6 +90,10 @@ end
 
 local nextRadioChannel = nil
 
+--- channel -> the id of the match whose lock pma-voice is holding on it. Read
+--- only by ArenaMatch.ReleaseTeamRadio below, which says why it exists.
+local radioOwner = {}
+
 --- The pma-voice channel this side of this match talks on, handed out from
 --- the mode's range the first time a side asks and locked to that side with
 --- pma-voice's own channel check. nil when the mode has none or pma-voice
@@ -125,8 +129,55 @@ local function teamRadioChannel(match, teamKey)
         return nil
     end
     match.radioChannels[teamKey] = channel
+    radioOwner[channel] = match.id
     ArenaDebug('team radio: match %s side %s talks on channel %d.', tostring(match.id), teamKey, channel)
     return channel
+end
+
+--- Hands every channel this match locked back to everybody. Called by
+--- ArenaLobby.Destroy, the one function every ending goes through.
+---
+--- THE LOCK OUTLIVED THE ROUND, AND IT LOCKED OUT EVERYBODY. The check above
+--- answers `match.state ~= 'ended' and ...`, and nothing ever took it off
+--- again -- so the moment a team round ended or was aborted, both of its
+--- channels refused EVERY player on the server, former fighters included,
+--- until about fifty more team rounds had wrapped the allocator back round to
+--- them. The last fighter walking out of a round did the same thing by
+--- another road: Destroy without 'ended', an empty roster, and a check that
+--- finds nobody on it. The channel was open before the arena used it; the
+--- arena closed it and never opened it again. Each lock also held the whole
+--- finished match table alive inside pma-voice.
+---
+--- AN ALWAYS-YES CHECK, BECAUSE THERE IS NOTHING ELSE TO HAND BACK.
+--- pma-voice publishes addChannelCheck and no way to remove one, and its
+--- canJoinChannel lets anybody in when the check says yes -- which is
+--- exactly what a channel with no check does. It replaces the closure, so
+--- the old match table goes with it.
+---
+--- ONLY A CHANNEL THIS MATCH STILL OWNS. The allocator wraps, and a newer
+--- round may already have been handed the same number and locked it to its
+--- own side; opening that one would let anybody onto a live team's channel.
+--- `radioOwner` is how the newer round's claim is told apart from this one's.
+--- @param match table
+function ArenaMatch.ReleaseTeamRadio(match)
+    if type(match) ~= 'table' or type(match.radioChannels) ~= 'table' then return end
+
+    local voiceUp = type(GetResourceState) == 'function' and GetResourceState('pma-voice') == 'started'
+    for _, channel in pairs(match.radioChannels) do
+        if radioOwner[channel] == match.id then
+            radioOwner[channel] = nil
+            if voiceUp then
+                local ok, why = pcall(function()
+                    exports['pma-voice']:addChannelCheck(channel, function() return true end)
+                end)
+                if not ok then
+                    ArenaLog('team radio: pma-voice would not open channel %d again -- %s.',
+                        channel, tostring(why))
+                end
+            end
+        end
+    end
+    match.radioChannels = nil
 end
 
 local function toPoint(value)
@@ -1193,7 +1244,8 @@ local instanced = {}
 --- the flag still suppressing their alerts. Neither is visible from a log.
 --- @param src number
 --- @param payload table
-local function sendExitArena(src, payload)
+--- @param opts table|nil -- { revive = false } leaves the medical revive out; see below
+local function sendExitArena(src, payload, opts)
     TriggerClientEvent('crimson_arena:client:itemRow', src, false)
     ArenaAmmo.Reclaim(src, 'left the arena')
 
@@ -1232,7 +1284,19 @@ local function sendExitArena(src, payload)
     ArenaDispatch.ExitBucket(src)
     instanced[src] = nil
 
-    ArenaDispatch.Revive(src)
+    -- A FIGHTER IS ALWAYS STOOD UP; A WATCHER ONLY WHEN THE ROUND PUT THEM DOWN.
+    --
+    -- The revive is the medical script's own, and on a player who is up it
+    -- is not nothing: most of them set health and put armour to ZERO (see
+    -- matchflow_spec). Every pure onlooker was sent it at every End and Abort
+    -- -- somebody who never fought, never went down and never had a vitals
+    -- capture to be handed back -- so a watcher wearing a vest walked out of
+    -- the round they watched without it. The two onlooker loops below pass
+    -- `revive = false` unless the watcher reads as down now; everybody else,
+    -- every fighter on every path, gets it exactly as before.
+    if not (type(opts) == 'table' and opts.revive == false) then
+        ArenaDispatch.Revive(src)
+    end
 
     -- The FiniAC window closes with the round: back in the open world, a
     -- god-mode detection on them is FiniAC's to see.
@@ -1253,6 +1317,34 @@ local function sendExitArena(src, payload)
     -- remembers them and takes it down when that round ends. AFTER the exit
     -- event, so the client has already left before it learns the fence.
     ArenaLobby.PushState(src)
+end
+
+--- A fighter who was SENT HOME EARLIER and has since come back to watch the
+--- same round is told it is over. Called by End and Abort just before
+--- sendPlayerHome, which skips them.
+---
+--- THE ONE WATCHER NO LOOP REACHED. Eliminated with spectateOnElimination
+--- off, they were sent home (leftArena), then a Watch for their own round put
+--- them back on the camera -- hudsenthome_spec's "SENT HOME, THEN WATCH"
+--- pins that this is allowed. At the end, sendPlayerHome returned early on
+--- leftArena, both onlooker loops skip anybody on the roster, and Destroy
+--- sends an exit only to the flagged, which they are not. So nothing ever
+--- stopped their camera: frozen, invisible, every control off but BACKSPACE,
+--- until the stream grace gave up on an empty arena twelve seconds later.
+---
+--- NOT sendExitArena: they already had their exit, their kit reclaim and
+--- their medical revive when they went home, and sending those again is
+--- exactly what leftArena exists to stop. This is only the watch coming down
+--- -- the index, the bucket the watch put them in, and the exit event their
+--- client's camera listens for (client/match.lua's leaveArena returns at once
+--- for somebody no longer in a round).
+local function exitWatcherSentHome(match, player, payload)
+    if player.leftArena ~= true or not (match.spectators or {})[player.src] then return false end
+    ArenaLobby.RemoveSpectator(player.src, true)
+    ArenaDispatch.ExitBucket(player.src)
+    instanced[player.src] = nil
+    TriggerClientEvent('crimson_arena:client:exitArena', player.src, payload)
+    return true
 end
 
 local function sendPlayerHome(player, payload)
@@ -1533,6 +1625,24 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
 
     ArenaDispatch.Revive(player.src)
 
+    -- THE RADIO CHANNEL THEY ARE ON, READ BEFORE THE DOOR TAKES THEIR RADIO.
+    --
+    -- ArenaAmmo.Issue below stashes the player's own radio item, and a radio
+    -- script that leaves the channel when the item goes (mm_radio's
+    -- doRadioCheck) drops them to none in reply -- so any reading taken
+    -- after this line may already be the arena's work rather than theirs,
+    -- and the exit would hand back "no channel". pma-voice keeps its own
+    -- server-side copy in this state bag, and here it can only be the
+    -- player's own. Sent as `priorRadioChannel`, which client/match.lua's
+    -- radioChannelBefore prefers over its own reading. NIL WHEN IT CANNOT BE
+    -- READ, NEVER 0: nil lets the client fall back to what pma-voice shows
+    -- it, where a 0 would tell it for certain that they were on none.
+    local priorRadioChannel = nil
+    do
+        local ok, value = pcall(function() return Player(player.src).state.radioChannel end)
+        if ok then priorRadioChannel = tonumber(value) end
+    end
+
     TriggerClientEvent('crimson_arena:client:itemRow', player.src, true)
     local missingAmmo = ArenaAmmo.Issue(player.src, match.id, withModeExtras(match, player.loadout))
     if #missingAmmo > 0 then
@@ -1555,6 +1665,7 @@ local function sendEnterArena(match, player, index, arena, freezeSeconds)
         modeKey = match.modeKey,
         teamKey = teamKey,
         radioChannel = teamRadioChannel(match, teamKey),
+        priorRadioChannel = priorRadioChannel,
         spawn = toPoint((match.spawnPlan and match.spawnPlan[player.src])
             or Arena.PickSpawn(match.arenaKey, teamKey, index)),
         scatterRadius = (match.spawnPlan and match.spawnPlan[player.src]) and 0.0 or scatterRadius(),
@@ -2778,6 +2889,8 @@ function ArenaMatch.Begin(matchId, requestedBy)
                 -- not put anybody back -- see unplaceAuto.
                 unplaceAuto(current)
                 for _, player in ipairs(ArenaLobby.PlayerArray(current)) do
+                    -- The digit pushed a second ago comes off, or it stays frozen.
+                    TriggerClientEvent('crimson_arena:client:countdown', player.src, { seconds = 0 })
                     ArenaNotifyKey(player.src, why or 'notify.start_cancelled', 'warning')
                 end
                 ArenaLobby.Broadcast()
@@ -2802,6 +2915,7 @@ function ArenaMatch.Begin(matchId, requestedBy)
         if not started and Arena.IsKey(refusal) then
             local failed = ArenaLobby.Get(matchId)
             for _, player in ipairs(failed and ArenaLobby.PlayerArray(failed) or {}) do
+                TriggerClientEvent('crimson_arena:client:countdown', player.src, { seconds = 0 })
                 ArenaNotifyKey(player.src, refusal,
                     player.src == (failed and failed.hostSource) and 'error' or 'warning')
             end
@@ -4086,6 +4200,37 @@ function ArenaMatch.OnDeath(src, killerSrc, serverSaw, why, causeHash, witnessed
     return true
 end
 
+--- Whether a pure onlooker is down at the moment the round they watched is
+--- over -- the one case in which the exit's medical revive is theirs to get.
+---
+--- A WATCHER WALKS IN ON THEIR FEET: ArenaLobby.AddSpectator refuses anybody
+--- whose isdead / inlaststand is set, as Join does. So the revive the exit used to send every
+--- one of them was, for all but a body caught by something in the arena
+--- while parked there, the medical script rewriting the health and armour of
+--- somebody who was fine -- and nothing hands those back to a watcher, who
+--- never had a vitals capture. Asked of the two things the server can see
+--- without the client's word: the body reading as dead (the dead sweep's own
+--- test), and the medical script's own state bag
+--- (Config.Dispatch.downState.watchStateBag) reading as anything but alive.
+--- Not the isdead / inlaststand metadata: the down-state hold writes that to
+--- false for every watcher all round, so it says nothing here.
+--- @param src integer
+--- @return boolean
+local function watcherIsDown(src)
+    if readsAsDead(src) then return true end
+
+    local downState = (Config.Dispatch or {}).downState or {}
+    local bag = downState.watchStateBag
+    if not Arena.IsKey(bag) or type(Player) ~= 'function' then return false end
+
+    local ok, value = pcall(function() return Player(src).state[bag] end)
+    if not ok or value == nil then return false end
+
+    local alive = downState.aliveValue
+    if alive == nil then alive = 1 end
+    return tostring(value) ~= tostring(alive)
+end
+
 function ArenaMatch.End(matchId, reasonKey, winners)
     local match = ArenaLobby.Get(matchId)
     if not match then return false end
@@ -4257,6 +4402,10 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     local returnCoords = toPoint(Config.Lobby.returnCoords)
     local names = {}
 
+    -- WHO THIS END ACTUALLY TOOK OUT OF THE ARENA, for the revive sweep at the
+    -- foot of this function and for nothing else. See the note there.
+    local sentHomeNow = {}
+
     for _, player in ipairs(players) do
         if won[player.src] then
             names[#names + 1] = player.name or ArenaPlayerName(player.src)
@@ -4316,7 +4465,10 @@ function ArenaMatch.End(matchId, reasonKey, winners)
         -- The board still goes to a fighter who left the arena early: they
         -- are on the roster, they may have been paid, and the results event
         -- below is the one the panel actually draws.
-        sendPlayerHome(player, { returnCoords = returnCoords, results = results })
+        exitWatcherSentHome(match, player, { returnCoords = returnCoords, results = results })
+        if sendPlayerHome(player, { returnCoords = returnCoords, results = results }) then
+            sentHomeNow[player.src] = true
+        end
         TriggerClientEvent('crimson_arena:client:results', player.src, results)
     end
 
@@ -4343,7 +4495,10 @@ function ArenaMatch.End(matchId, reasonKey, winners)
                 teamScores = tally,
                 departedScores = banked,
             }
-            sendExitArena(src, { returnCoords = returnCoords, results = results })
+            -- The medical revive only for a watcher who is down: see
+            -- watcherIsDown, and the note in sendExitArena.
+            sendExitArena(src, { returnCoords = returnCoords, results = results },
+                { revive = watcherIsDown(src) })
             TriggerClientEvent('crimson_arena:client:results', src, results)
         end
     end
@@ -4398,9 +4553,19 @@ function ArenaMatch.End(matchId, reasonKey, winners)
     -- which is the same rule the betting ledger keeps for the same reason:
     -- an id is an address, NEVER an identity. A player who has gone answers
     -- nothing and is skipped, which is right -- there is nobody to stand up.
+    --
+    -- AND ONLY THE FIGHTERS THIS END SENT HOME. The roster keeps a fighter who
+    -- was eliminated and sent home EARLIER (OnDeath, with no watch), and the
+    -- sweep stood them up too -- minutes after they left, out in the city,
+    -- where they may since have been downed by somebody who has nothing to do
+    -- with the arena: their medical script told they are fine and their down
+    -- flags cleared for a fall the arena never caused. They had their revive
+    -- on their own way out. NOT a `leftArena` test: End's loop above has set
+    -- it on every row by now, so `sentHomeNow` is the only record of who this
+    -- End took out of the arena.
     local roster = {}
     for _, player in ipairs(players) do
-        if type(player.src) == 'number' then
+        if type(player.src) == 'number' and sentHomeNow[player.src] then
             roster[#roster + 1] = { src = player.src, citizenid = player.citizenid }
         end
     end
@@ -4493,6 +4658,31 @@ function ArenaMatch.Abort(matchId, reasonKey)
     if not match then return false end
 
     local reason = Arena.IsKey(reasonKey) and reasonKey or 'match.aborted'
+
+    -- ONLY A FIGHTER THE ARENA ACTUALLY PUT IN IT IS SENT HOME OUT OF IT.
+    --
+    -- An admin Stop or Wipe and a resource restart all reach here for a match
+    -- in ANY state, and this sent every row through sendPlayerHome -- whose
+    -- exit carries the medical revive -- including a lobby, or a lobby
+    -- countdown, that nobody had been teleported anywhere for. So somebody
+    -- waiting in a lobby who was downed in the city was stood up by their
+    -- medical script, and had their isdead / inlaststand cleared, because an
+    -- admin pressed Stop. The same lobby closed by its host, the idle sweep or
+    -- the opening hours revived nobody: Destroy only touches the flagged.
+    --
+    -- READ BEFORE 'ended' OVERWRITES THE STATE. `match.placed` is the
+    -- roster-was-placed answer server/lobby.lua and server/betting.lua already
+    -- use. PER PLAYER AS WELL, for the one case it misses: a raise inside
+    -- Start's placement loop leaves `placed` unset with part of the roster
+    -- already in -- which is exactly the round the sweep's countdownOverran
+    -- aborts -- and those few carry this match's flag or instance.
+    local roundPlaced = match.state == 'live' or match.placed == true
+    local function wasPlaced(src)
+        if roundPlaced or instanced[src] == match.id then return true end
+        return type(ArenaDispatch.GetPlayerMatchId) == 'function'
+            and ArenaDispatch.GetPlayerMatchId(src) == match.id
+    end
+
     match.state = 'ended'
     match.winners = nil
     match.payouts = nil
@@ -4502,11 +4692,15 @@ function ArenaMatch.Abort(matchId, reasonKey)
         ArenaNotifyKey(player.src, reason, 'warning')
     end
     for _, player in ipairs(ArenaLobby.PlayerArray(match)) do
-        sendPlayerHome(player, { returnCoords = returnCoords })
+        exitWatcherSentHome(match, player, { returnCoords = returnCoords })
+        if wasPlaced(player.src) then
+            sendPlayerHome(player, { returnCoords = returnCoords })
+        end
     end
     for src in pairs(match.spectators or {}) do
         if not match.players[src] then
-            sendExitArena(src, { returnCoords = returnCoords })
+            -- As in End: the medical revive only for a watcher who is down.
+            sendExitArena(src, { returnCoords = returnCoords }, { revive = watcherIsDown(src) })
         end
     end
 

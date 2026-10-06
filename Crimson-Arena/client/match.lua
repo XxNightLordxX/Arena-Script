@@ -56,6 +56,11 @@ local currentMatch
 
 --- The pma-voice team channel this client was put on, or nil.
 local teamRadioOn = nil
+
+--- The radio channel this player was on BEFORE the round, handed back on the
+--- way out -- see leaveArena. 0 when they were on none, nil while no round
+--- is outstanding.
+local radioBefore = nil
 local matchLive = false
 local deathReported = false
 
@@ -128,6 +133,11 @@ local function holdOutlineTechnique()
 end
 
 local outlineTint = nil
+
+--- Whether this client has written the client-wide outline colour since it
+--- was last handed back -- see removeAllOutlines. Only a colour the arena
+--- set is ever reset.
+local outlineColourSet = false
 
 --- THE MARKER ABOVE A TEAMMATE'S HEAD, AND WHY IT IS NOT THE OUTLINE AGAIN.
 ---
@@ -332,8 +342,18 @@ local function captureOwnLoadout()
     local selected = GetSelectedPedWeapon(ped)
     if oxHasDrawn(selected) then selected = UNARMED end
     remember(selected)
-    for _, weapon in ipairs(Arena.GetEnabledWeapons()) do
-        remember(joaat(weapon.weapon))
+
+    -- THE WHOLE CATALOGUE, SWITCHED OFF OR NOT -- the same list the strip
+    -- below takes off with ox running, and a part of what its wipe takes
+    -- without ox. This read Arena.GetEnabledWeapons(), so a catalogue weapon
+    -- with `enabled = false` that the player walked in with holstered was
+    -- taken off at the exit and never recorded, and nothing gave it back: on
+    -- a server without ox, or with ox's weaponmismatch off, it was simply
+    -- gone. `enabled` stops the arena ISSUING a gun, not the player owning
+    -- one. Recording more costs an ox server nothing: restoreOwnLoadout still
+    -- hands back nothing ox owns.
+    for _, weapon in ipairs(Config.Loadouts.weapons or {}) do
+        if type(weapon) == 'table' and Arena.IsKey(weapon.weapon) then remember(joaat(weapon.weapon)) end
     end
     carried = {
         weapons = weapons,
@@ -519,8 +539,44 @@ local ArenaLogOnce
 --- option this file set, and there is no getter to check or repair them from
 --- here. They must reconnect once.
 
+--- THE HEALTH AND ARMOUR THE EXIT HANDED BACK, and how long after the exit
+--- they are still defended. Written by restoreOwnLoadout, read by holdVitals.
+---
+--- THE SERVER GOES ON REVIVING AFTER THE ROUND, and the revive is the medical
+--- script's: the sweep in server/match.lua's End sends it again five seconds
+--- after the exit, and most medical scripts set health and put ARMOUR TO
+--- ZERO doing it (matchflow_spec). By then this client has already put the
+--- player's own numbers back and forgotten them, and holdVitals did nothing
+--- outside a round -- so a fighter who walked out wearing their own vest,
+--- correctly handed back, lost it standing at the lobby five seconds later.
+--- Every round, for anybody who brought armour in. The exit's OWN revive can
+--- do the same a moment after the restore, when the medical handler yields:
+--- it was sent before the exit, so it lands after it.
+---
+--- TEN SECONDS, the same window VISIBILITY_WATCH_MS keeps for the same
+--- sweep and for the same reason: the arena sends those events, on its own
+--- schedule, about a round only it knows has ended, so the few seconds they
+--- land in are its to answer for. Nothing a player does next is touched
+--- after it, and the next round's entry closes it at once.
+local exitVitals = { health = nil, armour = nil, until_ = 0, token = 0 }
+
+local EXIT_VITALS_MS = 10000
+
 local function restoreOwnLoadout(ped)
     if not carried then return end
+
+    -- A HEALTH READ OFF A DEAD PED IS NEVER WRITTEN BACK.
+    --
+    -- A player downed between joining and being placed walks in dead: the
+    -- capture reads that health (0, or the 100 a player ped dies at), the
+    -- start countdown stands them up for the round, and writing the number
+    -- back here killed them again on arrival at the lobby -- after
+    -- ArenaDispatch.Exit, so the medical script took it as an ordinary city
+    -- death there, alert and all. They were revived for the round by the
+    -- arena; they leave it standing, at the full health that revive gave.
+    -- A living capture comes back exactly as it was read.
+    local health = tonumber(carried.health) or 0
+    if health <= 100 then health = GetEntityMaxHealth(ped) end
 
     -- HEALTH AND ARMOUR COME BACK WHATEVER restoreLoadoutOnExit SAYS. DO NOT
     -- move the armour back inside the branch below with the weapons.
@@ -541,8 +597,11 @@ local function restoreOwnLoadout(ped)
     -- SetPedArmour cannot duplicate anything -- putting back the number that
     -- was read off this same ped on the way in is the definition of leaving
     -- it as it was found.
-    SetEntityHealth(ped, carried.health)
+    SetEntityHealth(ped, health)
     SetPedArmour(ped, carried.armor)
+
+    exitVitals.health, exitVitals.armour = health, carried.armor
+    exitVitals.until_ = GetGameTimer() + EXIT_VITALS_MS
 
     if Config.Match.restoreLoadoutOnExit == true then
         -- NO CATALOGUE WEAPON ox_inventory OWNS IS HANDED BACK NATIVELY, and
@@ -1397,9 +1456,39 @@ AddEventHandler('gameEventTriggered', function(event, data)
     handleDeath(victim, attacker)
 end)
 
+--- AFTER THE ROUND, THE PLAYER'S OWN NUMBERS -- never the arena's -- and
+--- only inside the window the exit opened. See exitVitals for the revive
+--- this answers. Re-asserted every frame for the same VITALS_REASSERT_MS the
+--- in-round hold trusts, so a medical handler that writes a frame or two late
+--- is put right as well. A dead ped is left alone, a new round stops it, and
+--- a second call inside the window replaces the first one's thread rather
+--- than running beside it.
+local function defendExitVitals()
+    local startedAt = GetGameTimer()
+    if exitVitals.health == nil or startedAt >= exitVitals.until_ then return end
+
+    exitVitals.token = exitVitals.token + 1
+    local token, stop = exitVitals.token, startedAt + VITALS_REASSERT_MS
+    CreateThread(function()
+        while not currentMatch and exitVitals.token == token and GetGameTimer() < stop do
+            local ped = PlayerPedId()
+            if not IsEntityDead(ped) then
+                SetEntityHealth(ped, exitVitals.health)
+                SetPedArmour(ped, exitVitals.armour)
+            end
+            Wait(0)
+        end
+    end)
+end
+
 local function holdVitals()
-    if not currentMatch then return end
-    arenaVitals.until_ = GetGameTimer() + VITALS_REASSERT_MS
+    if currentMatch then
+        arenaVitals.until_ = GetGameTimer() + VITALS_REASSERT_MS
+        return
+    end
+    -- Sent straight after the medical event in the same ArenaDispatch.Revive:
+    -- outside a round, that is End's sweep five seconds after the exit.
+    defendExitVitals()
 end
 
 RegisterNetEvent('crimson_arena:client:holdVitals', holdVitals)
@@ -1508,6 +1597,7 @@ local function startArenaThread()
             local tint = outlineTint
             if tint and next(outlined) ~= nil then
                 SetEntityDrawOutlineColor(tint.r, tint.g, tint.b, 255)
+                outlineColourSet = true
                 SetEntityDrawOutlineShader(OUTLINE_SHADER)
                 holdOutlineTechnique()
             end
@@ -1991,6 +2081,7 @@ local function refreshOutlines()
             outlineTint = { r = r, g = g, b = b }
             if streamed > 0 then
                 SetEntityDrawOutlineColor(r, g, b, 255)
+                outlineColourSet = true
                 SetEntityDrawOutlineShader(OUTLINE_SHADER)
                 holdOutlineTechnique()
             end
@@ -2152,22 +2243,31 @@ local function removeAllOutlines()
     -- 0 -- the first of them. Setting a global to the value it already holds
     -- costs nobody anything.
     --
-    -- THE COLOUR IS A REAL GAP, and it is left open deliberately rather than
-    -- papered over. SET_ENTITY_DRAW_OUTLINE_COLOR is one setting for the
-    -- whole client -- neither call site takes an entity -- so from the end of
-    -- the first team round until the game restarts, any other script that
-    -- outlines something without setting its own colour draws in the last
-    -- team's tint. The cost is cosmetic and lands on other resources.
+    -- THE COLOUR IS HANDED BACK TOO, NOW THAT ITS DEFAULT HAS BEEN READ
+    -- RATHER THAN GUESSED. SET_ENTITY_DRAW_OUTLINE_COLOR is one setting for
+    -- the whole client -- neither call site takes an entity -- and this used
+    -- to leave it at the last team's tint until the game restarted, so any
+    -- other script that outlined something without setting its own colour
+    -- drew it in the arena's crimson or ash. It was left open as a gap
+    -- because the default "is not something this file can read", and
+    -- guessing at engine internals has cost this file before. It has been
+    -- read since, out of the same source the technique group above was:
     --
-    -- There is no reset native for it and no getter to capture the previous
-    -- value with, so putting it back means writing a constant for the
-    -- engine's default -- and that default is not something this file can
-    -- read. Twenty lines up is what guessing at engine internals cost here
-    -- last time: "That was invented, not read", two rounds of "the haze
-    -- still is not working". A wrong constant broadcast into a client-wide
-    -- global is a worse bug than the one it would be fixing, so this stays a
-    -- documented gap until somebody can read the real default out of the
-    -- engine.
+    --   GamePrimitives_Outlines.cpp:36   static CRGBA outlineColor{ 255, 0, 255, 255 };
+    --
+    -- which is also what the CFX native reference states ("255, 0, 255, 255
+    -- by default"). There is still no getter, so a colour another resource
+    -- set once at start-up and that a round then overwrote cannot be given
+    -- back; the engine's own default is the most that can be.
+    --
+    -- ONLY IF THIS CLIENT WROTE IT, and once. A free-for-all, or a team round
+    -- with no teammate ever on screen, never touched the colour, and must
+    -- not reset somebody else's because a round ended -- the same rule as
+    -- the hold, which never writes it with nothing of ours drawn.
+    if outlineColourSet then
+        outlineColourSet = false
+        SetEntityDrawOutlineColor(255, 0, 255, 255)
+    end
 end
 
 local function refreshBlips(includeEnemies)
@@ -3715,6 +3815,49 @@ local function leaveTeamRadio()
     if not left then pcall(function() exports['pma-voice']:setRadioChannel(0) end) end
 end
 
+--- The channel pma-voice says this player is on right now; 0 for none or
+--- unreadable.
+--- @return integer
+local function radioChannelNow()
+    local ok, channel = pcall(function() return LocalPlayer.state.radioChannel end)
+    return ok and math.floor(tonumber(channel) or 0) or 0
+end
+
+--- The channel to hand back at the exit: the one this player was on before
+--- the door touched them, or 0.
+---
+--- READ BY THE SERVER WHEN IT CAN BE, because by the time this event lands it
+--- may already be gone: the door stashes the player's own radio item BEFORE
+--- the server sends enterArena, and a radio script that drops the channel
+--- when the item goes (mm_radio's doRadioCheck does) has dropped it by then.
+--- The server reads pma-voice's own value ahead of the stash and sends it as
+--- `priorRadioChannel` (`radioBefore` is accepted too). A server that sends
+--- neither falls back to the state bag here -- which still holds the old
+--- channel while the drop's round trip is in flight, and on a server with no
+--- item-coupled radio is simply right.
+---
+--- NEVER ONE OF THE ARENA'S OWN TEAM CHANNELS: those are the arena's, locked
+--- to one side of one match, and "handing back" one would be the arena
+--- putting somebody on a channel of its own making.
+--- @param data table -- the enterArena payload
+--- @return integer
+local function radioChannelBefore(data)
+    local channel = tonumber(data.priorRadioChannel or data.radioBefore)
+    if channel == nil then channel = radioChannelNow() end
+    channel = math.floor(channel)
+    if channel <= 0 then return 0 end
+
+    for _, mode in pairs(Config.Modes or {}) do
+        local cfg = type(mode) == 'table' and mode.teamRadio or nil
+        if type(cfg) == 'table' and cfg.enabled == true then
+            local first = math.max(1, Arena.ToInt(cfg.firstChannel) or 400)
+            local last = math.max(first, Arena.ToInt(cfg.lastChannel) or first)
+            if channel >= first and channel <= last then return 0 end
+        end
+    end
+    return channel
+end
+
 --- Puts the world back the way we found it. Synchronous on purpose: it is
 --- also the resource-stop path, and a stop handler that yields is a stop
 --- handler that does not finish.
@@ -3726,16 +3869,60 @@ local function leaveArena(returnCoords)
     -- never saw start still must not leave them switched off.
     if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(false) end
 
-    -- Off the team channel, on every way out.
-    if teamRadioOn then
-        teamRadioOn = nil
-        leaveTeamRadio()
+    -- Off the team channel, on every way out -- AND BACK ONTO THEIR OWN.
+    --
+    -- This always left to channel 0, so a police officer or a medic on their
+    -- job's channel came out of a team round on no channel at all, hearing
+    -- nothing until they noticed and tuned back by hand. The arena put them
+    -- on the team channel, so the arena puts them back where they were.
+    --
+    -- AND OUTSIDE A TEAM ROUND TOO, but only when they have been dropped to
+    -- nothing: the door stashed their radio item, and a radio script that
+    -- leaves the channel when the item goes did exactly that -- in every
+    -- mode. Somebody still on a channel (their own, or one they tuned to)
+    -- is left on it; this is only ever the arena undoing its own drop.
+    -- Through joinTeamRadio, so mm_radio shows it on the radio as usual, and
+    -- pma-voice's own channel check still decides whether they may rejoin.
+    --
+    -- DECIDED HERE, DONE LAST -- see radioHome at the foot of this function.
+    -- mm_radio's ForceJoinRadio and LeaveRadio both end in its Radio:update,
+    -- which waits on a server callback, and CitizenFX hands an export that
+    -- waits back to its caller as a wait of the caller's own: THIS function
+    -- yields there. On the resource-stop path a yield is the end -- nothing
+    -- after it ever runs -- and this block sat above everything else, so a
+    -- restart mid-round on an mm_radio server left the fighter un-teleported,
+    -- un-restored and still holding the arena's numbers, in a team round
+    -- and, once their own channel was handed back in every mode, in every
+    -- round they had a radio on for. The channel change itself lands before
+    -- mm_radio's wait, so it still happens on that path.
+    local backTo = radioBefore or 0
+    local wasOnTeam = teamRadioOn ~= nil
+    radioBefore = nil
+    teamRadioOn = nil
+    local function radioHome()
+        if wasOnTeam then
+            if backTo > 0 then joinTeamRadio(backTo) else leaveTeamRadio() end
+        elseif backTo > 0 and radioChannelNow() == 0 then
+            joinTeamRadio(backTo)
+        end
     end
 
     -- And any revive invulnerability off, at once, for the same reason.
     if ArenaSpawnProtection and ArenaSpawnProtection.Stop then ArenaSpawnProtection.Stop() end
 
-    if not currentMatch then return end
+    if not currentMatch then
+        radioHome()
+        return
+    end
+
+    -- THE START COUNTDOWN COMES DOWN WITH THE ROUND. The freeze thread draws
+    -- it a second at a time and simply stops when the round goes, and the
+    -- page only hides it on a 0, on its own timer, or on the results -- so an
+    -- abort or a /leave during the freeze left a big frozen "N STARTING" on
+    -- screen back at the lobby, beside the "match aborted" toast, for up to
+    -- six seconds. A 0 is the page's own "hide it". After the early return,
+    -- so only a client whose freeze thread could have drawn one sends it.
+    if ArenaUI and ArenaUI.Countdown then ArenaUI.Countdown(0) end
 
     currentMatch = nil
     matchLive = false
@@ -3787,8 +3974,26 @@ local function leaveArena(returnCoords)
 
     ArenaDispatch.ReleaseDeadState(ped)
 
+    -- AND PUT OUT, BEFORE THE HEALTH GOES BACK. Fire is the one piece of
+    -- arena damage that follows a fighter home: the flamethrower and the
+    -- flare gun ship switched on, and a winner set alight by the last shot
+    -- of the round landed in the lobby still burning -- the fire ate the
+    -- health restoreOwnLoadout was about to put back, and by then the arena
+    -- flag is down, so going down to it was an ordinary city casualty, alert
+    -- and all. A fighter leaving a round is only ever burning because of the
+    -- round. Guarded like the other optional natives: a build without it is
+    -- no worse than before.
+    if type(StopEntityFire) == 'function' then StopEntityFire(ped) end
+
     stripIssuedWeapons(ped)
     restoreOwnLoadout(ped)
+
+    -- AND HELD THERE FOR A MOMENT. The exit's own medical revive was sent
+    -- just BEFORE this exit, while the round was still on, so its holdVitals
+    -- went to the arena's hold -- and a handler that yields writes its
+    -- health and zero armour AFTER the line above, over the numbers it has
+    -- just handed back. See defendExitVitals.
+    defendExitVitals()
 
     SetEntityCoordsNoOffset(ped, coords.x, coords.y, coords.z, false, false, false)
     SetEntityHeading(ped, coords.w or 0.0)
@@ -3847,6 +4052,9 @@ local function leaveArena(returnCoords)
     if Config.UI.showMatchHud then
         ArenaUI.UpdateHud({ visible = false })
     end
+
+    -- THE RADIO, LAST: the one call in here that can yield. See the top.
+    radioHome()
 end
 
 function ArenaMatch.EnsureSpectatorScenery(arenaKey, factor)
@@ -4030,6 +4238,10 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     captureOwnLoadout()
 
+    -- THE LAST ROUND'S EXIT NUMBERS STOP BEING DEFENDED: see exitVitals.
+    exitVitals.until_ = 0
+    exitVitals.token = exitVitals.token + 1
+
     -- A WATCH FROM THE LAST ROUND HAS NO BUSINESS IN THIS ONE.
     visibilityToken = visibilityToken + 1
 
@@ -4137,6 +4349,13 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
 
     -- ITEM CARDS OFF THE CROSSHAIR for the round: see ArenaUI.ItemRow.
     if ArenaUI and ArenaUI.ItemRow then ArenaUI.ItemRow(true) end
+
+    -- THE CHANNEL THEY WERE ON, kept for the way out -- see leaveArena and
+    -- radioChannelBefore. In every mode, not only a team one: the door's
+    -- stash can drop it in any of them. NOT RE-READ while a round is still
+    -- outstanding, because a second reading would be the arena's own work
+    -- -- the team channel, or the 0 the stash left -- taken for theirs.
+    if radioBefore == nil then radioBefore = radioChannelBefore(data) end
 
     -- TEAM RADIO: on the side's channel before the round starts, and LOCKED
     -- to it for the round -- see joinTeamRadio.
@@ -4372,6 +4591,15 @@ end)
 -- them may be mid-draw, and the threads that would have watched died with the
 -- old copy of this resource.
 watchItemlessWeapons(ITEMLESS_AFTER_MS)
+
+-- AND THE BACK, AT START TOO, for the same reason. The exit's back-prop sweep
+-- is a thread that waits SWEEP_EVERY_MS before its first pass, and on a
+-- restart the old copy of this resource is stopped well inside that wait --
+-- so the sweep the exit asked for never ran once, and an orphaned arena-gun
+-- prop left on a fighter's back by the entry stayed there until their next
+-- skin refresh. Nothing the server sends after a restart reaches the exit's
+-- sweep, so the new copy asks for one itself. Without ox it does nothing.
+scheduleOrphanSweeps(SWEEP_AFTER_EXIT_MS)
 
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
     -- A BOARD FROM SOMEBODY ELSE'S ROUND IS NOT DRAWN, which used to rest

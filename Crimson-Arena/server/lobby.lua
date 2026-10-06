@@ -1782,9 +1782,25 @@ function ArenaLobby.Leave(src, reasonKey, dropped, ejected)
     return true
 end
 
+--- TAKES THE LOBBY COUNTDOWN'S DIGIT OFF EVERY MEMBER'S SCREEN.
+---
+--- The digit is pushed once a second while a lobby counts down and simply
+--- stops being pushed when the countdown is called off -- so the last number
+--- stayed frozen on screen for the rest of its fade. Every way a countdown is
+--- called off without a round starting sends this: held, refused, closed.
+--- @param match table
+local function clearLobbyCountdown(match)
+    if type(match) ~= 'table' or type(match.players) ~= 'table' then return end
+    for src in pairs(match.players) do
+        TriggerClientEvent('crimson_arena:client:countdown', src, { seconds = 0 })
+    end
+end
+
 function ArenaLobby.Destroy(matchId, reasonKey)
     local match = ArenaLobby.Get(matchId)
     if not match then return false end
+
+    if match.state == 'countdown' then clearLobbyCountdown(match) end
 
     local notice = Arena.IsKey(reasonKey) and reasonKey or 'notify.match_closed'
 
@@ -1884,6 +1900,14 @@ function ArenaLobby.Destroy(matchId, reasonKey)
         ArenaDispatch.ReleaseBucket(match.id)
     end
 
+    -- AND THE TEAM CHANNELS GO BACK TO EVERYBODY. pma-voice kept refusing
+    -- every player on them after the round -- see ArenaMatch.ReleaseTeamRadio
+    -- for why. Here because every ending arrives here, the last player
+    -- walking out included, and that one never passes End or Abort.
+    if type(ArenaMatch) == 'table' and type(ArenaMatch.ReleaseTeamRadio) == 'function' then
+        ArenaMatch.ReleaseTeamRadio(match)
+    end
+
     matches[match.id] = nil
     ArenaDebug('match %s closed (%s)', match.id, notice)
 
@@ -1903,6 +1927,7 @@ function ArenaLobby.HoldCountdown(src)
 
     match.state = 'lobby'
     match.startsAt = 0
+    clearLobbyCountdown(match)
 
     -- THE FIFTH EXIT BACK TO A LOBBY, and it has to put back what the other
     -- four put back. ArenaMatch.Begin may have dropped players who never
@@ -2507,6 +2532,31 @@ function ArenaLobby.AddSpectator(src, matchId)
         or (match.state == 'countdown' and match.placed == true)
     if not beingFought and not isEliminated(match, target) then
         return false, 'error.nothing_to_watch'
+    end
+
+    -- NOBODY WATCHES FROM THE FLOOR, by the same rule and the same switch
+    -- Join's entryBlocked applies.
+    --
+    -- A player downed in the city with the panel still open could press
+    -- Watch -- and the event can be fired by hand from anywhere -- and was
+    -- moved into the round's bucket, out of every medic's sight. The sweep
+    -- flags a watcher, so the down-state hold then wrote their isdead /
+    -- inlaststand back to false four times a second for the whole watch, and
+    -- the end of the round handed them the medical script's revive: stood up
+    -- for free, by a round they never fought in. Join has always refused
+    -- this ("Not while you are on the floor"); the watch door never asked.
+    --
+    -- THE ELIMINATED FIGHTER IS EXEMPT, as above and for the same reason:
+    -- ArenaMatch.OnDeath calls this for somebody who has just been knocked
+    -- out, and is down by definition. Data that cannot be read lets them in,
+    -- which is what this function did before it asked.
+    if not isEliminated(match, target) and Config.Match.blockWhileDead == true then
+        local qbx = type(ArenaGetPlayer) == 'function' and ArenaGetPlayer(target) or nil
+        local data = qbx and qbx.PlayerData
+        local metadata = data and type(data.metadata) == 'table' and data.metadata or {}
+        if metadata.isdead == true or metadata.inlaststand == true then
+            return false, 'error.cannot_join_dead'
+        end
     end
 
     if spectatorIndex[target] == match.id then return true, nil end

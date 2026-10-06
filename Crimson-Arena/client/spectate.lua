@@ -26,9 +26,10 @@ local frozeLocalPed = false
 --- round must not decide what a player looks like after it.
 local watcherWas = nil
 
---- The two readings above, off a build that may not ship the getters.
---- A missing one falls back to what Stop used to write, so nobody is ever
---- left invisible by a client that cannot be asked.
+--- The two readings above, plus whether something else had already frozen
+--- the ped (see Start), off a build that may not ship the getters. A missing
+--- one falls back to what Stop used to write, so nobody is ever left
+--- invisible, or frozen, by a client that cannot be asked.
 ---
 --- A NEAR-COPY OF client/dispatch.lua's, AND DELIBERATELY NOT SHARED. The
 --- one place both files could reach is shared/arena.lua, and that file calls
@@ -47,6 +48,10 @@ local function readPedState(ped)
     return {
         visible = ask(IsEntityVisible, true) ~= false,
         collision = ask(GetEntityCollisionDisabled, false) ~= true,
+        -- Falls back to "not frozen", which is what Start always assumed:
+        -- a build without the getter has the camera claim the freeze and
+        -- take it off again, exactly as before, so nobody is left frozen.
+        frozen = ask(IsEntityPositionFrozen, false) == true,
     }
 end
 
@@ -154,6 +159,25 @@ local function runCameraThread()
     CreateThread(function()
         while active and cameraToken == token do
             Wait(0)
+
+            -- ASKED AGAIN AFTER THE YIELD, BECAUSE THE LOOP CONDITION IS READ
+            -- BEFORE IT. On every steady frame this thread is parked at the
+            -- Wait above, so a Stop() from an event handler -- the round
+            -- ending, the server's state push, the panel's Stop Watching --
+            -- lands while it sleeps, and without this line the body ran once
+            -- more over the targets Stop() had just emptied: no fighter, no
+            -- cycle, not in the arena, so "Nobody left to watch." under every
+            -- results screen and a stray stopSpectating to the server for a
+            -- watch that was already over. A stopped camera says nothing.
+            --
+            -- `active` ONLY, NOT THE TOKEN. Switching matches stops and
+            -- restarts inside one handler, so `active` is true again by the
+            -- time the old thread wakes: it draws that one frame for the new
+            -- match and the loop condition retires it. The new thread's first
+            -- resume only reaches its Wait, so that frame is the switched
+            -- camera's first -- spectatecam_spec's one-press-one-fighter test
+            -- reads it.
+            if not active then return end
 
             local ped = currentTargetPed()
             if not ped then
@@ -366,7 +390,21 @@ function ArenaSpectate.Start(matchIdentifier)
     SetEntityCollision(ped, false, false)
     SetLocalPlayerVisibleLocally(false)
     FreezeEntityPosition(ped, true)
-    frozeLocalPed = true
+
+    -- THE FREEZE IS CLAIMED ONLY IF IT WAS NOT ALREADY THERE.
+    --
+    -- This was `frozeLocalPed = true` whatever the ped arrived as, so a
+    -- player an admin or a job script had frozen before they pressed Watch
+    -- was walked out of that freeze by Stop when the round ended -- the same
+    -- unconditional write client/dispatch.lua's ReleaseDeadState was fixed
+    -- for. The reading above (the hold's, when a casualty is held) says
+    -- whether somebody else froze them; if so, the freeze stays theirs.
+    --
+    -- A FREEZE THE CAMERA STILL OWES IS KEPT. An in-round Stop leaves the
+    -- ped as it is, so a second Start can read the camera's OWN freeze as
+    -- "already frozen" -- and disowning it there would leave the player
+    -- frozen after the round with nothing left that means to let them go.
+    frozeLocalPed = frozeLocalPed or not (watcherWas and watcherWas.frozen)
 
     camHeading = GetEntityHeading(ped)
     camPitch = -12.0

@@ -721,14 +721,14 @@ listed; the source documents them where they are.
 | `ArenaLobby.Join(src, matchId, teamKey, account)` | Seats a player in an open lobby, taking their entry fee. |
 | `ArenaLobby.MayLeave(src, dropped)` | Whether a player may take themselves out of the match they are in -- refused while they hold a side-bet on a lobby or a countdown, never on a disconnect. |
 | `ArenaLobby.Leave(src, reasonKey)` | Takes a player out of whatever they are attached to: a match if they are in one, otherwise the match they were watching. |
-| `ArenaLobby.Destroy(matchId, reasonKey)` | Refunds whatever is still escrowed, tells everyone, and removes the match from the registry. |
+| `ArenaLobby.Destroy(matchId, reasonKey)` | Refunds whatever is still escrowed, tells everyone, opens the match's team-radio channels again, and removes the match from the registry. |
 | `ArenaLobby.HoldCountdown(src)` | Puts a counting-down lobby back to being a lobby. |
 | `ArenaLobby.Cancel(src)` | The host closing their own lobby. |
 | `ArenaLobby.UpdateMatch(src, data)` | Changes the settings of a match the host has already opened. |
 | `ArenaLobby.SetTeam(src, teamKey)` | Moves a player to another team in a team mode. |
 | `ArenaLobby.SetLoadout(src, request)` | Stores a player's chosen loadout after re-resolving it against the catalogue. |
 | `ArenaLobby.SetReady(src, ready)` | Marks a player ready or not ready, and auto-starts when that was the last one. |
-| `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. |
+| `ArenaLobby.AddSpectator(src, matchId)` | Attaches a watcher to a match and puts them in its instance. Refuses a player who is down (isdead / inlaststand) under the same `blockWhileDead` switch Join uses; an eliminated fighter of that match is exempt. |
 | `ArenaLobby.RemoveSpectator(src)` | Detaches a watcher and sends them back out. |
 
 #### `server/spawnprotection.lua` — 5 functions
@@ -741,10 +741,11 @@ listed; the source documents them where they are.
 | `ArenaSpawnProtection.IsProtected(src)` | Whether the player is inside a window the server opened. |
 | `ArenaSpawnProtection.FiniDetectionHook(player, detection)` | The FiniAC hook: cancels a `finiDetections` (god-mode) detection only inside the window; everything else passes through. |
 
-#### `server/match.lua` — 11 functions
+#### `server/match.lua` — 12 functions
 
 | Function | What it does |
 |---|---|
+| `ArenaMatch.ReleaseTeamRadio(match)` | Opens a finished match's team-radio channels to everybody again, by re-registering pma-voice's check on each as one that always says yes (pma-voice has no way to remove one). Only a channel the match still owns -- a newer round that wrapped onto the same number keeps its lock. Called by `ArenaLobby.Destroy`, which every ending passes through. |
 | `ArenaMatch.UnplaceAuto(match)` | Puts back the sides `Begin` handed to players who never picked one, for an exit back to the lobby that lives outside this file -- the host's Stop The Countdown. Answers whether it moved anybody. |
 | `ArenaMatch.Begin(matchId, requestedBy)` | Validates a lobby and runs the countdown players are held for -- it re-checks the roster every second and drops the room back to the lobby the moment it no longer qualifies, which is why `ArenaLobby.MayLeave` refuses a voluntary leave for its whole length. A disconnect is never refused. |
 | `ArenaMatch.Start(matchId)` | Teleports everybody in, hands out the loadouts, and starts the frozen countdown that ends with weapons live. |

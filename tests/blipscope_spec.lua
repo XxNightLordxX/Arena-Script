@@ -1779,6 +1779,68 @@ t.test('and it lets go when the match ends', function()
         'the outline colour was still being held every frame after the match ended')
 end)
 
+-- ========================================================================
+-- AND THE COLOUR ITSELF IS HANDED BACK
+--
+-- The hold stopping is not the colour coming back: the setting is one for
+-- the whole client and it kept the last team's tint until the game
+-- restarted, so every other script's outline drew in crimson. The engine's
+-- default is read from FiveM's own source (GamePrimitives_Outlines.cpp:36,
+-- `outlineColor{ 255, 0, 255, 255 }`), and it is put back only by a round
+-- that actually wrote the colour.
+-- ========================================================================
+
+local ENGINE_OUTLINE_DEFAULT = { 255, 0, 255 }
+
+t.test('DEFECT: a team round that outlined a teammate hands the engine\'s colour back', function()
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+    t.isNotNil(f.outlineColor, 'no outline colour was ever set, so this proves nothing')
+    t.isTrue(f.outlineColor[1] ~= ENGINE_OUTLINE_DEFAULT[1] or f.outlineColor[2] ~= ENGINE_OUTLINE_DEFAULT[2]
+        or f.outlineColor[3] ~= ENGINE_OUTLINE_DEFAULT[3], 'the team tint IS the default, so this proves nothing')
+
+    f.fire('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+
+    for channel = 1, 3 do
+        t.equals(f.outlineColor[channel], ENGINE_OUTLINE_DEFAULT[channel],
+            'the client-wide outline colour was left at the last team\'s tint after the round')
+    end
+end)
+
+t.test('and it is written back once, not by every teardown that runs', function()
+    -- removeAllOutlines runs from leaveArena AND from the end of the blip
+    -- loop, so both run on every exit.
+    local f = newFixture()
+    f.enterLive()
+    f.hud()
+    for _ = 1, 4 do f.step() end
+    local before = #f.colorCalls
+
+    f.fire('crimson_arena:client:exitArena', {})
+    for _ = 1, 8 do f.step() end
+
+    t.equals(#f.colorCalls - before, 1, 'the colour was handed back more or fewer times than once')
+end)
+
+t.test('but a round that never wrote the colour does not touch it on the way out', function()
+    -- A free-for-all outlines nobody, so the colour is whatever another
+    -- resource left it at -- and resetting it would be the arena overwriting
+    -- a setting it never changed.
+    local f = newFixture()
+    f.enterLive({ modeKey = 'ffa', teamKey = nil })
+    f.hud()
+    for _ = 1, 4 do f.step() end
+    t.isNil(f.outlineColor, 'a free-for-all wrote the outline colour, so this proves nothing')
+
+    f.fire('crimson_arena:client:exitArena', {})
+    for _ = 1, 4 do f.step() end
+
+    t.isNil(f.outlineColor, 'a round that never wrote the outline colour reset it on the way out')
+end)
+
 -- ======================================================================
 -- A BOUNDARY THE SERVER COULD NOT DESCRIBE TOOK THE BLIPS WITH IT
 --

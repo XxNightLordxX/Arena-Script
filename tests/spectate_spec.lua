@@ -314,6 +314,68 @@ t.test('and it does not unfreeze a player it never froze', function()
 end)
 
 -- ======================================================================
+-- A FREEZE THAT WAS ALREADY THERE IS NOT THE CAMERA'S TO TAKE OFF
+--
+-- Start froze the watcher and claimed the freeze unconditionally, so a
+-- player an admin or a job script had frozen before they pressed Watch was
+-- walked out of that freeze when the round ended. The getter is wired to
+-- the fixture's own freeze, so it answers what was really last written.
+-- ======================================================================
+
+--- The fixture with IsEntityPositionFrozen answering the real freeze.
+local function frozenAware(opts)
+    local f = newFixture(opts)
+    f.env.IsEntityPositionFrozen = function() return f.frozen end
+    return f
+end
+
+for _, way in ipairs({
+    { 'the round ending', function(f) f.fire('crimson_arena:client:exitArena') end },
+    { 'the server no longer listing them', function(f)
+        f.fire('crimson_arena:client:state', { player = {}, matches = {} })
+    end },
+    { 'the resource stopping', function(f) f.fire('onResourceStop', 'crimson_arena') end },
+}) do
+    t.test('DEFECT: a watcher frozen by something else stays frozen after ' .. way[1], function()
+        local f = frozenAware()
+        f.frozen = true            -- an admin's freeze, from before the watch
+        f.spectate.Start('match-1')
+        t.isTrue(f.spectate.IsActive(), 'the camera never started')
+
+        way[2](f)
+
+        t.isFalse(f.spectate.IsActive(), 'the watch did not end, so this proves nothing')
+        t.isTrue(f.frozen, 'the arena unfroze a player another resource had frozen')
+        t.isTrue(f.visible, 'the restore did not run at all, so this proves nothing')
+    end)
+end
+
+t.test('and a watcher who was NOT frozen is still let go, getter or not', function()
+    local f = frozenAware()
+    f.spectate.Start('match-1')
+    t.isTrue(f.frozen, 'the camera did not freeze them')
+    f.fire('crimson_arena:client:exitArena')
+    t.isFalse(f.frozen, 'the camera left the freeze it put on them behind')
+end)
+
+t.test('and a second watch over a freeze the camera still owes does not disown it', function()
+    -- An eliminated fighter's Stop is skipped while they are in the round,
+    -- so the camera's own freeze is still on when a later Start reads the
+    -- ped. That reading is the camera's freeze, not somebody else's, and the
+    -- way out must still take it off.
+    local f = frozenAware({ inArena = true })
+    f.spectate.Start('match-1')
+    f.spectate.Stop()
+    t.isTrue(f.frozen, 'the in-round Stop let them go, so this proves nothing')
+    f.spectate.Start('match-1')
+
+    f.inArena = false
+    f.spectate.Stop()
+
+    t.isFalse(f.frozen, 'the second watch read the camera\'s own freeze as somebody else\'s and kept it')
+end)
+
+-- ======================================================================
 -- THE SERVER DECIDES, NOT THIS FILE
 -- ======================================================================
 

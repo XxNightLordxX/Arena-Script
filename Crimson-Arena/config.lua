@@ -3309,8 +3309,8 @@ Config.Dispatch = {
         -- that, at the death itself. This only tells another script.
         afterRespawnDelayMs = 2000,
 
-        -- A SECOND, BLANKET PASS over everybody who played, this many ms
-        -- after the match ends. `0` switches it off.
+        -- A SECOND, BLANKET PASS over everybody the end sent home, this many
+        -- ms after the match ends. `0` switches it off.
         --
         -- Every exit path tells the medical script already; this covers the
         -- exit nobody has written yet. Runs once, when everybody is home.

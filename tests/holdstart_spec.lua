@@ -152,6 +152,20 @@ local function newServer(wallets, mutate)
         return out
     end
 
+    --- Whether `src` was sent a countdown of 0 -- the digit taken down.
+    --- @param src integer
+    --- @return boolean
+    function server.countdownCleared(src)
+        for _, message in ipairs(sent) do
+            if message.target == src and message.event == 'crimson_arena:client:countdown'
+                and type(message.payload) == 'table' and message.payload.seconds == 0
+            then
+                return true
+            end
+        end
+        return false
+    end
+
     --- Whether `src` was told the thing `key` names, at any point.
     ---
     --- RENDERED, because this fixture loads the real locale file and
@@ -233,6 +247,13 @@ t.test('holding a countdown puts the match back to a lobby', function()
     t.isNotNil(match, 'THE MATCH WAS DESTROYED -- this is a cancel, not a hold')
     t.equals(match.state, 'lobby')
     t.equals(match.startsAt, 0, 'the panel is still counting down to a moment that is not coming')
+end)
+
+t.test('DEFECT: a held countdown left its last digit frozen on every screen', function()
+    local server = counting(0, slowLobby)
+    server.lobby.HoldCountdown(1)
+    t.isTrue(server.countdownCleared(1), 'the host still sees the countdown digit')
+    t.isTrue(server.countdownCleared(2), 'a player still sees the countdown digit')
 end)
 
 t.test('and everybody keeps their place in it', function()

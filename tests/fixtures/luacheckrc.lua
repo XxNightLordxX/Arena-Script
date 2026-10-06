@@ -206,6 +206,8 @@ files['client/'] = {
         -- Entities: the lobby ped, and the player's own.
         'ApplyDamageToPed',
         'ClearPedBloodDamage',
+        -- Puts out a fighter set alight in the round, on the way out.
+        'StopEntityFire',
         'SetEntityDrawOutline', 'SetEntityDrawOutlineColor',
         'CreatePed',
         'DeleteEntity',

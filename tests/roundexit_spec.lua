@@ -529,6 +529,15 @@ t.test('during the round each channel is its own side\'s, and nobody else\'s', f
     t.isTrue(not s.canJoin(channels.crimson, 11), 'an outsider was let onto a live team\'s channel')
 end)
 
+t.test('THE ASK: an eliminated fighter cannot dial back onto their side\'s channel', function()
+    local s = newServer()
+    local match = s.play(4, 'tdm')
+    local channels = channelsOf(match)
+    match.players[1].placement = 4
+    t.isTrue(not s.canJoin(channels.crimson, 1), 'an eliminated fighter was let back onto the team channel')
+    t.isTrue(s.canJoin(channels.crimson, 3), 'a team-mate still fighting was refused their channel')
+end)
+
 t.test('DEFECT: once the round ends, its channels are open to everybody again', function()
     local s = newServer()
     local match = s.play(4, 'tdm')

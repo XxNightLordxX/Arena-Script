@@ -57,6 +57,10 @@ local currentMatch
 --- The pma-voice team channel this client was put on, or nil.
 local teamRadioOn = nil
 
+--- Set when elimination took this player off their team channel mid-round,
+--- so the exit still knows to hand their own channel back.
+local teamRadioDropped = false
+
 --- The radio channel this player was on BEFORE the round, handed back on the
 --- way out -- see leaveArena. 0 when they were on none, nil while no round
 --- is outstanding.
@@ -3896,7 +3900,8 @@ local function leaveArena(returnCoords)
     -- round they had a radio on for. The channel change itself lands before
     -- mm_radio's wait, so it still happens on that path.
     local backTo = radioBefore or 0
-    local wasOnTeam = teamRadioOn ~= nil
+    local wasOnTeam = teamRadioOn ~= nil or teamRadioDropped
+    teamRadioDropped = false
     radioBefore = nil
     teamRadioOn = nil
     local function radioHome()
@@ -4554,6 +4559,16 @@ end)
 
 RegisterNetEvent('crimson_arena:client:eliminated', function(data)
     if type(data) ~= 'table' then return end
+
+    -- OUT OF THE ROUND, OFF THE TEAM RADIO. The owner's ask: a fighter who is
+    -- eliminated and watching no longer hears or talks to their side. The
+    -- lock loop stops with teamRadioOn, the server's channel check refuses
+    -- them from here on, and the exit still hands their own channel back.
+    if teamRadioOn then
+        teamRadioOn = nil
+        teamRadioDropped = true
+        CreateThread(leaveTeamRadio)
+    end
 
     if data.spectate and ArenaSpectate then
         ArenaSpectate.Start(data.matchId)

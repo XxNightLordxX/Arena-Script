@@ -351,6 +351,36 @@ t.test('somebody who was on no channel is taken off the team one, as before', fu
     t.equals(c.world.radio.channel, 0, 'a player who had no channel was left on one')
 end)
 
+t.test('THE ASK: eliminated in a team round takes them off the team channel (pma-voice)', function()
+    local c = newClient({ channel = 3 })
+    c.enterTeam(401, 3)
+    c.fire('eliminated', { matchId = 'm1', spectate = false })
+    c.poll(1)
+    t.equals(c.world.radio.channel, 0, 'an eliminated fighter is still on the team channel')
+    c.poll(8, 500)
+    t.equals(c.world.radio.channel, 0, 'the lock loop put the eliminated fighter back on the team channel')
+    c.exit()
+    t.equals(c.world.radio.channel, 3, 'their own channel did not come back when the round ended')
+end)
+
+t.test('and through mm_radio, so the radio shows them off it', function()
+    local c = newClient({ mmRadio = 'started', channel = 3 })
+    c.enterTeam(401, 3)
+    c.fire('eliminated', { matchId = 'm1', spectate = false })
+    c.poll(1)
+    t.equals(c.world.radio.left, 1, 'mm_radio was not told to leave the team channel')
+    c.exit()
+    t.equals(last(c.world.radio.forced), 3, 'their own channel was not handed back through mm_radio')
+end)
+
+t.test('and outside a team round elimination leaves the radio alone', function()
+    local c = newClient({ channel = 3 })
+    c.enter()
+    c.fire('eliminated', { matchId = 'm1', spectate = false })
+    c.poll(1)
+    t.equals(c.world.radio.channel, 3, 'a free-for-all elimination touched their own channel')
+end)
+
 t.test('DEFECT: outside a team round, a channel the door\'s stash dropped is handed back', function()
     -- The door stashed their radio item; mm_radio left the channel when it
     -- went. In a free-for-all nothing else would ever give it back.

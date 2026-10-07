@@ -120,7 +120,10 @@ local function teamRadioChannel(match, teamKey)
     local ok, why = pcall(function()
         exports['pma-voice']:addChannelCheck(channel, function(src)
             local player = match.players[tonumber(src) or src]
+            -- OUT OF THE ROUND, OFF THE CHANNEL: an eliminated fighter (one with
+            -- a placement) watches in silence and cannot dial back in.
             return match.state ~= 'ended' and player ~= nil and player.team == teamKey
+                and player.placement == nil
         end)
     end)
     if not ok then

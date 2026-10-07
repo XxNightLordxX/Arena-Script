@@ -68,6 +68,9 @@ local radioBefore = nil
 local matchLive = false
 local deathReported = false
 
+--- GetGameTimer() at which this round's start freeze ends; hands stay empty before it.
+local startFreezeUntil = 0
+
 local matchToken = 0
 
 local carried
@@ -1485,9 +1488,18 @@ local function defendExitVitals()
     end)
 end
 
+--- Set once drawSpawnWeapon exists, further down; the revive below needs it.
+local redrawAfterRevive
+
 local function holdVitals()
     if currentMatch then
         arenaVitals.until_ = GetGameTimer() + VITALS_REASSERT_MS
+        -- THE GUN BACK IN HAND AFTER THE MEDICAL REVIVE. That revive lands
+        -- after the respawn already drew the gun and knocks it out of the
+        -- hand, so the fighter stood there empty-handed until they drew.
+        if matchLive and not deathReported and GetGameTimer() >= startFreezeUntil and redrawAfterRevive then
+            redrawAfterRevive()
+        end
         return
     end
     -- Sent straight after the medical event in the same ArenaDispatch.Revive:
@@ -4154,7 +4166,7 @@ function ArenaMatch.DropSpectatorScenery()
 end
 
 local DRAW_WAIT_MS = 8000
-local DRAW_POLL_MS = 250
+local DRAW_POLL_MS = 50
 local DRAW_SETTLE_MS = 1000
 local MELEE_DAMAGE = 2
 local drawToken = 0
@@ -4205,7 +4217,18 @@ end
 --- HOLSTERS it, so calling it on every poll would flick the gun in and out.
 --- Stops the moment the fighter has anything in hand -- a player who drew
 --- their own choice first keeps it.
-local function drawSpawnWeapon(switch)
+--- Whether ox_inventory itself thinks a weapon is out. A useSlot while it
+--- does would HOLSTER that weapon, so a re-draw waits for ox to let go first.
+local function oxHoldsWeapon()
+    local ok, weapon = pcall(function() return exports.ox_inventory:getCurrentWeapon() end)
+    return ok and type(weapon) == 'table'
+end
+
+--- `watchMs`: keep watching that long even once a gun is out, and draw it
+--- again if something empties the hand inside it. Used straight after the
+--- medical revive, which lands about two seconds after the respawn and
+--- knocks the gun the respawn drew out of the fighter's hand.
+local function drawSpawnWeapon(switch, watchMs)
     -- EACH CALLER'S OWN SWITCH: round start answers to drawWeaponOnSpawn, a
     -- revive to drawWeaponOnRespawn -- one must not switch the other off.
     if (Config.Match or {})[switch or 'drawWeaponOnSpawn'] == false then return end
@@ -4215,18 +4238,23 @@ local function drawSpawnWeapon(switch)
     local mine, token = drawToken, matchToken
 
     CreateThread(function()
-        local deadline = GetGameTimer() + DRAW_WAIT_MS
+        local started = GetGameTimer()
+        local deadline = started + DRAW_WAIT_MS
+        local watchUntil = started + (tonumber(watchMs) or 0)
         local nextTry = 0
         while GetGameTimer() < deadline do
             if drawToken ~= mine or matchToken ~= token or not currentMatch then return end
 
             local ped = PlayerPedId()
-            if GetSelectedPedWeapon(ped) ~= UNARMED then return end
+            local armed = GetSelectedPedWeapon(ped) ~= UNARMED
+            if armed and GetGameTimer() >= watchUntil then return end
 
             -- BY THE CLOCK, not by the loop: a hitch that stretches one Wait
             -- must not let a second useSlot in before the first has landed.
+            -- A WATCHED re-draw also waits for ox to let go of a gun the
+            -- revive knocked out of the hand, or its useSlot would holster.
             local tick = GetGameTimer()
-            if tick >= nextTry then
+            if not armed and tick >= nextTry and not (watchMs and oxHoldsWeapon()) then
                 local slot = not IsEntityDead(ped) and spawnWeaponSlot() or nil
                 if slot then
                     pcall(function() exports.ox_inventory:useSlot(slot, true) end)
@@ -4237,6 +4265,16 @@ local function drawSpawnWeapon(switch)
         end
     end)
 end
+
+redrawAfterRevive = function() drawSpawnWeapon('drawWeaponOnRespawn', 3000) end
+
+--- After a kill (rounds paid, or a gun game rung changed), put a weapon back
+--- in the fighter's hand. Nothing happens if they already hold one.
+RegisterNetEvent('crimson_arena:client:drawWeapon', function(data)
+    if not currentMatch or deathReported then return end
+    if type(data) == 'table' and type(data.loadout) == 'table' then currentMatch.loadout = data.loadout end
+    drawSpawnWeapon('drawWeaponOnRespawn')
+end)
 
 RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     if type(data) ~= 'table' or type(data.spawn) ~= 'table' then return end
@@ -4464,6 +4502,7 @@ RegisterNetEvent('crimson_arena:client:enterArena', function(data)
     end
 
     local freezeSeconds = math.floor(tonumber(data.freezeSeconds) or 0)
+    startFreezeUntil = GetGameTimer() + math.max(0, freezeSeconds) * 1000
     if freezeSeconds <= 0 then
         FreezeEntityPosition(ped, false)
         drawSpawnWeapon()

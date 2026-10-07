@@ -647,6 +647,10 @@ local function payKillAmmo(match, killer)
             ArenaAmmo.GrantRounds(killer.src, match.id, entry.ammoTypeItem, rounds)
         end
     end
+
+    -- A GUN IN THE KILLER'S HAND. If paying the rounds left them empty-handed,
+    -- the client draws their weapon again; it does nothing if one is drawn.
+    TriggerClientEvent('crimson_arena:client:drawWeapon', killer.src, {})
 end
 
 local function payKillReward(match, killer)
@@ -753,6 +757,10 @@ local function settleTier(match, player, reasonKey, emptied)
 
     player.tier = tier
     player.loadout = moving
+
+    -- THE NEW RUNG STRAIGHT INTO THEIR HAND. The swap took the old gun out of
+    -- it; the client draws the new one, told which kit is now theirs.
+    TriggerClientEvent('crimson_arena:client:drawWeapon', player.src, { loadout = moving })
 
     if reasonKey == 'notify.gungame_demoted' then
         ArenaNotifyKey(player.src, 'notify.gungame_demoted', 'error', tier, #ladder, weapon.label)

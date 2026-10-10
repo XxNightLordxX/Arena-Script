@@ -52,6 +52,8 @@ local function newServer(mutate)
         [1] = { citizenid = 'AAA11111', name = 'Host', money = { cash = 50000, bank = 0 } },
         [2] = { citizenid = 'BBB22222', name = 'Rival', money = { cash = 50000, bank = 0 } },
         [3] = { citizenid = 'CCC33333', name = 'Other', money = { cash = 50000, bank = 0 } },
+        -- Crimson: a watcher must be a loaded character (ArenaLobby.EntryBlocked).
+        [9] = { citizenid = 'III99999', name = 'Watcher', money = { cash = 0, bank = 0 } },
     })
     local threads = Sandbox.newThreadRunner()
     local sent, netEvents = {}, {}

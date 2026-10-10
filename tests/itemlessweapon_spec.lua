@@ -133,6 +133,8 @@ local function newClient(opts)
     end
 
     local env = Sandbox.newArenaEnv({
+        -- Crimson: a restart re-arms the watch only for a player already in-game.
+        LocalPlayer = { state = { isLoggedIn = opts.loggedIn == true } },
         CreateThread = runner.CreateThread, Wait = runner.Wait, SetTimeout = runner.SetTimeout,
         RegisterNetEvent = function(name, fn) handlers[name] = fn end,
         AddEventHandler = function(name, fn)
@@ -614,7 +616,7 @@ t.test('the mirror race at entry: the player\'s own gun drawn after the door sta
 end)
 
 t.test('a restart starts the watch on its own -- no round, no exit', function()
-    local c = newClient()
+    local c = newClient({ loggedIn = true })
     c.draw(arenaCarbine(1, 'ARENA-1'))
     c.poll(3)
     t.equals((c.disarms()), 1, 'a restart that reclaimed kit mid-draw left the gun with nobody watching')
@@ -1049,12 +1051,25 @@ t.test('DEFECT: a restart mid-round still sweeps the back -- the new copy asks f
     -- IS the new copy: no round, no exit, nothing from the server -- only an
     -- orphan the entry left on their back and an inventory the restart's
     -- reclaim has already emptied.
-    local c = newClient()
+    local c = newClient({ loggedIn = true })
     c.ox.items = {}
     local orphan = c.prop('WEAPON_CARBINERIFLE')
     sweepWindow(c)
     t.equals(c.world.objects[orphan], nil,
         'the orphan arena carbine is still on their back after the restart')
+end)
+
+-- Crimson: A FRESH CONNECT IS NOT A RESTART. The character is not loaded and
+-- holds no arena kit, so neither the watch nor the back sweep starts.
+t.test('a player still connecting starts no watch and no back sweep', function()
+    local c = newClient()
+    c.draw(arenaCarbine(1, 'ARENA-1'))
+    c.poll(3)
+    t.equals((c.disarms()), 0, 'a connecting player was watched with no arena kit to watch')
+    c.ox.items = {}
+    local prop = c.prop('WEAPON_CARBINERIFLE')
+    sweepWindow(c)
+    t.isTrue(c.world.objects[prop] ~= nil, 'a connecting player had a prop swept off their back')
 end)
 
 t.test('without ox the sweep does nothing at all', function()

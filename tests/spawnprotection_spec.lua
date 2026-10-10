@@ -25,8 +25,13 @@ local function load(mutate, opts)
         -- NOT what decides: FiniAC's docs say the export is not ready the
         -- moment the resource is 'started'. Always answers started here so a
         -- regression back to reading it is caught by the convar-0 case.
-        GetResourceState = function() return 'started' end,
-        exports = setmetatable({ FiniAC = fini }, { __call = function() end }),
+        -- Crimson: FiniAC runs as 'anticheat' here; opts.folder names the one
+        -- folder that is started when a spec wants exactly one.
+        GetResourceState = function(name)
+            if opts.folder then return name == opts.folder and 'started' or 'missing' end
+            return 'started'
+        end,
+        exports = setmetatable({ FiniAC = fini, anticheat = fini }, { __call = function() end }),
         AddEventHandler = function(name, fn) handlers[name] = fn end,
         CreateThread = function(fn) threads[#threads + 1] = fn end,
     })
@@ -124,6 +129,23 @@ t.test('a player leaving closes their window', function()
     f.env.source = 7
     f.handlers['playerDropped']()
     t.equals(f.detect(7, 'GodMode').type, 'GodMode')
+end)
+
+t.test('Crimson: FiniAC is found under its "anticheat" folder', function()
+    local f = load(nil, { folder = 'anticheat' })
+    t.equals(#f.hooks, 1, 'the hook was not registered through the anticheat folder')
+end)
+
+t.test('and under "FiniAC" on a server that keeps the stock folder name', function()
+    local f = load(nil, { folder = 'FiniAC' })
+    t.equals(#f.hooks, 1, 'the hook was not registered through the FiniAC folder')
+end)
+
+t.test('and with neither running, nothing is registered and it says so', function()
+    local f, logged = load(nil, { folder = 'nothing' })
+    t.equals(#f.hooks, 0)
+    t.isTrue(logged[#logged] ~= nil and logged[#logged]:find('NOT registered', 1, true) ~= nil,
+        'the missing FiniAC folder was not logged')
 end)
 
 t.test('finiHook = false registers nothing', function()

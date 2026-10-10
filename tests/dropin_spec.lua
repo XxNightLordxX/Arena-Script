@@ -341,12 +341,13 @@ end)
 print('')
 print('==> the shipped settings are the playable settings')
 
-t.test('the database ships off, so there is no SQL to import', function()
+-- Crimson: the database ships ON, so the SQL it needs ships with it.
+t.test('the database ships on, and the SQL to import ships beside it', function()
     local config = readFile('config.lua')
     local block = config:match('Config%.Database%s*=%s*{(.-)}')
     t.isNotNil(block, 'Config.Database is no longer a readable table literal')
-    t.contains(block, 'enabled = false',
-        'the database ships ON -- a drop-in install would now need a table imported or created')
+    t.contains(block, 'enabled = true', 'the database ships off -- Crimson runs it on')
+    t.isTrue(fileExists('sql/install.sql'), 'sql/install.sql is missing -- nothing to import')
 end)
 
 t.test('the locale the resource loads by default is in the folder and is sent to clients', function()

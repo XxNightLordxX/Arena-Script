@@ -181,6 +181,8 @@ end)
 -- ======================================================================
 
 local SWEEP_FROM = lineOf(serverFile('match'), 'local hoursWereOpen = nil')
+-- Crimson: the watcher-position check below the sweep is its own thread.
+local SWEEP_TO = lineOf(serverFile('match'), 'local SPECTATOR_CHECK_MS') - 1
 local IDLE_FROM = lineOf(serverFile('lobby'), 'local SWEEP_INTERVAL_MS = 30000')
 
 local function newServer()
@@ -189,6 +191,8 @@ local function newServer()
         [2] = { citizenid = 'BBB22222', name = 'Rival', money = { cash = 50000, bank = 0 } },
         [3] = { citizenid = 'CCC33333', name = 'Other', money = { cash = 50000, bank = 0 } },
         [4] = { citizenid = 'DDD44444', name = 'Fourth', money = { cash = 50000, bank = 0 } },
+        -- Crimson: a watcher must be a loaded character (ArenaLobby.EntryBlocked).
+        [9] = { citizenid = 'III99999', name = 'Watcher', money = { cash = 0, bank = 0 } },
     })
     local runner = newRunner()
     local netEvents = {}
@@ -236,7 +240,7 @@ local function newServer()
     local s = { env = env, runner = runner, lobby = env.ArenaLobby, match = env.ArenaMatch, buckets = buckets }
     function s.fire(event, src, data) env.source = src; netEvents['crimson_arena:server:' .. event](data) end
     function s.create(src) s.fire('createMatch', src, { arenaKey = 'trailerpark', modeKey = 'ffa', entryFee = 0 }); return s.lobby.GetByPlayer(src) end
-    function s.sweeps() return runner.alive(runner.find('match.lua', SWEEP_FROM)) end
+    function s.sweeps() return runner.alive(runner.find('match.lua', SWEEP_FROM, SWEEP_TO)) end
     function s.idleSweeps() return runner.alive(runner.find('lobby.lua', IDLE_FROM)) end
     --- The one live sweep loop; fails the test if there is not exactly one.
     function s.sweep()

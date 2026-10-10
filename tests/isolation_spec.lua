@@ -1103,6 +1103,8 @@ local function newLobby()
     local lobby = {}
 
     function lobby.Get(matchId) return matches[matchId] end
+    -- Crimson: the start re-checks entry. Every fixture fighter may enter.
+    function lobby.EntryBlocked() return nil end
     function lobby.All()
         local out = {}
         for _, match in pairs(matches) do out[#out + 1] = match end

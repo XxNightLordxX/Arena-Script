@@ -228,9 +228,11 @@ end)
 -- OFF MEANS NO DATABASE IS TOUCHED
 -- ======================================================================
 
-t.test('the database ships OFF, which is what makes the rest of this matter', function()
-    t.isFalse(newStats().env.Config.Database.enabled,
-        'the database now ships on -- the in-memory path is no longer the default')
+-- Crimson: the database ships ON (Crimson runs oxmysql and sql/install.sql).
+-- The in-memory path below is still what a server with it off gets.
+t.test('the database ships ON on Crimson', function()
+    t.isTrue(newStats().env.Config.Database.enabled == true,
+        'the database ships off -- Crimson runs it on')
 end)
 
 t.test('DEFECT: with it off, EnsureSchema creates nothing', function()

@@ -326,6 +326,9 @@ function Sandbox.newEnv(overrides)
     -- still say so -- and after the _G copy, which brought the plain one in.
     env.type = Sandbox.type
     env.json = Sandbox.json
+    -- A player with no state set: the client reads LocalPlayer.state at load
+    -- (isLoggedIn). A spec that needs a state passes its own LocalPlayer.
+    env.LocalPlayer = { state = {} }
     for key, value in pairs(overrides or {}) do env[key] = value end
     return env
 end
@@ -441,12 +444,17 @@ function Sandbox.newArenaEnv(overrides)
     return env
 end
 
---- Debug on and only crimson and ash, whatever config.lua ships.
+--- Debug on, only crimson and ash, the lobby distance gate and the
+--- database off, whatever config.lua ships. The sandbox has no player
+--- positions, so the 15 m gate would refuse every fighter; specs that are
+--- about the gate or the database switch them back on themselves.
 --- @param env table
 --- @return table env
 function Sandbox.suiteBaseline(env)
     local config = env.Config or {}
     config.Debug = true
+    if type(config.Lobby) == 'table' then config.Lobby.maxEntryDistance = 0 end
+    if type(config.Database) == 'table' then config.Database.enabled = false end
     local list = (config.Teams or {}).list
     if type(list) == 'table' then
         for key, team in pairs(list) do

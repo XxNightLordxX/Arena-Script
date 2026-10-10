@@ -20,18 +20,18 @@
        96   Lobby         The NPC players walk up to
       166   Schedule      Opening hours: when the door is actually open
       217   Match         Lives, timers, player counts, win condition
-      575   Teams         The sides, and whether they may be uneven
-      745   Modes         Free-for-all, team deathmatch, gun game, team gun game (off)
-     1171   DefaultMode   Which of them a new lobby opens on
-     1190   Betting       Entry fees, self-bets, side-bets, how the pot is split
-     1434   UI            Panel colours, logo and title
-     1502   Permissions   Who may open a match, who may force-stop one
-     1588   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
-     2022   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
-     2620   Database      Optional: four tables the arena owns. Ships OFF
-     2651   Leaderboard   Which matches count towards the board, and which do not
-     2717   Webhook       Optional: a Discord line per finished match
-     2749   Dispatch      Optional: keeping police and EMS out of the arena
+      578   Teams         The sides, and whether they may be uneven
+      748   Modes         Free-for-all, team deathmatch, gun game, team gun game (off)
+     1174   DefaultMode   Which of them a new lobby opens on
+     1193   Betting       Entry fees, self-bets, side-bets, how the pot is split
+     1437   UI            Panel colours, logo and title
+     1505   Permissions   Who may open a match, who may force-stop one
+     1591   Arenas        THE GROUNDS. One block per arena; paste one in, it appears
+     2025   Loadouts      Slots, ammo items and supplies (weapons: config.weapons.lua)
+     2623   Database      Optional: four tables the arena owns. Ships OFF
+     2654   Leaderboard   Which matches count towards the board, and which do not
+     2720   Webhook       Optional: a Discord line per finished match
+     2752   Dispatch      Optional: keeping police and EMS out of the arena
     ------------------------------------------------------------------------------
 
     (Those line numbers were kept honest by a test, which is not in this

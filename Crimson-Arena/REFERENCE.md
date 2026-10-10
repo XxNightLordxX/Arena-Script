@@ -700,7 +700,7 @@ listed; the source documents them where they are.
 | `ArenaBetting.OwedReport()` | Every payout and refund the arena could not deliver, as lines, with what each one is for and whether a restart would forget it. On the admin tablet under **Tools → Money owed**. |
 | `ArenaBetting.Clear(matchId)` | Drops a match's money state. |
 
-#### `server/lobby.lua` — 26 functions
+#### `server/lobby.lua` — 27 functions
 
 | Function | What it does |
 |---|---|
@@ -709,6 +709,7 @@ listed; the source documents them where they are.
 | `ArenaLobby.All()` | Oldest first, id breaking the tie, so two reads of an unchanged registry can never render the match list in a different order. |
 | `ArenaLobby.PlayerCount(match)` | How many players a match has seated. |
 | `ArenaLobby.PlayerArray(match)` | The roster as an ARRAY, in join order -- the shape every Arena.* rule takes, and the order a spawn index is drawn from. |
+| `ArenaLobby.EntryBlocked(src)` | Crimson: why a player may not enter right now -- too far from the lobby, cuffed or escorted, down, in a vehicle, not loaded -- or nil. Used by the start re-check and by AddSpectator. |
 | `ArenaLobby.InvalidateConfig()` | Forgets the panel's cached copy of the catalogue so the next snapshot is built from it as it stands now. Called by the start-up thread in server/ammo.lua when it has withdrawn weapons ox_inventory has no item for -- which only matters when ox_inventory came up after this resource and a panel was opened in between. The loadout preview is not cleared: it names no weapon. |
 | `ArenaLobby.NoteEditRefused(src)` | Records that one player asked for an edit the server would not make, so the panel re-seeds the form. |
 | `ArenaLobby.ForgetEditRefusals(src)` | Drops that count on the way out, so a recycled server id inherits nothing. |

@@ -3682,6 +3682,11 @@ local SWEEP_EVERY_MS = 5000
 local sweepUntil = 0
 local sweepPed = nil
 local sweepRunning = false
+--- Until when a catalogue gun reaching zero is worth a sweep: 10 minutes
+--- after this client last held arena kit (exit, owed-kit reclaim, restart).
+--- Outside it, selling or dropping an ordinary gun costs nothing.
+local ORPHAN_WATCH_MS = 600000
+local orphanWatchUntil = 0
 
 --- world model hash -> weapon name, for every catalogue weapon. Built when
 --- first needed: GetWeapontypeModel answers nothing for a weapon this build
@@ -3803,6 +3808,7 @@ end
 -- catalogue weapon has just gone to zero.
 AddEventHandler('ox_inventory:itemCount', function(name, count)
     if tonumber(count) ~= 0 or type(name) ~= 'string' then return end
+    if GetGameTimer() > orphanWatchUntil then return end
     for _, weapon in pairs(catalogueWeaponModels()) do
         if weapon == name then
             scheduleOrphanSweeps(15000)
@@ -4629,6 +4635,7 @@ RegisterNetEvent('crimson_arena:client:exitArena', function(data)
     leaveArena(type(data) == 'table' and data.returnCoords or nil)
 
     -- AND THE BACK, for a minute: see sweepOrphanWeaponProps.
+    orphanWatchUntil = GetGameTimer() + ORPHAN_WATCH_MS
     scheduleOrphanSweeps(SWEEP_AFTER_EXIT_MS)
 end)
 
@@ -4638,22 +4645,29 @@ end)
 --- start the watch. Carries nothing and needs nothing: all it can do is
 --- look, for a while, for a drawn gun with no item behind it.
 RegisterNetEvent('crimson_arena:client:watchWeapons', function()
+    orphanWatchUntil = GetGameTimer() + ORPHAN_WATCH_MS
     watchItemlessWeapons(ITEMLESS_AFTER_MS)
 end)
 
--- AND ONCE AT START. A restart takes everybody's arena kit back while some of
--- them may be mid-draw, and the threads that would have watched died with the
--- old copy of this resource.
-watchItemlessWeapons(ITEMLESS_AFTER_MS)
+-- AND ONCE AT START -- but only for a RESTART while this player is already
+-- in-game. A restart takes everybody's arena kit back while some of them may
+-- be mid-draw, and the threads that would have watched died with the old
+-- copy of this resource. On a fresh connect the character is not loaded yet
+-- and holds no arena kit, so nothing needs watching: skipping it saves every
+-- joining player 40-60 s of inventory and object-pool polling.
+if LocalPlayer.state.isLoggedIn then
+    orphanWatchUntil = GetGameTimer() + ORPHAN_WATCH_MS
+    watchItemlessWeapons(ITEMLESS_AFTER_MS)
 
--- AND THE BACK, AT START TOO, for the same reason. The exit's back-prop sweep
--- is a thread that waits SWEEP_EVERY_MS before its first pass, and on a
--- restart the old copy of this resource is stopped well inside that wait --
--- so the sweep the exit asked for never ran once, and an orphaned arena-gun
--- prop left on a fighter's back by the entry stayed there until their next
--- skin refresh. Nothing the server sends after a restart reaches the exit's
--- sweep, so the new copy asks for one itself. Without ox it does nothing.
-scheduleOrphanSweeps(SWEEP_AFTER_EXIT_MS)
+    -- AND THE BACK, AT START TOO, for the same reason. The exit's back-prop sweep
+    -- is a thread that waits SWEEP_EVERY_MS before its first pass, and on a
+    -- restart the old copy of this resource is stopped well inside that wait --
+    -- so the sweep the exit asked for never ran once, and an orphaned arena-gun
+    -- prop left on a fighter's back by the entry stayed there until their next
+    -- skin refresh. Nothing the server sends after a restart reaches the exit's
+    -- sweep, so the new copy asks for one itself. Without ox it does nothing.
+    scheduleOrphanSweeps(SWEEP_AFTER_EXIT_MS)
+end
 
 RegisterNetEvent('crimson_arena:client:matchHud', function(data)
     -- A BOARD FROM SOMEBODY ELSE'S ROUND IS NOT DRAWN, which used to rest

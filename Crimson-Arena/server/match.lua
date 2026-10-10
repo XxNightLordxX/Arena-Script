@@ -2943,6 +2943,25 @@ function ArenaMatch.Start(matchId)
         return false, 'error.match_already_started'
     end
 
+    -- Crimson: ENTRY IS RE-CHECKED AT THE START. Join only looked at the
+    -- moment of joining; between that and the start a fighter can be downed,
+    -- cuffed, escorted or carted off to a cell, and the start then revived
+    -- and teleported them out of it. Anyone who fails now is taken out of the
+    -- lobby the ordinary way (stake refunded) before the start is judged.
+    local ineligible = {}
+    for src in pairs(match.players) do
+        local blocked = ArenaLobby.EntryBlocked(src)
+        if blocked then ineligible[#ineligible + 1] = { src = src, why = blocked } end
+    end
+    for _, entry in ipairs(ineligible) do
+        ArenaLobby.Leave(entry.src, nil, false, true)
+        ArenaNotifyKey(entry.src, entry.why, 'error')
+    end
+    if #ineligible > 0 then
+        match = ArenaLobby.Get(matchId)
+        if not match then return false, 'error.match_not_found' end
+    end
+
     local players = ArenaLobby.PlayerArray(match)
     local ok, reason = Arena.CanStartMatch({
         arenaKey = match.arenaKey,
@@ -5097,4 +5116,51 @@ CreateThread(function()
     local generation = sweepGeneration
     Wait(SWEEP_INTERVAL_MS)
     runSweep(generation)
+end)
+
+-- Crimson: A WATCHER STAYS AT THE ARENA. Watching moves a player into the
+-- arena's bucket -- out of sight of the city and out of dispatch -- and only
+-- the honest client walks them to the camera. A watcher whose body is still
+-- well outside the arena after the stream grace is taken off the watch,
+-- which puts them back in the city bucket where everyone can see them.
+local SPECTATOR_CHECK_MS = 5000
+local SPECTATOR_SLACK_M = 150.0
+local SPECTATOR_STRIKES = 3 -- 15 s: past the client's 12 s stream wait
+local spectatorStrikes = {}
+
+CreateThread(function()
+    while true do
+        Wait(SPECTATOR_CHECK_MS)
+        local seen = {}
+        for _, match in ipairs(ArenaLobby.All()) do
+            if match.state == 'countdown' or match.state == 'live' then
+                local arena = Arena.GetArenaByKey(match.arenaKey)
+                local area = arena and (arena.boundary or arena.spawnArea)
+                local center = area and area.center
+                if center then
+                    local limit = (tonumber(area.radius) or 100.0) + SPECTATOR_SLACK_M
+                    for src in pairs(match.spectators or {}) do
+                        -- an eliminated fighter watching their own round is
+                        -- standing in it already
+                        if not match.players[src] then
+                            seen[src] = true
+                            local ped = GetPlayerPed(src)
+                            local far = not ped or ped == 0
+                                or #(GetEntityCoords(ped) - vector3(center.x, center.y, center.z)) > limit
+                            spectatorStrikes[src] = far and ((spectatorStrikes[src] or 0) + 1) or 0
+                            if spectatorStrikes[src] >= SPECTATOR_STRIKES then
+                                spectatorStrikes[src] = nil
+                                ArenaLog('removed watcher %s: still %s m+ from %s after the stream grace.',
+                                    tostring(src), tostring(math.floor(limit)), tostring(match.arenaKey))
+                                ArenaLobby.RemoveSpectator(src)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for src in pairs(spectatorStrikes) do
+            if not seen[src] then spectatorStrikes[src] = nil end
+        end
+    end
 end)

@@ -119,18 +119,37 @@ end
 
 local finiHooked = false
 
+--- The started resource FiniAC runs as. Exports are keyed by the resource's
+--- folder name, and FiniAC is often installed under another name
+--- (Crimson: 'anticheat'), so `exports.FiniAC` alone would never resolve.
+--- @return string|nil
+local function finiResourceName()
+    local names = config().finiResource
+    if type(names) == 'string' then names = { names } end
+    if type(names) ~= 'table' then names = { 'FiniAC' } end
+    for _, name in ipairs(names) do
+        if type(name) == 'string' and GetResourceState(name) == 'started' then return name end
+    end
+    return nil
+end
+
 --- Registers the hook. Called on FiniAC's own `FiniAC:Started` event, and
 --- at this resource's start only if FiniAC's `FiniAC:Started` convar is 1 --
 --- both exactly as its Resource API page says: the resource being
 --- 'started' is NOT enough, its export is not ready for a moment after.
 local function hookFini()
     if finiHooked or config().finiHook == false or windowSeconds() <= 0 then return end
-    local ok, why = pcall(function() exports.FiniAC:AddDetectionHook(ArenaSpawnProtection.FiniDetectionHook) end)
+    local resource = finiResourceName()
+    if not resource then
+        ArenaLog('spawn protection: FiniAC says it started, but none of Config.Match.spawnProtection.finiResource is running -- hook NOT registered.')
+        return
+    end
+    local ok, why = pcall(function() exports[resource]:AddDetectionHook(ArenaSpawnProtection.FiniDetectionHook) end)
     if ok then
         finiHooked = true
-        ArenaLog('spawn protection: FiniAC detection hook registered.')
+        ArenaLog('spawn protection: FiniAC detection hook registered (resource "%s").', resource)
     else
-        ArenaLog('spawn protection: FiniAC is running but the hook could not be registered -- %s', tostring(why))
+        ArenaLog('spawn protection: FiniAC is running as "%s" but the hook could not be registered -- %s', resource, tostring(why))
     end
 end
 

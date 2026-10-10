@@ -202,15 +202,39 @@ local function playersArePlaced(match)
     return match.placed == true
 end
 
+--- Crimson: how far from the lobby NPC a player may be when they create,
+--- join or start watching -- and when the round they joined starts. The
+--- events carry no position, so a hand-fired one used to work from anywhere
+--- (a cell, the back of a cruiser), and the entry revive and teleport then
+--- broke them out. Config.Lobby.maxEntryDistance, default 15 m.
+local function awayFromLobby(src)
+    local limit = tonumber(Config.Lobby.maxEntryDistance) or 15.0
+    if limit <= 0 then return false end
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return true end
+    local here = GetEntityCoords(ped)
+    for _, spot in ipairs({ Config.Lobby.ped and Config.Lobby.ped.coords, Config.Lobby.marker and Config.Lobby.marker.coords }) do
+        if spot and #(here - vector3(spot.x, spot.y, spot.z)) <= limit then return false end
+    end
+    return true
+end
+
 local function entryBlocked(src, data)
     local metadata = type(data.metadata) == 'table' and data.metadata or {}
+
+    if awayFromLobby(src) then
+        return 'error.too_far_from_lobby'
+    end
+
+    -- Cuffed and escorted are refused whatever blockWhileDead says: the
+    -- entry revive and teleport would take them out of custody.
+    if metadata.ishandcuffed == true or metadata.isescorted == true then
+        return 'error.cannot_join_cuffed'
+    end
 
     if Config.Match.blockWhileDead == true then
         if metadata.isdead == true or metadata.inlaststand == true then
             return 'error.cannot_join_dead'
-        end
-        if metadata.ishandcuffed == true then
-            return 'error.cannot_join_cuffed'
         end
     end
 
@@ -221,6 +245,17 @@ local function entryBlocked(src, data)
     end
 
     return nil
+end
+
+--- The same check for callers outside this file (the start re-check in
+--- server/match.lua, and AddSpectator below). nil = may enter.
+--- @param src integer
+--- @return string|nil reasonKey
+function ArenaLobby.EntryBlocked(src)
+    local qbx = ArenaGetPlayer(src)
+    local data = qbx and qbx.PlayerData
+    if not data then return 'error.player_not_loaded' end
+    return entryBlocked(src, data)
 end
 
 --- Which side a player lands on, and the ONLY reason a side can be refused:
@@ -2283,6 +2318,17 @@ function ArenaLobby.SetTeam(src, teamKey)
         return false, 'error.bet_then_switch'
     end
 
+    -- Crimson: ONCE ANYBODY HAS BACKED A SIDE, THE SIDES ARE FIXED. Fighters
+    -- could draw spectator bets on one side and then all walk to the other
+    -- before the start, and the stranded stakes were paid to the side they
+    -- switched to. Same rule the mode already follows (mode_locked_by_bets);
+    -- leaving is still open, and a side that empties hands its bets back.
+    if team ~= player.team and ArenaBetting.IsEnabled()
+        and ArenaBetting.CountSideBets(match.id) > 0
+    then
+        return false, 'error.teams_locked_by_bets'
+    end
+
     local was = player.team
     player.team = team
     touchLobby(match)
@@ -2493,6 +2539,15 @@ function ArenaLobby.AddSpectator(src, matchId)
     local attachedTo = playerIndex[target]
     if attachedTo and (attachedTo ~= match.id or not isEliminated(match, target)) then
         return false, 'error.already_in_match'
+    end
+
+    -- Crimson: a NEW watcher must be standing at the lobby and free to go --
+    -- the watch moves them into the arena's bucket, out of sight of the city
+    -- and out of dispatch, so from anywhere else it was an escape. The
+    -- eliminated fighter above is already in the arena and is exempt.
+    if not attachedTo then
+        local blocked = ArenaLobby.EntryBlocked(target)
+        if blocked then return false, blocked end
     end
 
     -- THERE HAS TO BE A FIGHT TO WATCH, AND SAYING SO HERE IS THE POINT.

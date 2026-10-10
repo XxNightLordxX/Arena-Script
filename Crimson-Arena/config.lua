@@ -85,7 +85,7 @@ Config.ResourceLabel = 'Crimson Arena'
 --- prints with it off is what an operator must act on: errors, refused
 --- payments or items, misconfiguration, money owed or lost, forfeits,
 --- exploit refusals, start-up checks and admin actions.
-Config.Debug = true
+Config.Debug = false
 
 --- ox_lib notification title for every message this resource sends.
 Config.NotifyTitle = 'CRIMSON ARENA'
@@ -371,6 +371,9 @@ Config.Match = {
         -- console with the detection's type, so the list can be tuned to the
         -- exact names your FiniAC build reports. finiHook = false: no hook.
         finiHook = true,
+        -- The FiniAC resource's FOLDER name -- exports are looked up by it.
+        -- The first one that is started is used. Crimson runs it as 'anticheat'.
+        finiResource = { 'anticheat', 'FiniAC' },
         finiGraceSeconds = 2,
         -- FiniAC's own names: GodModePed, GodModeV2, GodModeV3.
         finiDetections = { 'godmode' },
@@ -2618,7 +2621,7 @@ Config.Loadouts = {
 -- read or written.
 -- ======================================================================
 Config.Database = {
-    enabled = false,
+    enabled = true,
     -- Flush queued stat writes this often, in ms. Also flushed on stop.
     flushIntervalMs = 60000,
     leaderboardSize = 25,
